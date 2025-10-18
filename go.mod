@@ -1,6 +1,6 @@
 module github.com/your/module
 
-go 1.22.0
+go 1.23
 
 require (
 	gopkg.in/rethinkdb/rethinkdb-go.v6 v6.2.0
