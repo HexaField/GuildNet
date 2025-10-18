@@ -17,6 +17,7 @@ const ServerDetail = lazy(() => import('./routes/ServerDetail'))
 const Launch = lazy(() => import('./routes/Launch'))
 const Databases = lazy(() => import('./routes/Databases'))
 const Settings = lazy(() => import('./routes/Settings'))
+const MultiDevice = lazy(() => import('./routes/MultiDevice'))
 // Add missing database detail + table routes
 const DatabaseDetail = lazy(() => import('./routes/DatabaseDetail'))
 const TableView = lazy(() => import('./routes/TableView'))
@@ -305,6 +306,7 @@ export default function App() {
         <Route path="/c/:clusterId/databases/:dbId/tables/:table/permissions" component={TablePermissions} />
         <Route path="/c/:clusterId/databases/:dbId/tables/:table/import-export" component={TableImportExport} />
         <Route path="/c/:clusterId/settings" component={Settings} />
+        <Route path="/c/:clusterId/federation" component={MultiDevice} />
         {/* Home when no cluster */}
         <Route path="/" component={Home} />
       </Route>

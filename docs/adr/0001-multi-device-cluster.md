@@ -6,7 +6,7 @@ Status: Proposed
 
 Scope
 -----
-This ADR documents the design for launching a Kubernetes cluster across multiple devices (hosts) so that workloads, servers and services can be shared and load-balanced across the contributing devices. It covers control-plane choices, networking (using existing Tailscale/Headscale integrations), service discovery and load balancing, placement heuristics, failure modes, security considerations, and an implementation/migration plan that integrates with the existing GuildNet architecture.
+This ADR documents the design for launching a Kubernetes cluster across multiple devices (hosts) so that workloads, servers and services can be shared and load-balanced across the contributing devices. It covers control-plane choices, networking (using existing Tailscale/Headscale integrations), service discovery and load balancing, placement heuristics, failure modes, security considerations, and an implementation plan that integrates with the existing GuildNet architecture. Migration and backwards compatibility is not required.
 
 Context
 -------
@@ -51,7 +51,7 @@ Components to add/modify
   - Heuristics: bin-packing (first-fit-decreasing), spread-aware scheduling for high-availability (spread replicas across sites), latency-aware placement for low-latency services, and soft-load rebalancing when host load changes.
 
 - Cross-device Service abstraction
-  - Logical service manifests (new CRD: FederatedService or MultiDeviceService) declare the desired service, replica count, and policy (performance/availability/cost tuning).
+  - Logical service manifests (new CRD: FederatedService) declare the desired service, replica count, and policy (performance/availability/cost tuning).
   - The controller creates per-site Service endpoints and advertises them via DNS + per-site proxies. Optionally, it can create headless services plus global DNS entries that map to per-site endpoints.
 
 - Per-host proxy/agent
@@ -64,12 +64,12 @@ Components to add/modify
 Data model & API
 ----------------
 - New CRDs / API additions (hostapp operator):
-  - MultiDeviceCluster (metadata: clusterName, members[], desiredState)
-  - MultiDeviceService (spec: selector, ports, replicas, placementPolicy)
+  - FederatedCluster (metadata: clusterName, members[], desiredState)
+  - FederatedService (spec: selector, ports, replicas, placementPolicy)
   - SiteStatus (node counts, capacity, lastSeen, network metrics)
 
 - Host App REST API extensions
-  - Endpoints to join/leave a site, query site metrics, request federation control, and create MultiDeviceService.
+  - Endpoints to join/leave a site, query site metrics, request federation control, and create FederatedService.
   - Integrate with existing bootstrap/join flow (`scripts/join.sh`, `guildnet.config`) so devices can advertise themselves as joinable sites.
 
 Placement heuristics and algorithms
@@ -99,18 +99,18 @@ Failure modes and resilience
 - Network partition: conservative policy — prefer availability over split-brain for stateful workloads; use quorum-based controllers for stateful components.
 - Controller failure: Host App operator is expected to be run redundantly (e.g., multiple hostapp instances in different nodes). Persistence stored in GuildNet DB (internal/localdb) for recovery.
 
-Migration and rollout plan
+Rollout plan
 -------------------------
 Phase 0 (experiment/proof-of-concept)
 - Implement a read-only discovery mode: Host App can list candidate sites and display node capacities. No scheduling or CRDs yet.
 - Add per-site metrics collection and a simple placement API.
 
 Phase 1 (CRD + controller)
-- Implement `MultiDeviceService` CRD and controller that can deploy per-site Deployments/ReplicaSets and register endpoints with a per-service DNS.
+- Implement `FederatedService` CRD and controller that can deploy per-site Deployments/ReplicaSets and register endpoints with a per-service DNS.
 - Add per-host proxy as a simple sidecar/DaemonSet and a controller to manage its config (endpoint lists).
 
 Phase 2 (policy, rebalancing, HA)
-- Add placement policies, rebalancing controller, health checks and graceful migration tooling (drain + recreate + traffic weight shifting).
+- Add placement policies, rebalancing controller and health checks.
 
 Phase 3 (operator hardening)
 - Performance tuning, failover policies, observability (metrics/tracing) and upgrades.
@@ -132,13 +132,12 @@ Operational concerns
 --------------------
 - Resource accounting: sites must report accurate capacity; controller must be able to apply soft quotas.
 - Visibility: UI must show per-site health, resource usage and placement decisions.
-- Upgrades: operator must support rolling upgrades with operator-managed manifests and migration hooks.
 
 Alternatives considered
 -----------------------
 - KubeFed (Kubernetes Federation v2): powerful but complex to operate and integrate with local single-node microk8s instances. We rejected it due to operational complexity and heavy control-plane requirements.
 - Crossplane: good for multi-cloud resource management but orthogonal — Crossplane could be used later for provisioning infrastructure, not for short-lived per-host scheduling.
-- Service mesh-only approach (Istio multi-cluster): useful for networking but doesnt solve scheduling and placement decisions; could be integrated later for advanced traffic management.
+- Service mesh-only approach (Istio multi-cluster): useful for networking but doesn't solve scheduling and placement decisions; could be integrated later for advanced traffic management.
 
 Consequences
 ------------
@@ -170,11 +169,11 @@ Next steps
 
 ---
 
-Appendix: example MultiDeviceService spec (v0)
+Appendix: example FederatedService spec (v0)
 
 ```yaml
 apiVersion: guildnet.io/v1alpha1
-kind: MultiDeviceService
+kind: FederatedService
 metadata:
   name: hello
 spec:

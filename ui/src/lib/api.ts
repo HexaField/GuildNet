@@ -6,6 +6,7 @@ import type {
   Server
 } from './types'
 import { apiUrl } from './config'
+import { SiteListSchema, MDSummaryListSchema, FederatedServiceInputSchema, PerSiteStatusSchema } from './schemas'
 
 async function handle<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -320,6 +321,80 @@ export async function deleteClusterRecord(id: string): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+// Sites & FederatedService APIs
+export type SiteRecord = { id: string; name?: string; state?: string }
+
+export async function listSites(): Promise<SiteRecord[]> {
+  try {
+    const res = await fetch(apiUrl('/v1/sites'))
+    if (!res.ok) return []
+    const data = await res.json()
+    try {
+      return SiteListSchema.parse(data) as SiteRecord[]
+    } catch {
+      return []
+    }
+  } catch { return [] }
+}
+
+export type MDSummary = { clusterId: string; namespace: string; name: string }
+
+export async function listFederatedServices(): Promise<MDSummary[]> {
+  try {
+    const res = await fetch(apiUrl('/api/v1/federatedservices'))
+    if (!res.ok) return []
+    const data = await res.json()
+    try {
+      return MDSummaryListSchema.parse(data) as MDSummary[]
+    } catch {
+      return []
+    }
+  } catch { return [] }
+}
+
+export async function getPerSiteStatus(ns: string, name: string): Promise<any | null> {
+  try {
+  const url = apiUrl(`/v1/federatedservices/per-site?ns=${encodeURIComponent(ns)}&name=${encodeURIComponent(name)}`)
+    const res = await fetch(url)
+    if (!res.ok) return null
+    const data = await res.json()
+    try {
+      return PerSiteStatusSchema.parse(data)
+    } catch {
+      return data
+    }
+  } catch { return null }
+}
+
+export async function createFederatedService(clusterId: string, obj: any): Promise<boolean> {
+  try {
+    // validate input minimally
+    try { FederatedServiceInputSchema.parse(obj) } catch { return false }
+    const res = await fetch(apiUrl(`/api/v1/federatedservices/cluster?clusterId=${encodeURIComponent(clusterId)}`), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(obj)
+    })
+    return res.ok
+  } catch { return false }
+}
+
+export async function updateFederatedService(clusterId: string, obj: any): Promise<boolean> {
+  try {
+    try { FederatedServiceInputSchema.parse(obj) } catch { return false }
+    const res = await fetch(apiUrl(`/api/v1/federatedservices/cluster?clusterId=${encodeURIComponent(clusterId)}`), {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(obj)
+    })
+    return res.ok
+  } catch { return false }
+}
+
+export async function deleteFederatedService(clusterId: string, ns: string, name: string): Promise<boolean> {
+  try {
+    const url = apiUrl(`/api/v1/federatedservices/cluster?clusterId=${encodeURIComponent(clusterId)}&ns=${encodeURIComponent(ns)}&name=${encodeURIComponent(name)}`)
+    const res = await fetch(url, { method: 'DELETE' })
+    return res.ok
+  } catch { return false }
 }
 
 export async function postClusterAction<T = any>(

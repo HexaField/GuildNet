@@ -51,3 +51,15 @@ export type DeployImage = {
   image: string
   description?: string
 }
+
+export type SiteRecord = {
+  id: string
+  name?: string
+  state?: string
+}
+
+export type MDSummary = {
+  clusterId: string
+  namespace: string
+  name: string
+}

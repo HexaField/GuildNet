@@ -240,6 +240,12 @@ curl -X POST "https://<host>:8090/api/deploy/clusters/<id>?action=attach-kubecon
   -d '{"kubeconfig": "<base64-or-raw-kubeconfig-content>"}'
 ```
 
+## Multi-device federation (ADR)
+
+This repository contains an architecture decision and an implementation plan for multi-device federated clusters (cross-device service balancing).
+- ADR: `docs/adr/0001-multi-device-cluster.md`
+- Implementation plan: `docs/implementation/0001-multi-device-cluster-implementation.md`
+
 - Create a workspace (simple job route delegates to Workspace CR creation):
 
 ```bash

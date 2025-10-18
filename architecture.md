@@ -51,6 +51,11 @@ flowchart LR
   class K8s k8s
 ```
 
+Note: see ADR and implementation plan for multi-device federated clusters:
+- ADR: `docs/adr/0001-multi-device-cluster.md`
+- Implementation plan: `docs/implementation/0001-multi-device-cluster-implementation.md`
+
+
 High level summary
 
 - Per-cluster kubeconfigs: the Host App stores kubeconfigs in local state and looks them up under the DB key `credentials:cl:{id}:kubeconfig` when creating per-cluster `Instance` clients. For interactive dev flows the code now prefers `~/.guildnet/kubeconfig` as the default kubeconfig before `~/.kube/config`.

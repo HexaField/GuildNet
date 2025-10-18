@@ -55,8 +55,14 @@ import (
 	// New imports
 	"github.com/your/module/internal/api"
 	"github.com/your/module/internal/cluster"
+
+	hostapppkg "github.com/your/module/internal/hostapp"
+	hostappapi "github.com/your/module/internal/hostapp/api"
+
 	"github.com/your/module/internal/localdb"
 	"github.com/your/module/internal/secrets"
+
+	federation "github.com/your/module/internal/controller/federation"
 )
 
 // kubeconfigResolver implements cluster.Resolver backed by localdb credentials.
@@ -89,7 +95,7 @@ func (r kubeconfigResolver) KubeconfigYAML(clusterID string) (string, error) {
 }
 
 // startOperator boots a controller-runtime manager that reconciles Workspace CRDs.
-func startOperator(ctx context.Context, restCfg *rest.Config) error {
+func startOperator(ctx context.Context, restCfg *rest.Config, reg *cluster.Registry) error {
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
 	_ = apiv1alpha1.AddToScheme(scheme)
@@ -106,6 +112,11 @@ func startOperator(ctx context.Context, restCfg *rest.Config) error {
 	r := &operator.WorkspaceReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}
 	if err := r.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setup reconciler: %w", err)
+	}
+
+	// register federation FederatedService reconciler
+	if err := (&federation.FederatedServiceReconciler{Client: mgr.GetClient(), Registry: reg}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("setup federated service reconciler: %w", err)
 	}
 	go func() {
 		if err := mgr.Start(ctx); err != nil {
@@ -214,7 +225,7 @@ func main() {
 		if err != nil || kcli == nil || kcli.Rest == nil {
 			log.Fatalf("k8s config: %v", err)
 		}
-		if err := startOperator(ctx, kcli.Rest); err != nil {
+		if err := startOperator(ctx, kcli.Rest, nil); err != nil {
 			log.Fatalf("operator start: %v", err)
 		}
 		<-ctx.Done()
@@ -361,6 +372,13 @@ func main() {
 	// Per-cluster registry (always on in prototype)
 	reg := cluster.NewRegistry(cluster.Options{StateDir: stateDir, Resolver: kubeconfigResolver{DB: ldb, Sec: sec}})
 
+	// In-memory hostapp site registry (discovery/federation PoC)
+	hReg := hostapppkg.NewRegistry()
+	joinH, leaveH, hbH := hostappapi.NewSiteHandlers(hReg)
+	mux.HandleFunc("/api/site/join", joinH)
+	mux.HandleFunc("/api/site/leave", leaveH)
+	mux.HandleFunc("/api/site/heartbeat", hbH)
+
 	// New orchestration API wired with dependencies and settings change hook
 	deps := api.Deps{DB: ldb, Secrets: sec, Runner: nil, Registry: reg, OnSettingsChanged: func(kind string) {
 		log.Printf("settings updated: %s; restarting to apply", kind)
@@ -471,12 +489,22 @@ func main() {
 		}{Snapshot: metrics.Export()})
 	})
 
-	// Kubernetes client (use existing Kubernetes; no separate local dev mode)
-	kcli, err := k8s.New(ctx)
-	if err != nil {
-		// Be tolerant in dev/first run: continue without k8s features
-		log.Printf("k8s client unavailable: %v (continuing without Kubernetes features)", err)
-		kcli = nil
+	// Kubernetes client: we no longer support implicit single-cluster mode.
+	// If a control-plane kubeconfig is provided via GN_CONTROL_PLANE_KUBECONFIG, use it;
+	// otherwise, rely entirely on the per-cluster Registry for actuation and leave k8s nil.
+	var kcli *k8s.Client
+	if kc := strings.TrimSpace(os.Getenv("GN_CONTROL_PLANE_KUBECONFIG")); kc != "" {
+		if kcBytes := []byte(kc); len(kcBytes) > 0 {
+			if kcClient, err := k8s.NewFromKubeconfig(ctx, kc, struct {
+				APIProxyURL string
+				ForceHTTP   bool
+				Dial        func(ctx context.Context, network, addr string) (net.Conn, error)
+			}{}); err == nil {
+				kcli = kcClient
+			} else {
+				log.Printf("control plane k8s client init failed: %v (continuing without control-plane client)", err)
+			}
+		}
 	}
 	var dyn dynamic.Interface
 	// Optional: local port-forward manager for pods (fallback when API server service/pod proxy is unreliable)
@@ -505,7 +533,7 @@ func main() {
 	if kcli != nil && kcli.Rest != nil {
 		if strings.TrimSpace(os.Getenv("GN_EMBED_OPERATOR")) == "1" {
 			go func() {
-				if err := startOperator(ctx, kcli.Rest); err != nil {
+				if err := startOperator(ctx, kcli.Rest, reg); err != nil {
 					log.Printf("operator start failed: %v", err)
 				}
 			}()

@@ -1054,7 +1054,7 @@ func Router(deps Deps) *http.ServeMux {
 		// Optionally resolve via per-cluster registry
 		var (
 			cfg         *rest.Config
-			cli         *kubernetes.Clientset
+			cli         kubernetes.Interface
 			dyn         dynamic.Interface
 			cs          settings.Cluster
 			setMgrLocal settings.Manager
@@ -1738,6 +1738,10 @@ func Router(deps Deps) *http.ServeMux {
 		w.WriteHeader(http.StatusNotFound)
 	})
 
+	// Register federation API endpoints (sites and federatedservices)
+	RegisterFederationAPIs(mux, deps)
+	// Register CRUD endpoints under /api/v1 for federated services
+	registerFederationCRUD(mux, deps)
 	return mux
 }
 

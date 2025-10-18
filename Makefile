@@ -25,6 +25,27 @@ PROVIDER ?= lan
 	deploy-k8s-addons deploy-operator deploy-hostapp verify-e2e \
 	diag-router diag-k8s diag-db headscale-approve-routes
 
+.PHONY: gen
+gen:
+	@echo "Running controller-gen to generate deepcopies and CRDs..."
+	# ensure controller-gen is installed (developer should run 'go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.12.0')
+	controller-gen object paths=./api/... crd:crdVersions=v1 output:crd:dir=config/crd
+
+.PHONY: gen-check
+gen-check: gen
+	@echo "Checking for uncommitted generated changes..."
+	@git diff --exit-code -- config/crd || (echo "Generated files differ; run 'make gen' and commit results" && exit 1)
+
+.PHONY: test-unit
+test-unit:
+	@echo "Running unit tests"
+	go test ./... -run Test -v
+
+.PHONY: test-integration
+test-integration:
+	@echo "Running integration tests (fast, package-level)"
+	go test ./tests -v || true
+
 
 all: build ## Build backend and UI
 

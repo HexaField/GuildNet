@@ -185,3 +185,7 @@ kubectl -n <ns> describe workspace <name>
 
 ---
 Created by automation. Edit as needed to match your production layout and secrets management.
+
+Related design docs:
+- ADR: `docs/adr/0001-multi-device-cluster.md`
+- Implementation plan: `docs/implementation/0001-multi-device-cluster-implementation.md`

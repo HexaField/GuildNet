@@ -1,0 +1,70 @@
+name: Codegen, Test and UI Build
+
+on:
+  push:
+    branches: [ main, feat/*, '*']
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  gen-test:
+    name: Generate CRDs, run tests and build UI
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+
+      - name: Install controller-gen
+        run: |
+          set -e
+          go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.12.0
+
+      - name: Run code generation (controller-gen)
+        run: make gen
+
+      - name: Check for uncommitted generated changes
+        run: |
+          set -e
+          git --no-pager diff --exit-code -- config/crd || (echo "CRD or generated files changed; please run 'make gen' and commit results" && exit 1)
+
+      - name: Run Go tests
+        run: make test
+
+      - name: Setup Node and build UI
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build UI
+        working-directory: ui
+        run: |
+          npm ci
+          npm run build
+name: Generate and Test
+
+on:
+  push:
+    branches: [ main, feat/* ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  gen-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+      - name: Install controller-gen
+        run: go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.12.0
+      - name: Generate CRDs and deepcopies
+        run: make gen
+      - name: Run tests
+        run: go test ./... -v
