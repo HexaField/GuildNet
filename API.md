@@ -34,6 +34,8 @@ Authorization model: GET requests are open. Mutating requests require either a c
       - image_pull_secret, org_id
   - Response: JSON { clusterId: <id> } on success when kubeconfig provided.
 
+Two-device automation: Use `make two-device-host` on Device A and `make two-device-joiner` on Device B to bootstrap quickly. The joiner will call this `/bootstrap` endpoint with its generated `guildnet.config`.
+
 - GET/PUT /settings/tailscale
   - Get or update global tailscale/tsnet settings. Payload uses `settings.Tailscale`.
 

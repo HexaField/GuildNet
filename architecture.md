@@ -60,6 +60,14 @@ High level summary
 
 - Per-cluster kubeconfigs: the Host App stores kubeconfigs in local state and looks them up under the DB key `credentials:cl:{id}:kubeconfig` when creating per-cluster `Instance` clients. For interactive dev flows the code now prefers `~/.guildnet/kubeconfig` as the default kubeconfig before `~/.kube/config`.
 - `POST /bootstrap` accepts a join payload (`guildnet.config` file or JSON with `cluster.kubeconfig`), persists a cluster record and kubeconfig, then performs a bounded pre-warm (10s) which attempts a light Kubernetes API call and a short `EnsureRDB`. On pre-warm failure bootstrap rolls back persisted state and returns an error.
+
+Two-device bootstrap note
+
+For a simplified two-device flow (Device A host + Device B joiner), see the `two-device` helpers:
+- Make targets: `make two-device-host`, `make two-device-joiner`
+- Script: `scripts/two-device-setup.sh`
+
+These orchestrate Headscale/tailscale, microk8s, CRDs/addons, operator, Host App startup, and `/bootstrap` attach in one step per device.
 - The Registry builds and caches `Instance` objects. Each `Instance` encapsulates:
   - per-cluster SQLite (`internal/localdb`)
   - `k8s.Client` and rest.Config (`internal/k8s`)

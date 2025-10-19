@@ -170,6 +170,30 @@ kubectl -n <workspace-namespace> get deploy,svc -l guildnet.io/workspace=verify-
 
 Check Host App reverse proxy can reach the Workspace via the API or use the `make verify-e2e` helper which captures probe outputs.
 
+Two-device quickstart (automation)
+
+For a streamlined two-device setup (Device A host + Device B joiner):
+
+On Device A (host):
+
+```bash
+export GUILDNET_MASTER_KEY="$(head -c 32 /dev/urandom | base64)"
+export LISTEN_LOCAL="0.0.0.0:8090"
+make two-device-host
+```
+
+On Device B (joiner):
+
+```bash
+export GUILDNET_MASTER_KEY="$(head -c 32 /dev/urandom | base64)"
+export HOSTAPP_URL="https://<deviceA-tailnet-ip>:8090"
+make two-device-joiner
+```
+
+This will:
+- Device A: start Headscale, bring up tailscale router, provision microk8s, apply CRDs/addons, deploy operator, start Host App, and emit a `guildnet.config` join file.
+- Device B: join tailscale, provision microk8s, apply CRDs/addons, deploy operator, generate `guildnet.config`, and POST it to Device A’s Host App `/bootstrap`.
+
 8) Monitoring, logging and alerting
 
 - Configure centralized logs (journald -> ELK/Fluentd) and metrics scraping.

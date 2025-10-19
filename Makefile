@@ -24,6 +24,12 @@ PROVIDER ?= lan
 	# Local disposable cluster helper removed; use microk8s or set KUBECONFIG
 	deploy-k8s-addons deploy-operator deploy-hostapp verify-e2e \
 	diag-router diag-k8s diag-db headscale-approve-routes
+two-device-host: ## One-command bootstrap of Device A (Headscale+cluster+operator+Host App)
+	bash ./scripts/two-device-setup.sh host
+
+two-device-joiner: ## One-command bootstrap of Device B and attach to Host App (set HOSTAPP_URL)
+	bash ./scripts/two-device-setup.sh joiner
+
 
 .PHONY: gen
 gen:
