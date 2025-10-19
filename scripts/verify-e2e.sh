@@ -30,7 +30,10 @@ bash "$ROOT/scripts/tailscale-router.sh" status || true
 
 # Headscale routes
 if docker ps --format '{{.Names}}' | grep -q '^guildnet-headscale$'; then
-  docker exec -i guildnet-headscale headscale routes list || true
+  # Some headscale releases don't provide 'routes list'. Use a
+  # broadly-supported command (nodes list) as a lightweight
+  # sanity check for the Headscale server/DB. Keep it non-fatal.
+  docker exec -i guildnet-headscale headscale nodes list || true
 fi
 
 # Router DS readiness
@@ -129,7 +132,10 @@ if command -v kubectl >/dev/null && [ -f "${KUBECONFIG}" ] && kubectl version --
       # Probe the HostApp proxied root and look for code-server login markers
       echo "Probing HostApp proxy for workspace root to detect login UI"
       set +e
-      if curl -k --http1.1 --max-time 10 -sS "$HOSTAPP_URL/api/cluster/$CLUSTER_ID/proxy/server/$WS_NAME/" | grep -iE "password|code-server" >/dev/null 2>&1; then
+      # Follow redirects and allow a slightly longer timeout when probing
+      # the HostApp proxy. Some HostApp proxy responses return 302 ->
+      # proxied service, so follow (-L) to reach the final HTML.
+      if curl -k --http1.1 --max-time 15 -L -sS "$HOSTAPP_URL/api/cluster/$CLUSTER_ID/proxy/server/$WS_NAME/" | grep -iE "password|code-server" >/dev/null 2>&1; then
         echo "code-server page reachable through HostApp proxy and login UI appears"
       else
         echo "code-server page did not show expected login content via HostApp; dumping HostApp workspace info and k8s logs"

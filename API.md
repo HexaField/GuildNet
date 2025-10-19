@@ -238,13 +238,17 @@ The config file path: `~/.guildnet/config.json` (created by tools like the init 
 
 ## Examples and notes
 
-- Attach a cluster kubeconfig via API (curl example):
 
 ```bash
 curl -X POST "https://<host>:8090/api/deploy/clusters/<id>?action=attach-kubeconfig" \
   -H 'Content-Type: application/json' \
   -d '{"kubeconfig": "<base64-or-raw-kubeconfig-content>"}'
 ```
+
+## Notes
+
+The repository includes `scripts/verify-e2e.sh` (used by `make verify-e2e`) which has been updated to be compatible with multiple Headscale CLI versions and to follow redirects when probing HostApp proxy endpoints. A developer helper `scripts/repro-controller-gen.sh` can be used to try older `controller-gen` versions and capture logs under `/tmp/controller-gen-repro`.
+
 
 ## Multi-device federation (ADR)
 
