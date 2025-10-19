@@ -1,3 +1,56 @@
+name: Generate, Test and UI Build
+
+on:
+  push:
+    branches: [ main, feat/* ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  gen-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run reproducible codegen
+        run: |
+          set -euo pipefail
+          make gen
+
+      - name: Commit generated files if changed
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet -- config/crd || ! git diff --quiet -- api || ! git diff --quiet -- api/v1alpha1; then
+            git add -A
+            git commit -m "chore(gen): update generated artifacts (controller-gen)" || echo "no changes to commit"
+            git push origin HEAD:$(echo ${GITHUB_REF#refs/heads/} ) || true
+          else
+            echo "No generated changes"
+          fi
+
+      - name: Set up Go and run tests
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.23'
+      - name: Run Go tests
+        run: make test
+
+      - name: Setup Node and build UI
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Build UI
+        working-directory: ui
+        run: |
+          npm ci
+          npm run build
 name: Codegen, Test and UI Build
 
 on:

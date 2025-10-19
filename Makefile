@@ -28,8 +28,8 @@ PROVIDER ?= lan
 .PHONY: gen
 gen:
 	@echo "Running controller-gen to generate deepcopies and CRDs..."
-	# ensure controller-gen is installed (developer should run 'go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.12.0')
-	controller-gen object paths=./api/... crd:crdVersions=v1 output:crd:dir=config/crd
+	# Run generator inside a pinned container to ensure reproducibility
+	./scripts/gen-in-container.sh
 
 .PHONY: gen-check
 gen-check: gen
