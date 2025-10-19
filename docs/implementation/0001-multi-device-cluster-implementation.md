@@ -105,7 +105,7 @@ This document expands ADR 0001 into a concrete implementation plan. It maps work
 ## Sample commands
 Install codegen tools (one-time):
 ```bash
-go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.12.0
+   go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.15.0
 go install sigs.k8s.io/kubebuilder@v3.6.0
 ```
 Generate CRDs:
