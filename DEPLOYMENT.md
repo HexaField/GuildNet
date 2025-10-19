@@ -10,7 +10,7 @@ To generate deepcopy files and CRDs locally, ensure you have Go installed and th
 make gen
 ```
 
-The `make gen` target will attempt to install `controller-gen` v0.12.0 into your `GOPATH` if it is not already available. Make sure `$(go env GOPATH)/bin` is on your PATH so `controller-gen` can be invoked.
+The `make gen` target will attempt to install `controller-gen` v0.15.0 into your `GOPATH` if it is not already available. Make sure `$(go env GOPATH)/bin` is on your PATH so `controller-gen` can be invoked.
 
 After running `make gen`, inspect `config/crd/bases/` and any `zz_generated.deepcopy.go` files for changes and commit them alongside your code changes.
 

@@ -37,11 +37,11 @@ gen:
 	# Ensure controller-gen is available (install v0.12.0 if missing)
 	@if ! command -v controller-gen >/dev/null 2>&1; then \
 		if command -v go >/dev/null 2>&1; then \
-			echo "controller-gen not found; installing sigs.k8s.io/controller-tools/cmd/controller-gen@v0.12.0"; \
-			go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.12.0; \
+			echo "controller-gen not found; installing sigs.k8s.io/controller-tools/cmd/controller-gen@v0.15.0"; \
+			go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.15.0; \
 			echo "installed controller-gen to $(go env GOPATH)/bin (ensure \"$(go env GOPATH)/bin\" is on your PATH)"; \
 		else \
-			echo "go is not available in PATH; please install Go (>=1.19) and controller-gen@v0.12.0"; exit 2; \
+			echo "go is not available in PATH; please install Go (>=1.19) and controller-gen@v0.15.0"; exit 2; \
 		fi; \
 	fi; \
 	# Run controller-gen to generate deepcopies and CRDs (expects controller-gen on PATH)
