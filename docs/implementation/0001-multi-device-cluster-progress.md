@@ -20,7 +20,6 @@ If you want, I can proceed next with any checked-off TODO (for example running `
 - [ ] Docs and runbooks: update deployment guide and runbooks for multi-device failover and resync behavior.
 - [ ] Acceptance: either device can go offline; the other continues operating; the returning device resyncs within a minute from cluster state.
 This checklist accompanies ADR 0001 and the implementation plan (`docs/implementation/0001-multi-device-cluster-implementation.md`). Each item is a single-sentence task. Completed items are checked off.
-
 - [x] Add API types for `FederatedCluster` (previously MultiDeviceCluster), `FederatedService`, and `SiteStatus` under `api/v1alpha1`.
 - [x] Add a minimal placement engine (`pkg/placement`) with a happy-path unit test.
 - [x] Add a skeleton reconciler for `FederatedService` under `internal/controller/federation`.

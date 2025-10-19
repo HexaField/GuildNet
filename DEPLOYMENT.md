@@ -60,7 +60,7 @@ kubectl -n guildnet-system logs -l app=guildnet-operator --tail=200
 
 Troubleshooting: If the operator logs show RBAC or permission errors, review the manifests created by `scripts/deploy-operator.sh` and ensure the ServiceAccount and ClusterRoleBindings are applied and approved by your cluster admin.
 
-Option B — no-registry (local image import) runbook
+Local image import runbook
 --------------------------------------------------
 
 If you cannot push to a container registry from your environment, use the local-import flow:

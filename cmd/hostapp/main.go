@@ -16,11 +16,11 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
-	"runtime"
 
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -302,38 +302,38 @@ func main() {
 	case "operator":
 		// Run only the operator manager (no tsnet or HTTP server)
 		// Terminate on INT/TERM/HUP/QUIT to match typical terminal behavior (close window, Ctrl+C)
-			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
-			defer stop()
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
+		defer stop()
 
-			// Load kubeconfig YAML using helper (path or raw content)
-			kubeYAML := loadKubeYAML()
-			if strings.TrimSpace(kubeYAML) == "" {
-				log.Fatalf("k8s config: no kubeconfig available; set GN_CONTROL_PLANE_KUBECONFIG or KUBECONFIG to a valid kubeconfig path or content")
-			}
-			// Debug: print kubeYAML size before attempting client creation
-			log.Printf("operator: kubeYAML length=%d", len(kubeYAML))
-			// Build a client from the kubeconfig YAML. Use default options (no proxy/dial override).
-			kcli, err := k8s.NewFromKubeconfig(ctx, kubeYAML, struct {
-				APIProxyURL string
-				ForceHTTP   bool
-				Dial        func(ctx context.Context, network, addr string) (net.Conn, error)
-			}{})
-			if err != nil || kcli == nil || kcli.Rest == nil {
-				// Print helpful debug information (stack + relevant env) to diagnose
-				// why the k8s client creation failed or why a call to k8s.New()
-				// appears to be invoked from somewhere during startup.
-				buf := make([]byte, 1<<16)
-				n := runtime.Stack(buf, true)
-				log.Printf("k8s config error type=%T err=%v", err, err)
-				log.Printf("env: GN_CONTROL_PLANE_KUBECONFIG=%s KUBECONFIG=%s KUBERNETES_SERVICE_HOST=%s", os.Getenv("GN_CONTROL_PLANE_KUBECONFIG"), os.Getenv("KUBECONFIG"), os.Getenv("KUBERNETES_SERVICE_HOST"))
-				log.Printf("stack (truncated %d bytes):\n%s", n, string(buf[:n]))
-				log.Fatalf("k8s config: %T: %v", err, err)
-			}
-			if err := startOperator(ctx, kcli.Rest, nil); err != nil {
-				log.Fatalf("operator start: %v", err)
-			}
-			<-ctx.Done()
-			return
+		// Load kubeconfig YAML using helper (path or raw content)
+		kubeYAML := loadKubeYAML()
+		if strings.TrimSpace(kubeYAML) == "" {
+			log.Fatalf("k8s config: no kubeconfig available; set GN_CONTROL_PLANE_KUBECONFIG or KUBECONFIG to a valid kubeconfig path or content")
+		}
+		// Debug: print kubeYAML size before attempting client creation
+		log.Printf("operator: kubeYAML length=%d", len(kubeYAML))
+		// Build a client from the kubeconfig YAML. Use default options (no proxy/dial override).
+		kcli, err := k8s.NewFromKubeconfig(ctx, kubeYAML, struct {
+			APIProxyURL string
+			ForceHTTP   bool
+			Dial        func(ctx context.Context, network, addr string) (net.Conn, error)
+		}{})
+		if err != nil || kcli == nil || kcli.Rest == nil {
+			// Print helpful debug information (stack + relevant env) to diagnose
+			// why the k8s client creation failed or why a call to k8s.New()
+			// appears to be invoked from somewhere during startup.
+			buf := make([]byte, 1<<16)
+			n := runtime.Stack(buf, true)
+			log.Printf("k8s config error type=%T err=%v", err, err)
+			log.Printf("env: GN_CONTROL_PLANE_KUBECONFIG=%s KUBECONFIG=%s KUBERNETES_SERVICE_HOST=%s", os.Getenv("GN_CONTROL_PLANE_KUBECONFIG"), os.Getenv("KUBECONFIG"), os.Getenv("KUBERNETES_SERVICE_HOST"))
+			log.Printf("stack (truncated %d bytes):\n%s", n, string(buf[:n]))
+			log.Fatalf("k8s config: %T: %v", err, err)
+		}
+		if err := startOperator(ctx, kcli.Rest, nil); err != nil {
+			log.Fatalf("operator start: %v", err)
+		}
+		<-ctx.Done()
+		return
 	case "serve":
 		// continue
 	default:

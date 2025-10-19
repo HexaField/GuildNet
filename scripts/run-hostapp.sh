@@ -52,7 +52,8 @@ else
 fi
 
 # De-dup PIDs (avoid mapfile/readarray for macOS bash compatibility)
-if [ "${#existing_pids[@]:-0}" -gt 0 ]; then
+len=${#existing_pids[@]}
+if [ "${len:-0}" -gt 0 ]; then
   tmp=$(printf "%s\n" "${existing_pids[@]:-}" | awk 'NF' | sort -u || true)
   existing_pids=()
   if [ -n "$tmp" ]; then
