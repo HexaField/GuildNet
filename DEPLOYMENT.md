@@ -205,7 +205,7 @@ make verify-e2e
 
 Note: `scripts/verify-e2e.sh` now uses a headscale-compatible check (`headscale nodes list`) and follows redirects when probing HostApp proxy endpoints; this makes the verifier robust across Headscale CLI versions and proxied responses.
 
-If you need to reproduce older controller-gen crashes seen during generator debugging, a helper script `scripts/repro-controller-gen.sh` was added; it tries controller-gen releases and writes logs to `/tmp/controller-gen-repro`.
+If you need to reproduce older controller-gen crashes seen during generator debugging, run `make gen` with different `controller-gen` versions in a hermetic environment.
 
 Manual create-and-check (if you prefer explicit API checks):
 

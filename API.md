@@ -247,7 +247,7 @@ curl -X POST "https://<host>:8090/api/deploy/clusters/<id>?action=attach-kubecon
 
 ## Notes
 
-The repository includes `scripts/verify-e2e.sh` (used by `make verify-e2e`) which has been updated to be compatible with multiple Headscale CLI versions and to follow redirects when probing HostApp proxy endpoints. A developer helper `scripts/repro-controller-gen.sh` can be used to try older `controller-gen` versions and capture logs under `/tmp/controller-gen-repro`.
+The repository includes `scripts/verify-e2e.sh` (used by `make verify-e2e`) which has been updated to be compatible with multiple Headscale CLI versions and to follow redirects when probing HostApp proxy endpoints.
 
 
 ## Multi-device federation (ADR)
