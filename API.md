@@ -13,6 +13,8 @@ Note: the runtime behavior is implemented in `internal/api/router.go`, `internal
 - Host App configuration options (global and runtime)
 - Examples and notes
 
+Note: a targeted, safe set of patch updates to a few direct modules were applied on 2025-10-19 and validated. Major module bumps (that require Go 1.24+) were intentionally avoided.
+
 
 ## Host App server API endpoints
 

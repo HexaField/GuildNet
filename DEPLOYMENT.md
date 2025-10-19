@@ -14,6 +14,10 @@ The `make gen` target will attempt to install `controller-gen` v0.15.0 into your
 
 After running `make gen`, inspect `config/crd/bases/` and any `zz_generated.deepcopy.go` files for changes and commit them alongside your code changes.
 
+Note on recent dependency updates (2025-10-19):
+- A small set of safe, patch-level updates were applied to direct modules to pick up bug fixes: `gopkg.in/rethinkdb/rethinkdb-go.v6` -> v6.2.2, `modernc.org/sqlite` -> v1.21.2, `nhooyr.io/websocket` -> v1.8.17. These updates were validated with `go test ./...`.
+- Avoid upgrading `golang.org/x/exp` (and similar modules) which require Go >= 1.24 while this repository targets Go 1.23. If you want to move to Go 1.24, run the broader module update in CI or a separate branch.
+
 This document describes a production-first deployment flow for GuildNet: how to install CRDs and the in-cluster operator, bring up durable RethinkDB, deploy Host App instances, and perform basic verification and hardening.
 
 Goals

@@ -2,6 +2,8 @@ GuildNet Architecture (complete, code-driven)
 
 This file now reflects the current codebase behavior and the features implemented across the Host App, embedded operator, proxying, and database management. The Host App is intended to run on every device in a fleet; each instance acts as a local portal and can join and manage multiple Kubernetes clusters by persisting per-cluster kubeconfigs and running per-cluster clients.
 
+Dependency note: on 2025-10-19 a small set of patch-level dependency updates were applied and validated. Larger upgrades that require Go 1.24+ were deferred to preserve the current Go 1.23 toolchain.
+
 ### Component Overview (distributed)
 
 ```mermaid
