@@ -20,8 +20,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"runtime"
 
-	"k8s.io/apimachinery/pkg/runtime"
+	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	crlog "sigs.k8s.io/controller-runtime/pkg/log"
@@ -97,7 +98,7 @@ func (r kubeconfigResolver) KubeconfigYAML(clusterID string) (string, error) {
 
 // startOperator boots a controller-runtime manager that reconciles Workspace CRDs.
 func startOperator(ctx context.Context, restCfg *rest.Config, reg *cluster.Registry) error {
-	scheme := runtime.NewScheme()
+	scheme := k8sruntime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
 	_ = apiv1alpha1.AddToScheme(scheme)
 	// configure controller-runtime logger (dev mode)
@@ -246,6 +247,51 @@ func main() {
 		}
 	}
 
+	// helper: load kubeconfig YAML either from an env var that contains
+	// the raw kubeconfig or from a path. Prefer GN_CONTROL_PLANE_KUBECONFIG,
+	// then KUBECONFIG, then ~/.guildnet/kubeconfig. Returns empty string
+	// when none found.
+	loadKubeYAML := func() string {
+		// try explicit env var first
+		tryEnv := func(v string) string {
+			v = strings.TrimSpace(v)
+			if v == "" {
+				return ""
+			}
+			// if it looks like a path and the file exists, read it
+			if strings.HasPrefix(v, "/") || strings.HasPrefix(v, "./") || strings.HasPrefix(v, "~") {
+				// expand ~
+				if strings.HasPrefix(v, "~") {
+					if h, err := os.UserHomeDir(); err == nil {
+						v = filepath.Join(h, strings.TrimPrefix(v, "~"))
+					}
+				}
+				if b, err := os.ReadFile(v); err == nil {
+					return string(b)
+				}
+			}
+			// otherwise treat env var as raw kubeconfig content
+			// sanity check: if it contains 'apiVersion' or 'clusters' assume it's kube YAML
+			if strings.Contains(v, "apiVersion:") || strings.Contains(v, "clusters:") || strings.Contains(v, "contexts:") {
+				return v
+			}
+			return ""
+		}
+		if s := tryEnv(os.Getenv("GN_CONTROL_PLANE_KUBECONFIG")); s != "" {
+			return s
+		}
+		if s := tryEnv(os.Getenv("KUBECONFIG")); s != "" {
+			return s
+		}
+		if h, err := os.UserHomeDir(); err == nil {
+			p := filepath.Join(h, ".guildnet", "kubeconfig")
+			if b, err := os.ReadFile(p); err == nil {
+				return string(b)
+			}
+		}
+		return ""
+	}
+
 	switch cmd {
 	case "init":
 		if err := config.RunInitWizard(os.Stdin, os.Stdout); err != nil {
@@ -256,17 +302,38 @@ func main() {
 	case "operator":
 		// Run only the operator manager (no tsnet or HTTP server)
 		// Terminate on INT/TERM/HUP/QUIT to match typical terminal behavior (close window, Ctrl+C)
-		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
-		defer stop()
-		kcli, err := k8s.New(ctx)
-		if err != nil || kcli == nil || kcli.Rest == nil {
-			log.Fatalf("k8s config: %v", err)
-		}
-		if err := startOperator(ctx, kcli.Rest, nil); err != nil {
-			log.Fatalf("operator start: %v", err)
-		}
-		<-ctx.Done()
-		return
+			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
+			defer stop()
+
+			// Load kubeconfig YAML using helper (path or raw content)
+			kubeYAML := loadKubeYAML()
+			if strings.TrimSpace(kubeYAML) == "" {
+				log.Fatalf("k8s config: no kubeconfig available; set GN_CONTROL_PLANE_KUBECONFIG or KUBECONFIG to a valid kubeconfig path or content")
+			}
+			// Debug: print kubeYAML size before attempting client creation
+			log.Printf("operator: kubeYAML length=%d", len(kubeYAML))
+			// Build a client from the kubeconfig YAML. Use default options (no proxy/dial override).
+			kcli, err := k8s.NewFromKubeconfig(ctx, kubeYAML, struct {
+				APIProxyURL string
+				ForceHTTP   bool
+				Dial        func(ctx context.Context, network, addr string) (net.Conn, error)
+			}{})
+			if err != nil || kcli == nil || kcli.Rest == nil {
+				// Print helpful debug information (stack + relevant env) to diagnose
+				// why the k8s client creation failed or why a call to k8s.New()
+				// appears to be invoked from somewhere during startup.
+				buf := make([]byte, 1<<16)
+				n := runtime.Stack(buf, true)
+				log.Printf("k8s config error type=%T err=%v", err, err)
+				log.Printf("env: GN_CONTROL_PLANE_KUBECONFIG=%s KUBECONFIG=%s KUBERNETES_SERVICE_HOST=%s", os.Getenv("GN_CONTROL_PLANE_KUBECONFIG"), os.Getenv("KUBECONFIG"), os.Getenv("KUBERNETES_SERVICE_HOST"))
+				log.Printf("stack (truncated %d bytes):\n%s", n, string(buf[:n]))
+				log.Fatalf("k8s config: %T: %v", err, err)
+			}
+			if err := startOperator(ctx, kcli.Rest, nil); err != nil {
+				log.Fatalf("operator start: %v", err)
+			}
+			<-ctx.Done()
+			return
 	case "serve":
 		// continue
 	default:
@@ -550,20 +617,19 @@ func main() {
 	})
 
 	// Kubernetes client: we no longer support implicit single-cluster mode.
-	// If a control-plane kubeconfig is provided via GN_CONTROL_PLANE_KUBECONFIG, use it;
-	// otherwise, rely entirely on the per-cluster Registry for actuation and leave k8s nil.
+	// If a control-plane kubeconfig is provided (path or raw content), use it;
+	// otherwise, rely on the per-cluster Registry for actuation and leave k8s nil.
 	var kcli *k8s.Client
-	if kc := strings.TrimSpace(os.Getenv("GN_CONTROL_PLANE_KUBECONFIG")); kc != "" {
-		if kcBytes := []byte(kc); len(kcBytes) > 0 {
-			if kcClient, err := k8s.NewFromKubeconfig(ctx, kc, struct {
-				APIProxyURL string
-				ForceHTTP   bool
-				Dial        func(ctx context.Context, network, addr string) (net.Conn, error)
-			}{}); err == nil {
-				kcli = kcClient
-			} else {
-				log.Printf("control plane k8s client init failed: %v (continuing without control-plane client)", err)
-			}
+	kubeYAML := loadKubeYAML()
+	if strings.TrimSpace(kubeYAML) != "" {
+		if kcClient, err := k8s.NewFromKubeconfig(ctx, kubeYAML, struct {
+			APIProxyURL string
+			ForceHTTP   bool
+			Dial        func(ctx context.Context, network, addr string) (net.Conn, error)
+		}{}); err == nil {
+			kcli = kcClient
+		} else {
+			log.Printf("control plane k8s client init failed: %v (continuing without control-plane client)", err)
 		}
 	}
 	var dyn dynamic.Interface
