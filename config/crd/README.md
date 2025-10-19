@@ -6,7 +6,7 @@ Regeneration (run locally):
 
    ```sh
    # install into your GOPATH/bin
-   go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.12.0
+   go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.15.0
 
    # or use the repository Makefile which will try to install controller-gen if missing
    make gen
