@@ -35,26 +35,12 @@ gen:
 			go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.12.0; \
 			echo "installed controller-gen to $(go env GOPATH)/bin (ensure \"$(go env GOPATH)/bin\" is on your PATH)"; \
 		else \
-			echo "go is not available in PATH; please install Go (>=1.19) or use scripts/gen-in-container.sh"; exit 2; \
+			echo "go is not available in PATH; please install Go (>=1.19) and controller-gen@v0.12.0"; exit 2; \
 		fi; \
 	fi; \
-	# Run controller-gen to generate deepcopies and CRDs. Prefer $(go env GOPATH)/bin/controller-gen if present.
-	@CG_BIN="$(shell go env GOPATH)/bin/controller-gen"; \
-	if [ -x "$$CG_BIN" ]; then \
-		CG="$$CG_BIN"; \
-	else \
-		CG="$(shell command -v controller-gen 2>/dev/null || true)"; \
-	fi; \
-	if [ -z "$$CG" ]; then \
-		echo "controller-gen not found locally; attempting containerized fallback (scripts/gen-fallback.sh)..."; \
-		./scripts/gen-fallback.sh || { echo "containerized generation failed; please install controller-gen locally or inspect scripts/gen-fallback.sh"; exit 2; }; \
-	else \
-		echo "using controller-gen: $$CG"; \
-		if ! $$CG object:headerFile=./hack/boilerplate.go.txt paths=./api/... || ! $$CG crd:crdVersions=v1 paths=./api/... output:crd:dir=./config/crd/bases; then \
-			echo "local controller-gen failed; attempting containerized fallback..."; \
-			./scripts/gen-fallback.sh || { echo "generation failed both locally and inside container"; exit 2; }; \
-		fi; \
-	fi
+	# Run controller-gen to generate deepcopies and CRDs (expects controller-gen on PATH)
+	controller-gen object:headerFile=./hack/boilerplate.go.txt paths=./api/...
+	controller-gen crd:crdVersions=v1 paths=./api/... output:crd:dir=./config/crd/bases
 
 .PHONY: gen-check
 gen-check: gen
