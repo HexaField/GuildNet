@@ -200,10 +200,15 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// If the original image looked like nginx, prefer the unprivileged
 	// nginx image so the pod can run without granting additional
 	// capabilities. If the user already provided a custom image that
-	// contains "unprivileged" we leave it alone.
+	// contains "unprivileged" we leave it alone. Make the preferred
+	// unprivileged image configurable via WORKSPACE_NGINX_UNPRIVILEGED_IMAGE.
 	if strings.Contains(imgLower, "nginx") {
+		preferred := os.Getenv("WORKSPACE_NGINX_UNPRIVILEGED_IMAGE")
+		if strings.TrimSpace(preferred) == "" {
+			preferred = "nginxinc/nginx-unprivileged:1.25"
+		}
 		if !strings.Contains(strings.ToLower(ws.Spec.Image), "unprivileged") {
-			workspaceContainer.Image = "nginxinc/nginx-unprivileged:1.25"
+			workspaceContainer.Image = preferred
 		}
 		// Ensure the container-level securityContext does not force running
 		// as root; the pod-level PodSecurityContext above will enforce uid/gid.

@@ -60,6 +60,49 @@ kubectl -n guildnet-system logs -l app=guildnet-operator --tail=200
 
 Troubleshooting: If the operator logs show RBAC or permission errors, review the manifests created by `scripts/deploy-operator.sh` and ensure the ServiceAccount and ClusterRoleBindings are applied and approved by your cluster admin.
 
+Option B — no-registry (local image import) runbook
+--------------------------------------------------
+
+If you cannot push to a container registry from your environment, use the local-import flow:
+
+1) Build a linux/amd64 operator image on a machine that can run Docker (or BuildKit):
+
+```bash
+docker build --platform=linux/amd64 -f scripts/Dockerfile.operator -t registry.local/guildnet/hostapp:local-amd64 .
+```
+
+2) Export the image and copy it to your microk8s host (or run locally there):
+
+```bash
+docker save -o /tmp/op-amd64.tar registry.local/guildnet/hostapp:local-amd64
+scp /tmp/op-amd64.tar user@microk8s-host:/tmp/
+```
+
+3) Import into microk8s containerd and confirm digest:
+
+```bash
+sudo microk8s ctr images import /tmp/op-amd64.tar
+sudo microk8s ctr images ls | grep guildnet/hostapp
+```
+
+4) Patch the operator Deployment to use the imported image tag (or digest) and set imagePullPolicy to IfNotPresent or Never to avoid kubelet attempting to pull from external registries:
+
+```bash
+sudo microk8s kubectl -n guildnet-system set image deployment/workspace-operator operator=registry.local/guildnet/hostapp:local-amd64
+sudo microk8s kubectl -n guildnet-system patch deployment workspace-operator -p '{"spec":{"template":{"spec":{"containers":[{"name":"operator","imagePullPolicy":"IfNotPresent"}]}}}}'
+sudo microk8s kubectl -n guildnet-system rollout restart deployment workspace-operator
+```
+
+5) If the operator needs to manage other clusters, mount the control-plane kubeconfig into the operator Deployment and set the environment variable `GN_CONTROL_PLANE_KUBECONFIG` to the mounted path (e.g., `/etc/guildnet/kubeconfig`). The operator will load kubeconfig from this env var first.
+
+Notes:
+- Using digested image references may still make kubelet attempt a registry pull; prefer a local tag + imagePullPolicy=IfNotPresent or Never when importing images locally.
+- If you need to re-import, repeat steps 1-3, then set deployment image to the new digest or tag and rollout restart.
+
+Operator image / nginx notes
+----------------------------
+The operator prefers non-root container images for web workloads. When a Workspace image appears to be an `nginx` image, the operator will prefer an unprivileged variant (configurable via env var `WORKSPACE_NGINX_UNPRIVILEGED_IMAGE`) to avoid requiring root privileges in the container. The default value is `nginxinc/nginx-unprivileged:1.25`.
+
 2) Durable DB (RethinkDB)
 
 The `make deploy-k8s-addons` step includes provisioning steps for RethinkDB (see `k8s/rethinkdb.yaml`). If you prefer to apply the DB manifest separately, you can still do so, but the Makefile target is the simplest path.

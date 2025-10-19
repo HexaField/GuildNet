@@ -219,6 +219,8 @@ The config file path: `~/.guildnet/config.json` (created by tools like the init 
 - GN_EMBED_OPERATOR — when set to `1` (or truthy), Host App will start an embedded operator in-process. Do NOT set in production; in-cluster operator is recommended.
 - GN_USE_GUILDNET_KUBECONFIG — opt-in for dev: when set, scripts like `scripts/run-hostapp.sh` will prefer `~/.guildnet/kubeconfig` as the source for `KUBECONFIG`.
 - KUBE_PROXY_ADDR — explicit host:port or URL for a local kubectl proxy (e.g. http://127.0.0.1:8001). When set, the Host App will allow enabling a per-cluster APIProxyURL fallback and will detect local proxy availability.
+ - GN_CONTROL_PLANE_KUBECONFIG — when set in the operator Deployment or Host App environment, the operator will load the control-plane kubeconfig from the specified file path inside the process/container (for example `/etc/guildnet/kubeconfig`). This is used when the operator must act on a remote control plane; it is preferred over the standard `KUBECONFIG` location when present.
+ - WORKSPACE_NGINX_UNPRIVILEGED_IMAGE — optional environment variable to override the operator's preferred unprivileged nginx image used when a Workspace image appears to be an `nginx` variant. Default: `nginxinc/nginx-unprivileged:1.25`.
 - LISTEN_LOCAL (or environment used to override `pkg/config.Config.ListenLocal`) — override the HTTP listener address
 - Local cluster image/load variables — used by Makefile to build and load images for local clusters (prefer microk8s imports). See Makefile targets rather than environment-driven behavior for production.
 
