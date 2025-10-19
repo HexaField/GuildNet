@@ -118,6 +118,10 @@ func startOperator(ctx context.Context, restCfg *rest.Config, reg *cluster.Regis
 	if err := (&federation.FederatedServiceReconciler{Client: mgr.GetClient(), Registry: reg}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setup federated service reconciler: %w", err)
 	}
+	// register proxy controller
+	if err := (&proxy.ProxyReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("setup proxy reconciler: %w", err)
+	}
 	go func() {
 		if err := mgr.Start(ctx); err != nil {
 			log.Printf("operator manager stopped: %v", err)
