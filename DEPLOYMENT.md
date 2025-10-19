@@ -1,5 +1,19 @@
 GuildNet — Production Deployment Guide
 
+IMPORTANT NOTE: Local code generation (controller-gen)
+
+This repository previously relied on an automated CI job to run `controller-gen` and commit generated artifacts. The CI workflow has been removed from this branch. Developers should run code generation locally when making API or type changes.
+
+To generate deepcopy files and CRDs locally, ensure you have Go installed and then run:
+
+```bash
+make gen
+```
+
+The `make gen` target will attempt to install `controller-gen` v0.12.0 into your `GOPATH` if it is not already available. If you prefer to run the generator inside a containerized environment, the helper script `scripts/gen-in-container.sh` remains available as an alternative.
+
+After running `make gen`, inspect `config/crd/bases/` and any `zz_generated.deepcopy.go` files for changes and commit them alongside your code changes.
+
 This document describes a production-first deployment flow for GuildNet: how to install CRDs and the in-cluster operator, bring up durable RethinkDB, deploy Host App instances, and perform basic verification and hardening.
 
 Goals
