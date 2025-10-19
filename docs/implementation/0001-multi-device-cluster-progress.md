@@ -47,4 +47,27 @@ This checklist accompanies ADR 0001 and the implementation plan (`docs/implement
 - [ ] Document operational runbooks for failover, rebalancing thresholds and migration cost settings.
 - [ ] Harden controllers: health checks, metrics, tracing, and error handling policies.
 
+## Recent progress (live testing)
+
+- Applied the CRDs under `config/crd/bases/` to the test microk8s cluster and verified Established=True for guildnet.io CRDs.
+- Updated operator to require/consume a control-plane kubeconfig via `GN_CONTROL_PLANE_KUBECONFIG` and mounted the kubeconfig in the Deployment during remote testing.
+- Implemented code changes in `cmd/hostapp/main.go` & `internal/k8s` to prefer `NewFromKubeconfig(...)` and added debug output to ease remote troubleshooting.
+- Implemented controller change to prefer an unprivileged nginx image when a Workspace image appears to be `nginx` (configurable via `WORKSPACE_NGINX_UNPRIVILEGED_IMAGE`). This fixed a CrashLoopBackOff observed in a sample Workspace pod.
+- Verified operator leader election and manager start; confirmed controllers loaded and reconciled sample Workspace objects successfully.
+- Added an Option B runbook to `DEPLOYMENT.md` for the local-import (no registry) workflow and documented the new env vars in `API.md`.
+
+## Remaining for MVP — prioritized
+
+These are the remaining items I recommend we complete before declaring the multi-device MVP (ranked):
+
+1. Run `controller-gen` to generate CRD YAML and deepcopy files, commit generated CRDs under `config/crd/bases/` (or ensure CI will generate them reliably). (TODO: `make gen` / `controller-gen`)
+2. Add generated deepcopy files (`zz_generated.deepcopy.go`) and ensure `go:generate` markers are wired; make CI authoritative for generation if local runs are flaky.
+3. Add integration tests that simulate two joined clusters (microk8s or kind) to assert per-site actuation and failover/resync behavior.
+4. Add RBAC and kubeconfig security docs and manifest changes to ensure safe mounting and rotation of control-plane kubeconfigs.
+5. Add a convenience script `scripts/import-operator-image.sh` (and optionally a Makefile target) to automate the local-import Option B flow used in field testing.
+6. Add CI targets and a workflow to run `make gen`, unit tests and integration tests (so generated artifacts and tests are validated by CI).
+7. Finalize operational runbooks for failover and resync acceptance criteria (including the 60s resync goal) and add monitoring/alerts for PodCrashLoopBackOff and operator cache sync failures.
+
+If you want I can start with step 1 (`controller-gen` run and committing generated CRDs), or step 5 (create the import script) — tell me which to begin next and I'll mark it in the todo list and execute it.
+
 If you want, I can proceed next with any checked-off TODO (for example running `controller-gen` and adding generated CRDs) — tell me which item to pick and I'll start it and mark it in the todo list.
