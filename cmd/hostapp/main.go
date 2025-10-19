@@ -27,6 +27,7 @@ import (
 	crlog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
+	proxycontroller "github.com/your/module/internal/controller/proxy"
 	"github.com/your/module/internal/httpx"
 	"github.com/your/module/internal/k8s"
 	"github.com/your/module/internal/metrics"
@@ -119,7 +120,7 @@ func startOperator(ctx context.Context, restCfg *rest.Config, reg *cluster.Regis
 		return fmt.Errorf("setup federated service reconciler: %w", err)
 	}
 	// register proxy controller
-	if err := (&proxy.ProxyReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
+	if err := (&proxycontroller.ProxyReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setup proxy reconciler: %w", err)
 	}
 	go func() {
