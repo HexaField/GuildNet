@@ -24,11 +24,11 @@ PROVIDER ?= lan
 	# Local disposable cluster helper removed; use microk8s or set KUBECONFIG
 	deploy-k8s-addons deploy-operator deploy-hostapp verify-e2e \
 	diag-router diag-k8s diag-db headscale-approve-routes
-two-device-host: ## One-command bootstrap of Device A (Headscale+cluster+operator+Host App)
-	bash ./scripts/two-device-setup.sh host
+multi-device-host: ## One-command bootstrap of Device A (Headscale+cluster+operator+Host App)
+	bash ./scripts/multi-device-setup.sh host
 
-two-device-joiner: ## One-command bootstrap of Device B and attach to Host App (set HOSTAPP_URL)
-	bash ./scripts/two-device-setup.sh joiner
+multi-device-joiner: ## One-command bootstrap of Device B and attach to Host App (set HOSTAPP_URL)
+	bash ./scripts/multi-device-setup.sh joiner
 
 
 .PHONY: gen
@@ -285,6 +285,14 @@ diag-k8s: ## Show kube API status and nodes
 
 diag-db: ## Print DB service details
 	bash ./scripts/rethinkdb-setup.sh || true
+
+.PHONY: diag-multi-device
+diag-multi-device: ## Summarize multi-device status (operator, CRDs, router, health)
+	bash ./scripts/diag-multi-device.sh
+
+.PHONY: verify-multi-device-failover
+verify-multi-device-failover: ## Simulate Host App restart and check resync
+	bash ./scripts/verify-multi-device-failover.sh
 
 # ---------- Network & Proxy ----------
 router-ensure-novalidate: ## Deploy Tailscale router without server-side schema validation (bootstrap when API unreachable)

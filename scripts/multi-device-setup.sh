@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# two-device-setup.sh: Automate two-device setup (host/joiner)
+# multi-device-setup.sh: Automate multi-device setup (host/joiner)
 # Usage:
 #   Host (Device A):
-#     LISTEN_LOCAL="0.0.0.0:8090" ./scripts/two-device-setup.sh host
+#     LISTEN_LOCAL="0.0.0.0:8090" ./scripts/multi-device-setup.sh host
 #   Joiner (Device B):
-#     HOSTAPP_URL="https://<deviceA-tailnet-ip>:8090" ./scripts/two-device-setup.sh joiner
+#     HOSTAPP_URL="https://<deviceA-tailnet-ip>:8090" ./scripts/multi-device-setup.sh joiner
 #
 # Env knobs:
 #   CLUSTER=default (cluster id label for helpers)
@@ -66,9 +66,13 @@ if [[ "$MODE" == "host" ]]; then
   # Emit join config + instructions
   echo "[host] generating join file (guildnet.config) for convenience"
   make generate-join-config
-  echo "[host] To attach this device's cluster elsewhere, POST guildnet.config to /bootstrap."
-  echo "[host] Example (from another device):"
-  echo "  curl -k -X POST \"https://<HOSTAPP_URL>/bootstrap\" -F \"file=@guildnet.config\""
+  # Suggest HOSTAPP_URL candidates
+  LAN_IP=$(hostname -I | awk '{print $1}') || true
+  TS_IP=$(command -v tailscale >/dev/null 2>&1 && tailscale ip -4 2>/dev/null | head -n1 || true)
+  echo "[host] To attach this cluster from another device, POST guildnet.config to /bootstrap."
+  if [[ -n "$TS_IP" ]]; then echo "[host] Tailscale URL candidate: https://$TS_IP:8090"; fi
+  if [[ -n "$LAN_IP" ]]; then echo "[host] LAN URL candidate: https://$LAN_IP:8090"; fi
+  echo "[host] Example (from another device): curl -k -X POST 'https://<HOSTAPP_URL>/bootstrap' -F 'file=@guildnet.config'"
   exit 0
 fi
 
@@ -98,6 +102,14 @@ CLUSTER="$CLUSTER" make router-ensure || true
 
 echo "[joiner] generating join file: guildnet.config"
 make generate-join-config
+
+if [[ -z "${HOSTAPP_URL:-}" ]]; then
+  # Try to auto-detect tailscale ip
+  if command -v tailscale >/dev/null 2>&1; then
+    HIP=$(tailscale ip -4 2>/dev/null | head -n1 || true)
+    if [[ -n "$HIP" ]]; then HOSTAPP_URL="https://$HIP:8090"; fi
+  fi
+fi
 
 if [[ -n "${HOSTAPP_URL:-}" ]]; then
   echo "[joiner] attaching cluster to Host App at: $HOSTAPP_URL"

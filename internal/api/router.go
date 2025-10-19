@@ -40,6 +40,36 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+// dns1123Name converts a string to a DNS-1123 compliant name for resource names.
+func dns1123Name(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	var b strings.Builder
+	prevDash := false
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+			prevDash = false
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+			prevDash = false
+		case r == '-' || r == '_' || r == ' ':
+			if !prevDash && b.Len() > 0 {
+				b.WriteByte('-')
+				prevDash = true
+			}
+		}
+	}
+	res := strings.Trim(b.String(), "-")
+	for strings.Contains(res, "--") {
+		res = strings.ReplaceAll(res, "--", "-")
+	}
+	if res == "" {
+		res = "item"
+	}
+	return res
+}
+
 // publishedListener holds metadata for an on-demand published listener.
 type publishedListener struct {
 	clusterID string
@@ -54,6 +84,15 @@ var (
 	publishedMap   = map[string]*publishedListener{}
 	publishedMapMu sync.Mutex
 )
+
+// clusterPublishedConfigMapName returns the namespaced name where published mappings are mirrored.
+// We use a single ConfigMap per cluster under guildnet-system namespace with key "published.json".
+func clusterPublishedConfigMapName(clusterID string) (namespace, name string) {
+	ns := "guildnet-system"
+	// keep name deterministic per cluster id
+	name = fmt.Sprintf("published-%s", dns1123Name(clusterID))
+	return ns, name
+}
 
 // Deps are runtime dependencies for the orchestration API.
 type Deps struct {

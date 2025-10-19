@@ -165,3 +165,22 @@ I can scaffold the CRD types and controller skeleton now, run controller-gen to 
 References:
 - ADR 0001: `docs/adr/0001-multi-device-cluster.md`
 - Repository locations referenced: `cmd/hostapp`, `api/v1alpha1`, `internal/`, `pkg/placement`, `k8s/`, `images/`.
+
+---
+
+## Multi-device resilience checklist (PoC)
+
+- [ ] Provision multi-device clusters: microk8s on both devices; kubeconfig at `~/.guildnet/kubeconfig`; deploy CRDs, addons, operator; tailscale router in-cluster.
+- [ ] Bootstrap both Host Apps: run on both devices; attach the same cluster via `/bootstrap`; both list the same resources.
+- [ ] Host App startup resync: on start, fetch `guildnet-cluster-settings`, list CRDs (Workspace/FederatedService), rebuild views; avoid device-local truth.
+- [ ] Shared settings in-cluster: move any shared flags from localdb to cluster ConfigMap; Host App reads/writes through.
+- [ ] In-cluster registry for publishing: store published services/endpoints as CRD/ConfigMap; devices consume read-only; remove device-local registry.
+- [ ] Jobs model via K8s API: express operations as CR create/patch; optionally store receipts/status in-cluster.
+- [ ] Operator leader election: enable controller-runtime leader election; keep 1 replica for PoC; document scale-out.
+- [ ] Multi-device automation polish: auto-detect HOSTAPP_URL (tailscale IP), preflights/waits in scripts, copyable join command (optional QR code).
+- [ ] Failover/convergence test: create workspace; stop Host App A; continue on B; restart A; verify resync in <60s and consistent UI/API.
+- [ ] RBAC adjustments: ensure operator/hostapp permissions for required ConfigMaps/CRDs; document rotation.
+- [ ] Observability and health: add a diag command that summarizes multi-device status (operator ready, CRDs, DS, cluster health).
+- [ ] Docs and runbooks: update deployment guide and runbooks for multi-device failover and resync behavior.
+- [ ] Acceptance: either device can go offline; the other continues operating; the returning device resyncs within a minute from cluster state.
+- [ ] Auto-start cluster on device reboot: ensure microk8s and operator/Host App restart on device reboot; document steps.

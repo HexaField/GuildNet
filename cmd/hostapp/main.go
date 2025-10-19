@@ -106,6 +106,15 @@ func startOperator(ctx context.Context, restCfg *rest.Config, reg *cluster.Regis
 	// Disable metrics and health probe servers to avoid port conflicts in embedded mode.
 	opts.Metrics.BindAddress = "0"
 	opts.HealthProbeBindAddress = "0"
+	// Enable leader election so multiple operators (devices) safely coordinate.
+	// Use a stable ID and prefer the guildnet-system namespace when available.
+	leNS := os.Getenv("K8S_NAMESPACE")
+	if strings.TrimSpace(leNS) == "" {
+		leNS = "guildnet-system"
+	}
+	opts.LeaderElection = true
+	opts.LeaderElectionID = "guildnet-operator-lock"
+	opts.LeaderElectionNamespace = leNS
 	mgr, err := ctrl.NewManager(restCfg, opts)
 	if err != nil {
 		return fmt.Errorf("manager create: %w", err)
@@ -176,6 +185,29 @@ func dns1123Name(s string) string {
 		res = strings.ReplaceAll(res, "--", "-")
 	}
 	return res
+}
+
+// mirrorPublishedToConfigMap writes the host's published services list into a shared ConfigMap so
+// other devices can observe and resync. Non-fatal; best-effort.
+func mirrorPublishedToConfigMap(ctx context.Context, k *k8s.Client, clusterID string, list []localdb.PublishedService) error {
+	if k == nil || k.K == nil {
+		return nil
+	}
+	ns := "guildnet-system"
+	name := fmt.Sprintf("published-%s", dns1123Name(clusterID))
+	b, _ := json.MarshalIndent(list, "", "  ")
+	cm, err := k.K.CoreV1().ConfigMaps(ns).Get(ctx, name, metav1.GetOptions{})
+	if err == nil && cm != nil {
+		if cm.Data == nil {
+			cm.Data = map[string]string{}
+		}
+		cm.Data["published.json"] = string(b)
+		_, _ = k.K.CoreV1().ConfigMaps(ns).Update(ctx, cm, metav1.UpdateOptions{})
+		return nil
+	}
+	// create
+	_, _ = k.K.CoreV1().ConfigMaps(ns).Create(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: map[string]string{"app": "published-registry"}}, Data: map[string]string{"published.json": string(b)}}, metav1.CreateOptions{})
+	return nil
 }
 
 // deriveAgentHost attempts to pick a stable host base from job spec image or name.
@@ -407,6 +439,29 @@ func main() {
 	go func() {
 		if err := api.RestorePublishedMappings(context.Background(), deps); err != nil {
 			log.Printf("api: restore published mappings failed: %v", err)
+		}
+		// Multi-device startup resync (PoC): mirror published services to in-cluster ConfigMap so other devices converge
+		// and trigger a light CRD list to warm caches. Non-fatal on errors.
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if deps.Registry != nil {
+			for _, s := range deps.Registry.List() {
+				inst, err := deps.Registry.Get(ctx, s.ID)
+				if err != nil || inst == nil || inst.K8s == nil {
+					continue
+				}
+				// Read persisted published services and write into a ConfigMap
+				var list []localdb.PublishedService
+				if err := deps.DB.ListPublished(&list); err == nil {
+					if len(list) > 0 {
+						_ = mirrorPublishedToConfigMap(ctx, inst.K8s, s.ID, list)
+					}
+				}
+				// Warm-up: attempt a CRD discovery call via dynamic client (FederatedService)
+				if inst.Dyn != nil {
+					_, _ = inst.Dyn.Resource(schema.GroupVersionResource{Group: "guildnet.io", Version: "v1alpha1", Resource: "federatedservices"}).Namespace("").List(ctx, metav1.ListOptions{Limit: 1})
+				}
+			}
 		}
 	}()
 

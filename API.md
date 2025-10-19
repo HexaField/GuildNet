@@ -34,7 +34,9 @@ Authorization model: GET requests are open. Mutating requests require either a c
       - image_pull_secret, org_id
   - Response: JSON { clusterId: <id> } on success when kubeconfig provided.
 
-Two-device automation: Use `make two-device-host` on Device A and `make two-device-joiner` on Device B to bootstrap quickly. The joiner will call this `/bootstrap` endpoint with its generated `guildnet.config`.
+Multi-device automation: Use `make multi-device-host` on Device A and `make multi-device-joiner` on Device B to bootstrap quickly. The joiner will call this `/bootstrap` endpoint with its generated `guildnet.config`.
+
+  Multi-device note: After successful bootstrap, the Host App mirrors its published service mappings into a shared ConfigMap in the cluster (`guildnet-system/published-<clusterid>`). Other devices reading the same cluster will observe and resync state from this registry.
 
 - GET/PUT /settings/tailscale
   - Get or update global tailscale/tsnet settings. Payload uses `settings.Tailscale`.
