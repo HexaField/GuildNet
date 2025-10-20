@@ -244,6 +244,25 @@ Devices that run the Host App poster may need to send their heartbeat to a Host 
 ```bash
 export GN_HEARTBEAT_URL="https://127.0.0.1:18090/api/v1/sites/heartbeat"
 export GN_HEARTBEAT_INTERVAL=5s
+
+Streaming presence events
+------------------------
+
+The server exposes a Server-Sent Events (SSE) endpoint to stream realtime presence changefeed events:
+
+- GET /v1/sites/stream
+
+Optional query parameters:
+- cluster: limit the stream to a single cluster id (normalized). If omitted the server will stream from all clusters that expose presence feeds.
+
+Each SSE `data` event is a JSON object:
+
+{
+  "cluster": "<cluster-id>",
+  "event": { /* changefeed event payload */ }
+}
+
+The changefeed event payload follows the `ChangefeedEvent` DTO used elsewhere in the HTTP API and can contain `insert`, `update`, `delete` types with `before`/`after` row data.
 ./bin/hostapp serve
 ```
 

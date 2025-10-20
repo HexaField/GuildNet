@@ -10,7 +10,12 @@ import (
 	"strings"
 	"time"
 
+	"context"
+
+	"github.com/your/module/internal/cluster"
+	"github.com/your/module/internal/db"
 	"github.com/your/module/internal/httpx"
+	"github.com/your/module/internal/k8s"
 	"github.com/your/module/internal/localdb"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -34,12 +39,36 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 		if deps.Registry != nil {
 			for _, s := range deps.Registry.List() {
 				if inst, err := deps.Registry.Get(r.Context(), s.ID); err == nil && inst != nil && inst.DB != nil {
+					// If the cluster exposes a dynamic client, prefer DeviceParticipant CRs
+					// as the canonical records. Build a map of device id -> cr fields.
+					crMap := map[string]map[string]any{}
+					if inst.Dyn != nil {
+						if ulist, err := inst.Dyn.Resource(schema.GroupVersionResource{Group: "guildnet.io", Version: "v1alpha1", Resource: "deviceparticipants"}).Namespace("guildnet-system").List(r.Context(), metav1.ListOptions{}); err == nil {
+							for _, it := range ulist.Items {
+								id := it.GetName()
+								m := map[string]any{}
+								if sp, ok := it.Object["spec"].(map[string]any); ok {
+									for k, v := range sp {
+										m[k] = v
+									}
+								}
+								if st, ok := it.Object["status"].(map[string]any); ok {
+									for k, v := range st {
+										m[k] = v
+									}
+								}
+								crMap[id] = m
+							}
+						}
+					}
 					var devices []map[string]any
 					if err := inst.DB.List("devices", &devices); err == nil && len(devices) > 0 {
 						for _, dm := range devices {
+							id := fmt.Sprint(dm["id"])
+							// Start with DB persisted record
 							rec := map[string]any{
 								"cluster":         s.ID,
-								"id":              fmt.Sprint(dm["id"]),
+								"id":              id,
 								"name":            fmt.Sprint(dm["name"]),
 								"state":           s.HasK8s || s.HasDB,
 								"createdAt":       s.CreatedAt,
@@ -63,6 +92,13 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 									continue
 								}
 								rec[k] = v
+							}
+							// If CR exists for this device id, prefer its fields as canonical
+							if cm, ok := crMap[id]; ok {
+								for k, v := range cm {
+									// overwrite or set canonical fields
+									rec[k] = v
+								}
 							}
 							if _, ok := rec["supportsCluster"]; !ok {
 								rec["supportsCluster"] = inst.K8s != nil
@@ -170,6 +206,117 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 		httpx.JSON(w, http.StatusOK, out)
 	})
 
+	// Streaming endpoint: /v1/sites/stream
+	// Streams presence changefeed events (SSE). Optional query param `cluster` to scope to one cluster.
+	mux.HandleFunc("/v1/sites/stream", func(w http.ResponseWriter, r *http.Request) {
+		if deps.Registry == nil {
+			httpx.JSONError(w, http.StatusServiceUnavailable, "no registry", "no_registry", "stream unavailable")
+			return
+		}
+		clusterQ := strings.TrimSpace(r.URL.Query().Get("cluster"))
+		// prepare subscriptions
+		type sub struct {
+			id     string
+			stream *db.ChangefeedStream
+		}
+		subs := []sub{}
+		ctx := r.Context()
+		// helper to subscribe to a presence table
+		subscribe := func(clusterID string) (*db.ChangefeedStream, error) {
+			inst, err := deps.Registry.Get(ctx, clusterID)
+			if err != nil || inst == nil {
+				return nil, fmt.Errorf("cluster not found")
+			}
+			mgr := inst.RDB
+			if mgr == nil {
+				return nil, fmt.Errorf("rdb not present")
+			}
+			// Normalize clusterID table suffix
+			table := fmt.Sprintf("presence_%s", clusterID)
+			stream, err := mgr.SubscribeTable(ctx, "", "guildnet_presence", table)
+			if err != nil {
+				return nil, err
+			}
+			return stream, nil
+		}
+		if clusterQ != "" {
+			nid := strings.ToLower(strings.TrimSpace(clusterQ))
+			if st, err := subscribe(nid); err == nil {
+				subs = append(subs, sub{id: nid, stream: st})
+			} else {
+				httpx.JSONError(w, http.StatusBadRequest, "subscribe failed", "subscribe_failed", err.Error())
+				return
+			}
+		} else {
+			for _, s := range deps.Registry.List() {
+				nid := s.ID
+				if inst, err := deps.Registry.Get(ctx, nid); err == nil && inst != nil {
+					present := inst.RDB != nil
+					if !present {
+						continue
+					}
+					if st, err := subscribe(nid); err == nil {
+						subs = append(subs, sub{id: nid, stream: st})
+					}
+				}
+			}
+		}
+		if len(subs) == 0 {
+			httpx.JSONError(w, http.StatusNotFound, "no subscriptions", "no_subs", "no presence feeds available")
+			return
+		}
+		// SSE headers
+		h := w.Header()
+		h.Set("Content-Type", "text/event-stream")
+		h.Set("Cache-Control", "no-cache")
+		h.Set("Connection", "keep-alive")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		// fan-in channel
+		ch := make(chan map[string]any, 256)
+		// start readers
+		for _, s := range subs {
+			ss := s
+			go func() {
+				for ev := range ss.stream.C {
+					m := map[string]any{"cluster": ss.id, "event": ev}
+					select {
+					case ch <- m:
+					case <-ctx.Done():
+						return
+					}
+				}
+			}()
+		}
+		// cleanup function
+		defer func() {
+			for _, s := range subs {
+				if s.stream != nil && s.stream.Cancel != nil {
+					s.stream.Cancel()
+				}
+			}
+			close(ch)
+		}()
+		// main loop
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case m, ok := <-ch:
+				if !ok {
+					return
+				}
+				// write SSE data field per event
+				// data: <json>\n\n
+				b, _ := json.Marshal(m)
+				if _, err := fmt.Fprintf(w, "data: %s\n\n", string(b)); err != nil {
+					return
+				}
+				flusher.Flush()
+			}
+		}
+	})
+
 	// Devices post their capabilities and heartbeat here.
 	mux.HandleFunc("/v1/sites/heartbeat", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -216,6 +363,73 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 			return
 		}
 		log.Printf("heartbeat persisted cluster=%s device=%s", clusterID, deviceID)
+
+		// Attempt to upsert a DeviceParticipant CR in-cluster when possible.
+		// This must not block the heartbeat response; perform best-effort and
+		// enqueue for reconciliation on failure.
+		go func(p map[string]any, inst *cluster.Instance, devID string) {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("deviceparticipant upsert panic: %v", r)
+				}
+			}()
+			if inst == nil || inst.Dyn == nil {
+				// Persist to pending queue for later reconciliation
+				if inst != nil && inst.DB != nil {
+					_ = inst.DB.Put("pending_deviceparticipants", devID, p)
+				}
+				return
+			}
+			// build spec and status maps from payload
+			spec := map[string]any{}
+			if v, ok := p["id"]; ok {
+				spec["id"] = v
+			}
+			if v, ok := p["name"]; ok {
+				spec["name"] = v
+			}
+			if v, ok := p["tailnetIPs"]; ok {
+				spec["tailnetIPs"] = v
+			}
+			if v, ok := p["hostappVersion"]; ok {
+				spec["hostappVersion"] = v
+			}
+			// resources grouping
+			res := map[string]any{}
+			if v, ok := p["cpuMilli"]; ok {
+				res["cpuMilli"] = v
+			}
+			if v, ok := p["memoryMB"]; ok {
+				res["memoryMb"] = v
+			}
+			if v, ok := p["storageMB"]; ok {
+				res["storageMb"] = v
+			}
+			if len(res) > 0 {
+				spec["resources"] = res
+			}
+			if v, ok := p["endpoint"]; ok {
+				spec["endpoint"] = v
+			}
+			status := map[string]any{}
+			if v, ok := p["lastSeen"]; ok {
+				if t, ok2 := v.(time.Time); ok2 {
+					status["lastSeen"] = t.UTC().Format(time.RFC3339)
+				} else {
+					status["lastSeen"] = fmt.Sprint(v)
+				}
+			}
+			status["state"] = "online"
+			// Call create/update helper
+			if _, err := k8s.CreateOrUpdateDeviceParticipant(context.Background(), inst.Dyn, "guildnet-system", devID, spec, status); err != nil {
+				log.Printf("deviceparticipant upsert failed cluster=%s device=%s err=%v", p["cluster"], devID, err)
+				// enqueue for reconciliation
+				if inst.DB != nil {
+					_ = inst.DB.Put("pending_deviceparticipants", devID, p)
+				}
+			}
+		}(payload, inst, deviceID)
+
 		httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
 

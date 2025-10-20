@@ -213,8 +213,58 @@ func (r *Registry) Get(ctx context.Context, clusterID string) (*Instance, error)
 	inst.cancel = cancel
 	inst.ctx = cctx
 	// existing placeholder goroutine (will be used by reconnection worker)
+	// start reconciliation worker for pending DeviceParticipant upserts
+	inst.wg.Add(1)
 	go func() {
-		<-cctx.Done()
+		defer inst.wg.Done()
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-cctx.Done():
+				return
+			case <-ticker.C:
+				// attempt to reconcile pending deviceparticipants
+				if inst.DB == nil {
+					continue
+				}
+				var pending []map[string]any
+				if err := inst.DB.List("pending_deviceparticipants", &pending); err != nil || len(pending) == 0 {
+					continue
+				}
+				// If dynamic client not present, skip until available
+				if inst.Dyn == nil {
+					continue
+				}
+				for _, item := range pending {
+					// each item expected to include id
+					idVal, ok := item["id"].(string)
+					if !ok || idVal == "" {
+						continue
+					}
+					spec := map[string]any{}
+					if v, ok := item["name"]; ok {
+						spec["name"] = v
+					}
+					if v, ok := item["tailnetIPs"]; ok {
+						spec["tailnetIPs"] = v
+					}
+					if v, ok := item["hostappVersion"]; ok {
+						spec["hostappVersion"] = v
+					}
+					status := map[string]any{"state": "online"}
+					if v, ok := item["lastSeen"]; ok {
+						status["lastSeen"] = fmt.Sprint(v)
+					}
+					if _, err := k8s.CreateOrUpdateDeviceParticipant(context.Background(), inst.Dyn, "guildnet-system", idVal, spec, status); err == nil {
+						// success -> delete pending
+						_ = inst.DB.Delete("pending_deviceparticipants", idVal)
+					} else {
+						log.Printf("reconcile deviceparticipant failed id=%s err=%v", idVal, err)
+					}
+				}
+			}
+		}
 	}()
 	r.items[id] = inst
 	r.created[id] = time.Now()
