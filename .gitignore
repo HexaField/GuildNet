@@ -34,3 +34,5 @@ ui/dist/
 /certs
 
 guildnet.config
+guildnet*.config
+*.config
