@@ -243,7 +243,6 @@ If you need to run the repository-built Host App on another local port (for exam
 
 ```bash
 export LISTEN_LOCAL=127.0.0.1:18090
-export GN_HEARTBEAT_ENABLE=1
 export GN_HEARTBEAT_URL="https://127.0.0.1:18090/v1/sites/heartbeat"
 ./bin/hostapp serve
 ```

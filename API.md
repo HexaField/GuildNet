@@ -243,7 +243,6 @@ Devices that run the Host App poster may need to send their heartbeat to a Host 
 
 ```bash
 export GN_HEARTBEAT_URL="https://127.0.0.1:18090/v1/sites/heartbeat"
-export GN_HEARTBEAT_ENABLE=1
 export GN_HEARTBEAT_INTERVAL=5s
 ./bin/hostapp serve
 ```
