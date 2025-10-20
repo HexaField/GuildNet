@@ -30,7 +30,7 @@ export default function MultiDevice() {
             <div class="p-2 border-b flex items-center gap-2">
               <div class="flex-1">
                 <div class="font-medium">{m.name}</div>
-                <div class="text-xs text-neutral-500">{m.clusterId} / {m.namespace}</div>
+                <div class="text-xs text-neutral-500">{m.id} / {m.namespace}</div>
               </div>
               <div>
                 <button class="btn" onClick={() => setSelected({ namespace: m.namespace, name: m.name })}>Status</button>

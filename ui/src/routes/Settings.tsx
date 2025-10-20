@@ -14,15 +14,15 @@ import PublishedServices from '../components/PublishedServices'
 import { pushToast } from '../components/Toaster'
 import { listSites } from '../lib/api'
 
-function DeviceList(_props: { clusterId: string }) {
+function DeviceList(_props: { id: string }) {
   const [sites] = createResource(listSites)
   return (
     <div class="space-y-2">
       <Show when={sites()} fallback={<div class="text-sm text-neutral-500">No devices</div>}>
         {(s) => {
           const list = s().filter((d: any) => {
-            // Only show devices that explicitly include a clusterId matching the current cluster
-            return d.clusterId === _props.clusterId
+            // Only show devices that explicitly reference this cluster via `cluster`.
+            return d.cluster === _props.id
           })
           return (
             <div class="grid grid-cols-1 gap-2">
@@ -52,7 +52,7 @@ function DeviceList(_props: { clusterId: string }) {
 export default function Settings() {
   const params = useParams()
   const navigate = useNavigate()
-  // params.clusterId is expected to be the canonical clusterId (required)
+  // params.clusterId (route param name) is expected to carry the canonical cluster id (required)
   const clusterId = () => params.clusterId || ''
   const [cluster] = createResource(clusterId, getClusterRecord)
   const [health, { refetch: refetchHealth }] = createResource(clusterId, clusterHealth)
@@ -151,7 +151,7 @@ export default function Settings() {
               <div class="grid md:grid-cols-3 gap-4">
                 <div>
                   <div class="text-xs text-neutral-500">Cluster ID</div>
-                  <div class="font-mono text-sm">{c().clusterId}</div>
+                  <div class="font-mono text-sm">{c().id}</div>
                 </div>
                 <div>
                   <div class="text-xs text-neutral-500">Name</div>
@@ -198,7 +198,7 @@ export default function Settings() {
               </div>
               <div class="pt-4">
                 <div class="font-medium mb-2">Connected devices</div>
-                <DeviceList clusterId={clusterId()} />
+                <DeviceList id={clusterId()} />
               </div>
             </div>
           )}

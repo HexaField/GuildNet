@@ -38,7 +38,7 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 					if err := inst.DB.List("devices", &devices); err == nil && len(devices) > 0 {
 						for _, dm := range devices {
 							rec := map[string]any{
-								"clusterId":       s.ID,
+								"cluster":         s.ID,
 								"id":              fmt.Sprint(dm["id"]),
 								"name":            fmt.Sprint(dm["name"]),
 								"state":           s.HasK8s || s.HasDB,
@@ -57,6 +57,11 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 								"lastSeen":        time.Now(),
 							}
 							for k, v := range dm {
+								// preserve device metadata, but normalize legacy clusterId -> cluster
+								if k == "clusterId" {
+									rec["cluster"] = fmt.Sprint(v)
+									continue
+								}
 								rec[k] = v
 							}
 							if _, ok := rec["supportsCluster"]; !ok {
@@ -65,6 +70,8 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 							if _, ok := rec["lastSeen"]; !ok {
 								rec["lastSeen"] = time.Now()
 							}
+							// Ensure no legacy clusterId leaks into API responses
+							delete(rec, "clusterId")
 							out = append(out, rec)
 						}
 						seen[s.ID] = true
@@ -96,7 +103,7 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 					if err := db.List("devices", &devices); err == nil && len(devices) > 0 {
 						for _, dm := range devices {
 							rec := map[string]any{
-								"clusterId":       cl,
+								"cluster":         cl,
 								"name":            fmt.Sprint(dm["name"]),
 								"state":           false,
 								"createdAt":       time.Now(),
@@ -114,8 +121,14 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 								"lastSeen":        time.Now(),
 							}
 							for k, v := range dm {
+								if k == "clusterId" {
+									rec["cluster"] = fmt.Sprint(v)
+									continue
+								}
 								rec[k] = v
 							}
+							// Ensure no legacy clusterId leaks into API responses
+							delete(rec, "clusterId")
 							out = append(out, rec)
 						}
 						seen[cl] = true
@@ -134,7 +147,7 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 					continue
 				}
 				rec := map[string]any{
-					"clusterId":       s.ID,
+					"id":              s.ID,
 					"state":           s.HasK8s || s.HasDB,
 					"createdAt":       s.CreatedAt,
 					"started":         s.Started,
@@ -168,9 +181,9 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 			httpx.JSONError(w, http.StatusBadRequest, "invalid json", "bad_request", err.Error())
 			return
 		}
-		clusterIDRaw, ok := payload["clusterId"].(string)
+		clusterIDRaw, ok := payload["cluster"].(string)
 		if !ok || clusterIDRaw == "" {
-			httpx.JSONError(w, http.StatusBadRequest, "clusterId required", "bad_request", "clusterId required")
+			httpx.JSONError(w, http.StatusBadRequest, "cluster required", "bad_request", "cluster required")
 			return
 		}
 		deviceIDRaw, ok := payload["id"].(string)
@@ -189,6 +202,9 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 			httpx.JSONError(w, http.StatusNotFound, "cluster not found", "not_found", fmt.Sprintf("cluster %s not found", clusterID))
 			return
 		}
+		// Normalize persisted payload to include `cluster` field and drop legacy `clusterId`.
+		payload["cluster"] = clusterID
+		delete(payload, "clusterId")
 		payload["lastSeen"] = time.Now().UTC()
 		if inst.DB == nil {
 			httpx.JSONError(w, http.StatusInternalServerError, "no per-cluster DB", "no_db", "per-cluster DB unavailable")
@@ -219,7 +235,7 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 				if ulist, err := inst.Dyn.Resource(gvr).Namespace(metav1.NamespaceAll).List(r.Context(), metav1.ListOptions{}); err == nil {
 					out := make([]any, 0, len(ulist.Items))
 					for _, it := range ulist.Items {
-						out = append(out, map[string]any{"clusterId": s.ID, "namespace": it.GetNamespace(), "name": it.GetName()})
+						out = append(out, map[string]any{"id": s.ID, "namespace": it.GetNamespace(), "name": it.GetName()})
 					}
 					httpx.JSON(w, http.StatusOK, out)
 					return

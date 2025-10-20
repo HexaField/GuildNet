@@ -199,7 +199,7 @@ function Sidebar() {
       <div class="space-y-1">
         <For each={clusters() ?? []}>
           {(c) => (
-            <ClusterRow id={c.clusterId} name={c.name} />
+            <ClusterRow id={c.id} name={c.name} />
           )}
         </For>
       </div>

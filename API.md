@@ -34,11 +34,11 @@ Authorization model: GET requests are open. Mutating requests require either a c
       - ingress_domain, ingress_class_name, workspace_tls_secret
       - cert_manager_issuer, ingress_auth_url, ingress_auth_signin
       - image_pull_secret, org_id
-  - Response: JSON { clusterId: <id> } on success when kubeconfig provided.
+  - Response: JSON { id: <id> } on success when kubeconfig provided. (Clusters now expose a deterministic, canonical `id` field.)
 
 Multi-device automation: Use `make multi-device-host` on Device A and `make multi-device-joiner` on Device B to bootstrap quickly. The joiner will call this `/bootstrap` endpoint with its generated `guildnet.config`.
 
-  Multi-device note: After successful bootstrap, the Host App mirrors its published service mappings into a shared ConfigMap in the cluster (`guildnet-system/published-<clusterid>`). Other devices reading the same cluster will observe and resync state from this registry.
+  Multi-device note: After successful bootstrap, the Host App mirrors its published service mappings into a shared ConfigMap in the cluster (`guildnet-system/published-<id>`). Other devices reading the same cluster will observe and resync state from this registry.
 
 - GET/PUT /settings/tailscale
   - Get or update global tailscale/tsnet settings. Payload uses `settings.Tailscale`.
@@ -248,6 +248,8 @@ export GN_HEARTBEAT_INTERVAL=5s
 ```
 
 When `GN_HEARTBEAT_URL` is unset the poster defaults to `https://127.0.0.1:8090/api/v1/sites/heartbeat`.
+
+Note: Heartbeat payloads accepted by the Host App should include a `cluster` field to identify the cluster the device is reporting for (e.g. `{"cluster":"<id>", "id":"device-name", ...}`). The server persists device rows with a `cluster` reference and cluster-level records use the canonical `id` field.
 
 
 ## Examples and notes

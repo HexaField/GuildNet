@@ -319,7 +319,7 @@ POST /v1/sites/heartbeat
 JSON body example:
 ```
 {
-	"clusterId": "my-cluster",
+	"id": "my-cluster",
 	"id": "device-a",
 	"name": "device-a.home",
 	"tailnetIPs": ["100.101.102.103"],
@@ -336,7 +336,7 @@ Troubleshooting tips
 - If scripts fail with "set: Illegal option -o pipefail" or `syntax` errors, make sure you run them under `bash` (not `/bin/sh`). The orchestrator now invokes remote helpers with `bash`.
 - If `docker buildx --load` is missing on a host, `scripts/agent-build-load.sh` falls back to `docker build`.
 - When importing images to microk8s use `sudo microk8s ctr images import /tmp/image.tar` and set `imagePullPolicy: IfNotPresent` on operator Deployment to prefer local images.
-- To confirm cross-device service mirrors, check for ConfigMaps named `guildnet-system/published-<clusterid>` in the cluster; these are the mirrored published service mappings devices use to resync.
+- To confirm cross-device service mirrors, check for ConfigMaps named `guildnet-system/published-<id>` in the cluster; these are the mirrored published service mappings devices use to resync.
 
 Security notes
 - Use a unique `GUILDNET_MASTER_KEY` per Host App host and store it securely (do not commit to git).
@@ -345,7 +345,7 @@ Security notes
 
 Operational notes:
 - The embedded operator uses controller-runtime leader election (coordination.k8s.io/leases) so multiple devices can run safely; only the leader reconciles at a time.
-- Published service mappings are mirrored into an in-cluster ConfigMap `guildnet-system/published-<clusterid>` so devices can resync consistently after restarts.
+- Published service mappings are mirrored into an in-cluster ConfigMap `guildnet-system/published-<id>` so devices can resync consistently after restarts.
 - To auto-start Host App on reboot on a host, run:
 
 ```bash

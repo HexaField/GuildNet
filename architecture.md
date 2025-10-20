@@ -64,7 +64,7 @@ Overview
 - The `Registry` maintains per-cluster `Instance` objects (kubeconfig, k8s client, dynamic client, local DB). Multiple Host App instances coordinate via the cluster control plane and share published-service mappings for cross-device access.
 
 Mirror & resync mechanism (short)
-- When a Host App publishes a service, it mirrors the mapping into `guildnet-system/published-<clusterid>` in the cluster. Other devices read that ConfigMap and resync local listeners/proxies so published services are visible across devices.
+- When a Host App publishes a service, it mirrors the mapping into `guildnet-system/published-<id>` in the cluster. Other devices read that ConfigMap and resync local listeners/proxies so published services are visible across devices.
 
 Bootstrap & coordination (short)
 - Devices join by submitting a `guildnet.config` (or kubeconfig) to an existing Host App via `POST /bootstrap`. The receiver persists the kubeconfig and runs a short pre-warm probe. Leader election (controller-runtime) ensures only one reconciler actively changes cluster-scoped resources at a time.
@@ -88,7 +88,7 @@ For a simplified multi-device flow (Device A host + Device B joiner), see the mu
 - Script: `scripts/multi-device-setup.sh`
 
 These orchestrate Headscale/tailscale, microk8s, CRDs/addons, operator, Host App startup, and `/bootstrap` attach in one step per device.
-- Multi-device resilience: the embedded/in-cluster operator uses controller-runtime leader election so only one leader reconciles at a time across devices. Published service mappings are mirrored into an in-cluster ConfigMap (`guildnet-system/published-<clusterid>`) which allows devices to resync published endpoints consistently after restarts.
+ - Multi-device resilience: the embedded/in-cluster operator uses controller-runtime leader election so only one leader reconciles at a time across devices. Published service mappings are mirrored into an in-cluster ConfigMap (`guildnet-system/published-<id>`) which allows devices to resync published endpoints consistently after restarts.
 - The Registry builds and caches `Instance` objects. Each `Instance` encapsulates:
   - per-cluster SQLite (`internal/localdb`)
   - `k8s.Client` and rest.Config (`internal/k8s`)

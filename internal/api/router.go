@@ -256,7 +256,7 @@ func Router(deps Deps) *http.ServeMux {
 				OrgID:              body.Cluster.OrgID,
 			}
 			_ = setMgr.PutCluster(id, cs)
-			_ = json.NewEncoder(w).Encode(map[string]any{"clusterId": id})
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": id})
 			return
 		}
 		httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -840,6 +840,12 @@ func Router(deps Deps) *http.ServeMux {
 					httpx.JSONError(w, http.StatusBadRequest, "invalid kubeconfig", "bad_kubeconfig", err.Error())
 					return
 				}
+				// Compute deterministic cluster id from kubeconfig so the same cluster
+				// yields the same id on every device.
+				detID, err := cluster.DeterministicIDFromKubeconfig(body.Kubeconfig)
+				if err == nil && detID != "" {
+					id = detID
+				}
 				enc := body.Kubeconfig
 				encrypted := false
 				if deps.Secrets != nil {
@@ -871,7 +877,7 @@ func Router(deps Deps) *http.ServeMux {
 						}
 					}
 				}
-				_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+				_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "id": id})
 				return
 			}
 

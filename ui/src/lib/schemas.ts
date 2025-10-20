@@ -2,8 +2,8 @@ import { z } from 'zod'
 
 export const SiteSchema = z.object({
   id: z.string(),
-  // optional cluster UUID when server emits per-device records
-  clusterId: z.string().optional(),
+  // optional cluster reference for device rows (server will emit `cluster` on device records)
+  cluster: z.string().optional(),
   name: z.string().optional(),
   // server may emit a boolean or a string for state (legacy/boolean 'ready' marker)
   state: z.union([z.string(), z.boolean()]).optional(),
@@ -19,7 +19,7 @@ export const SiteSchema = z.object({
 export const SiteListSchema = z.array(SiteSchema)
 
 export const MDSummarySchema = z.object({
-  clusterId: z.string(),
+  id: z.string(),
   namespace: z.string(),
   name: z.string()
 })

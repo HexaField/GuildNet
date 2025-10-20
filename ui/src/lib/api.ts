@@ -184,17 +184,17 @@ export async function listImages(signal?: AbortSignal): Promise<DeployImage[]> {
   }
 }
 
-// clusterId may be present when records refer to a specific runtime instance
-// Client-side cluster record: use clusterId as the canonical identifier (required)
-export type ClusterRecord = { clusterId: string; name?: string; state?: string }
+// id may be present when records refer to a specific runtime instance
+// Client-side cluster record: use id as the canonical identifier (required)
+export type ClusterRecord = { id: string; name?: string; state?: string }
 
 export async function listClusters(): Promise<ClusterRecord[]> {
   try {
     const res = await fetch(apiUrl('/api/deploy/clusters'))
     if (!res.ok) return []
     const raw = (await res.json()) as any[]
-    // Normalize server-side `id` into client-side `clusterId`
-    return raw.map(r => ({ clusterId: (r.clusterId as string) || (r.id as string), name: r.name, state: r.state }))
+    // Server emits deterministic cluster `id`. Use `id` as canonical field.
+    return raw.map(r => ({ id: (r.id as string), name: r.name, state: r.state }))
   } catch {
     return []
   }
@@ -205,7 +205,7 @@ export async function getClusterRecord(id: string): Promise<ClusterRecord | null
     const res = await fetch(apiUrl(`/api/deploy/clusters/${encodeURIComponent(id)}`))
     if (!res.ok) return null
     const r = await res.json()
-    return { clusterId: (r.clusterId as string) || (r.id as string), name: r.name, state: r.state }
+    return { id: (r.id as string), name: r.name, state: r.state }
   } catch { return null }
 }
 
@@ -356,7 +356,7 @@ export async function listSites(): Promise<SiteRecord[]> {
   } catch { return [] }
 }
 
-export type MDSummary = { clusterId: string; namespace: string; name: string }
+export type MDSummary = { id: string; namespace: string; name: string }
 
 export async function listFederatedServices(): Promise<MDSummary[]> {
   try {

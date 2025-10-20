@@ -32,7 +32,7 @@ func registerFederationCRUD(mux *http.ServeMux, deps Deps) {
 			}
 			if list, err := inst.Dyn.Resource(gvr).Namespace(metav1.NamespaceAll).List(r.Context(), metav1.ListOptions{}); err == nil {
 				for _, it := range list.Items {
-					out = append(out, map[string]any{"clusterId": s.ID, "namespace": it.GetNamespace(), "name": it.GetName()})
+					out = append(out, map[string]any{"id": s.ID, "namespace": it.GetNamespace(), "name": it.GetName()})
 				}
 			}
 		}
