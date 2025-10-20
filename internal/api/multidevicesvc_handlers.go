@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -150,9 +151,11 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 			return
 		}
 		if err := inst.DB.Put("devices", deviceID, payload); err != nil {
+			log.Printf("heartbeat persist cluster=%s device=%s err=%v", clusterID, deviceID, err)
 			httpx.JSONError(w, http.StatusInternalServerError, "persist failed", "persist_failed", err.Error())
 			return
 		}
+		log.Printf("heartbeat persisted cluster=%s device=%s", clusterID, deviceID)
 		httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
 

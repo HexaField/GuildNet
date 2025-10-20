@@ -3,7 +3,8 @@ import { z } from 'zod'
 export const SiteSchema = z.object({
   id: z.string(),
   name: z.string().optional(),
-  state: z.string().optional(),
+  // server may emit a boolean or a string for state (legacy/boolean 'ready' marker)
+  state: z.union([z.string(), z.boolean()]).optional(),
   tailnetIPs: z.array(z.string()).optional(),
   supportsCluster: z.boolean().optional(),
   cpuMilli: z.number().int().optional(),
