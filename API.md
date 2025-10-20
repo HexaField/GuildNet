@@ -237,6 +237,19 @@ The config file path: `~/.guildnet/config.json` (created by tools like the init 
 
 - `settings.Cluster` — per-cluster runtime settings (see section above). `PutCluster` writes runtime configmap into cluster and persists to DB.
 
+Heartbeat poster configuration
+------------------------------
+Devices that run the Host App poster may need to send their heartbeat to a Host App instance running on a different local port (for example when a system-installed hostapp is already running). Use the `GN_HEARTBEAT_URL` environment variable to override the poster target URL. Example:
+
+```bash
+export GN_HEARTBEAT_URL="https://127.0.0.1:18090/v1/sites/heartbeat"
+export GN_HEARTBEAT_ENABLE=1
+export GN_HEARTBEAT_INTERVAL=5s
+./bin/hostapp serve
+```
+
+When `GN_HEARTBEAT_URL` is unset the poster defaults to `https://127.0.0.1:8090/v1/sites/heartbeat`.
+
 
 ## Examples and notes
 

@@ -333,10 +333,6 @@ func main() {
 		}
 		fmt.Println("config written to", config.ConfigPath())
 		return
-	case "operator":
-		// Deprecated: operator-only mode is removed. Map to full serve.
-		log.Printf("note: 'operator' mode is deprecated; starting full hostapp (serve) instead")
-		cmd = "serve"
 	case "serve":
 		// continue
 	default:
@@ -797,7 +793,14 @@ func main() {
 							}
 							payload["clusterId"] = cid
 							b, _ := json.Marshal(payload)
-							req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://127.0.0.1:8090/v1/sites/heartbeat", strings.NewReader(string(b)))
+							// Heartbeat target is configurable so devices can post to a different
+							// host/port when the local listen port is unavailable. Defaults to
+							// the local hostapp API at 127.0.0.1:8090.
+							hbURL := strings.TrimSpace(os.Getenv("GN_HEARTBEAT_URL"))
+							if hbURL == "" {
+								hbURL = "https://127.0.0.1:8090/v1/sites/heartbeat"
+							}
+							req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, hbURL, strings.NewReader(string(b)))
 							req.Header.Set("Content-Type", "application/json")
 							if resp, err := client.Do(req); err != nil {
 								log.Printf("heartbeat post cluster=%s err=%v", cid, err)
