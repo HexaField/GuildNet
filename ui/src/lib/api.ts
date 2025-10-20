@@ -339,7 +339,7 @@ export type SiteRecord = {
 
 export async function listSites(): Promise<SiteRecord[]> {
   try {
-    const res = await fetch(apiUrl('/v1/sites'))
+    const res = await fetch(apiUrl('/api/v1/sites'))
     if (!res.ok) return []
     const data = await res.json()
     try {
@@ -367,7 +367,7 @@ export async function listFederatedServices(): Promise<MDSummary[]> {
 
 export async function getPerSiteStatus(ns: string, name: string): Promise<any | null> {
   try {
-  const url = apiUrl(`/v1/federatedservices/per-site?ns=${encodeURIComponent(ns)}&name=${encodeURIComponent(name)}`)
+  const url = apiUrl(`/api/v1/federatedservices/per-site?ns=${encodeURIComponent(ns)}&name=${encodeURIComponent(name)}`)
     const res = await fetch(url)
     if (!res.ok) return null
     const data = await res.json()

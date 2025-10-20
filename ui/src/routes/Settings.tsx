@@ -19,20 +19,33 @@ function DeviceList(_props: { clusterId: string }) {
   return (
     <div class="space-y-2">
       <Show when={sites()} fallback={<div class="text-sm text-neutral-500">No devices</div>}>
-        {(s) => (
-          <div class="grid grid-cols-1 gap-2">
-            {s().map((d: any) => (
-              <div class="p-2 border rounded bg-white">
-                <div class="flex items-center justify-between">
-                  <div class="font-medium">{d.name || d.id}</div>
-                  <div class="text-xs text-neutral-500">{d.supportsCluster ? 'supports cluster' : 'hostapp-only'}</div>
-                </div>
-                <div class="text-xs text-neutral-600 mt-1">IPs: {(d.tailnetIPs || []).join(', ') || '-'}</div>
-                <div class="text-xs text-neutral-600 mt-1">CPU: {d.cpuMilli || '-'} m | Mem: {d.memoryMB || '-'} MB</div>
-              </div>
-            ))}
-          </div>
-        )}
+        {(s) => {
+          const list = s().filter((d: any) => {
+            // If devices include clusterId, only show those for the current cluster
+            if (d.clusterId) return d.clusterId === _props.clusterId
+            // Otherwise show cluster-level entries whose id matches cluster
+            return d.id === _props.clusterId
+          })
+          return (
+            <div class="grid grid-cols-1 gap-2">
+              {list.length === 0 ? (
+                <div class="text-sm text-neutral-500">No devices for this cluster</div>
+              ) : (
+                list.map((d: any) => (
+                  <div class="p-2 border rounded bg-white">
+                    <div class="flex items-center justify-between">
+                      <div class="font-medium">{d.name || d.id}</div>
+                      <div class="text-xs text-neutral-500">{d.supportsCluster ? 'supports cluster' : 'hostapp-only'}</div>
+                    </div>
+                    <div class="text-xs text-neutral-600 mt-1">IPs: {(d.tailnetIPs || []).join(', ') || '-'}</div>
+                    <div class="text-xs text-neutral-600 mt-1">CPU: {d.cpuMilli || '-'} m | Mem: {d.memoryMB || '-'} MB</div>
+                    <div class="text-xs text-neutral-500 mt-1">Last seen: {d.lastSeen ? String(d.lastSeen) : '-'}</div>
+                  </div>
+                ))
+              )}
+            </div>
+          )
+        }}
       </Show>
     </div>
   )

@@ -20,10 +20,52 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 			return
 		}
 		raw := deps.Registry.List()
-		out := make([]any, 0, len(raw))
-		// Try to enrich with per-instance details when possible
+		out := make([]any, 0)
+		// For each registry entry (cluster) attempt to enumerate persisted devices
 		for _, s := range raw {
-			// base fields
+			// Try to open instance to read per-cluster DB
+			if inst, err := deps.Registry.Get(r.Context(), s.ID); err == nil && inst != nil && inst.DB != nil {
+				var devices []map[string]any
+				if err := inst.DB.List("devices", &devices); err == nil && len(devices) > 0 {
+					for _, dm := range devices {
+						// Build a record per-device, merging cluster info and device metadata
+						rec := map[string]any{
+							"clusterId":       s.ID,
+							"id":              fmt.Sprint(dm["id"]),
+							"name":            fmt.Sprint(dm["name"]),
+							"state":           s.HasK8s || s.HasDB,
+							"createdAt":       s.CreatedAt,
+							"started":         s.Started,
+							"stateDir":        s.StateDir,
+							"hasDB":           s.HasDB,
+							"hasK8s":          s.HasK8s,
+							"forwards":        s.Forwards,
+							"supportsCluster": dm["supportsCluster"],
+							"tailnetIPs":      []string{},
+							"cpuMilli":        int64(0),
+							"memoryMB":        int64(0),
+							"storageMB":       int64(0),
+							"vramMB":          int64(0),
+							"lastSeen":        time.Now(),
+						}
+						// Merge any persisted fields from device metadata
+						for k, v := range dm {
+							rec[k] = v
+						}
+						// Ensure some typed defaults
+						if _, ok := rec["supportsCluster"]; !ok {
+							rec["supportsCluster"] = inst.K8s != nil
+						}
+						if _, ok := rec["lastSeen"]; !ok {
+							rec["lastSeen"] = time.Now()
+						}
+						out = append(out, rec)
+					}
+					// done with this cluster
+					continue
+				}
+			}
+			// Fallback: emit a single cluster-level record when no persisted devices found
 			rec := map[string]any{
 				"id":              s.ID,
 				"state":           s.HasK8s || s.HasDB, // best-effort state text boolean
@@ -42,26 +84,6 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 				"lastSeen":        time.Now(),
 			}
 			if inst, err := deps.Registry.Get(r.Context(), s.ID); err == nil && inst != nil {
-				// First, prefer persisted device metadata from the per-cluster localdb (devices collection)
-				if inst.DB != nil {
-					var dm map[string]any
-					if err := inst.DB.Get("devices", s.ID, &dm); err == nil {
-						// merge persisted device metadata
-						for k, v := range dm {
-							rec[k] = v
-						}
-						// ensure types for some known fields
-						if _, ok := rec["supportsCluster"]; !ok {
-							rec["supportsCluster"] = inst.K8s != nil
-						}
-						if _, ok := rec["lastSeen"]; !ok {
-							rec["lastSeen"] = time.Now()
-						}
-						out = append(out, rec)
-						continue
-					}
-				}
-
 				// Fallback: Populate tailnet IPs from TS connector health when available
 				if inst.TS != nil {
 					if st, det := inst.TS.Health(r.Context()); st == "ok" || st == "degraded" || st == "starting" {
