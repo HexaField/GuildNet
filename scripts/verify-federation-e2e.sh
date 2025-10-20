@@ -52,6 +52,9 @@ fi
 
 # Ensure remote dir exists and rsync the repo
 echo "Syncing repo to remote..."
+echo "Ensuring remote directory exists and is writable..."
+ssh "$REMOTE" "mkdir -p \"$REMOTE_DIR\" && test -w \"$REMOTE_DIR\" || echo 'WARNING: $REMOTE_DIR may not be writable by $USER' >&2"
+
 rsync -avz --delete --exclude .git --exclude tmp --exclude node_modules "$REPO_ROOT/" "$REMOTE:$REMOTE_DIR/"
 
 # Copy the remote helper script as well
