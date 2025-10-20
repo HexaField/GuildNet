@@ -302,6 +302,28 @@ kubectl --kubeconfig=~/.guildnet/kubeconfig get nodes
 
 6) Start Host App on Device B. If Device B cannot reach the cluster API directly, configure per-cluster `APIProxyURL` or rely on tailscale/tsnet connectors so Device B has a network path to the API server.
 
+Device heartbeat (capabilities)
+--------------------------------
+Devices are the source-of-truth for local capabilities (CPU, RAM, storage, VRAM, tailnet IPs). Each device should POST a heartbeat to the Host App it is attached to so the server can persist device-reported capabilities. The Host App exposes a minimal endpoint:
+
+POST /v1/sites/heartbeat
+
+JSON body example:
+```
+{
+	"clusterId": "my-cluster",
+	"id": "device-a",
+	"name": "device-a.home",
+	"tailnetIPs": ["100.101.102.103"],
+	"cpuMilli": 2000,
+	"memoryMB": 4096,
+	"storageMB": 32768,
+	"vramMB": 2048
+}
+```
+
+The server stores this under the per-cluster localdb collection `devices`. Subsequent UI calls and the placement planner prefer these device-reported values when present.
+
 Troubleshooting tips
 - If scripts fail with "set: Illegal option -o pipefail" or `syntax` errors, make sure you run them under `bash` (not `/bin/sh`). The orchestrator now invokes remote helpers with `bash`.
 - If `docker buildx --load` is missing on a host, `scripts/agent-build-load.sh` falls back to `docker build`.

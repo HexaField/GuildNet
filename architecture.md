@@ -71,6 +71,10 @@ Bootstrap & coordination (short)
 
 For full, step-by-step how-to (commands, examples, and troubleshooting), see `DEPLOYMENT.md` → "Connecting multiple devices to the same cluster". Keep `architecture.md` focused on the conceptual behavior and integration points.
 
+Device ownership of capabilities
+--------------------------------
+In the multi-device design, individual Host App devices are the authoritative source for their local capabilities (CPU, memory, storage, VRAM, tailnet IPs). The cluster remains the source-of-truth for any data that must be identical or replicated across devices (for example, published service mappings mirrored into a ConfigMap). Devices report capabilities via a heartbeat (`POST /v1/sites/heartbeat`) which the Host App persists per-cluster. The placement planner and UI prefer those device-reported capabilities when present.
+
 
 High level summary
 

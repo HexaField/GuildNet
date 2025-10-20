@@ -324,7 +324,18 @@ export async function deleteClusterRecord(id: string): Promise<boolean> {
 }
 
 // Sites & FederatedService APIs
-export type SiteRecord = { id: string; name?: string; state?: string }
+export type SiteRecord = {
+  id: string
+  name?: string
+  state?: string
+  tailnetIPs?: string[]
+  supportsCluster?: boolean
+  cpuMilli?: number
+  memoryMB?: number
+  storageMB?: number
+  vramMB?: number
+  lastSeen?: string
+}
 
 export async function listSites(): Promise<SiteRecord[]> {
   try {

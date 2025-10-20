@@ -277,6 +277,10 @@ Connecting multiple devices
 
 For step-by-step instructions and examples for attaching multiple devices to the same cluster (join artifact, bootstrap flow, troubleshooting and sample commands) see the authoritative guide in `DEPLOYMENT.md` — the "Connecting multiple devices to the same cluster" section. API.md keeps the API reference concise; DEPLOYMENT.md is the how-to.
 
+Device capabilities
+-------------------
+Devices are considered the authoritative source for local capabilities (CPU, memory, storage, VRAM, tailnet IPs). The Host App exposes a small heartbeat endpoint (`POST /v1/sites/heartbeat`) that devices use to report these values. The server persists the payload in the per-cluster localdb under collection `devices` and the UI/placement logic will prefer these values when making placement decisions.
+
 
 ---
 

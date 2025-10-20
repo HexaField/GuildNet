@@ -67,6 +67,36 @@ import (
 	federation "github.com/your/module/internal/controller/federation"
 )
 
+// readMemMB attempts to read total memory in MB on Linux via /proc/meminfo.
+func readMemMB() int64 {
+	// best-effort only; return 0 when unknown
+	if data, err := os.ReadFile("/proc/meminfo"); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.HasPrefix(line, "MemTotal:") {
+				fields := strings.Fields(line)
+				if len(fields) >= 2 {
+					// value in kB
+					if v, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
+						return v / 1024
+					}
+				}
+			}
+		}
+	}
+	return 0
+}
+
+// readStorageMB returns available storage on the given path in MB (best-effort).
+func readStorageMB(path string) int64 {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err == nil {
+		// available blocks * block size
+		avail := int64(stat.Bavail) * int64(stat.Bsize)
+		return avail / (1024 * 1024)
+	}
+	return 0
+}
+
 // kubeconfigResolver implements cluster.Resolver backed by localdb credentials.
 type kubeconfigResolver struct {
 	DB  *localdb.DB
@@ -723,6 +753,94 @@ func main() {
 			}
 		}
 	}()
+
+	// Heartbeat poster: post device capabilities periodically to the local Host App API.
+	// Configurable via GN_HEARTBEAT_ENABLE (1/true) and GN_HEARTBEAT_INTERVAL (eg "30s").
+	if func() bool {
+		if v := strings.TrimSpace(os.Getenv("GN_HEARTBEAT_ENABLE")); v != "" {
+			if v == "1" || strings.EqualFold(v, "true") {
+				return true
+			}
+		}
+		for _, a := range os.Args[1:] {
+			if a == "--heartbeat-enable" {
+				return true
+			}
+		}
+		return false
+	}() {
+		go func() {
+			interval := 30 * time.Second
+			if v := strings.TrimSpace(os.Getenv("GN_HEARTBEAT_INTERVAL")); v != "" {
+				if d, err := time.ParseDuration(v); err == nil {
+					interval = d
+				}
+			}
+			for _, a := range os.Args[1:] {
+				if strings.HasPrefix(a, "--heartbeat-interval=") {
+					if d, err := time.ParseDuration(strings.TrimPrefix(a, "--heartbeat-interval=")); err == nil {
+						interval = d
+					}
+				}
+			}
+			client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
+			// device id fallback
+			deviceID := cfg.Hostname
+			if hn, err := os.Hostname(); err == nil && hn != "" {
+				deviceID = hn
+			}
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(interval):
+					// build payload
+					payload := map[string]any{"id": deviceID, "name": deviceID}
+					if info, err := ts.Info(context.Background(), tsServer); err == nil && info != nil {
+						ips := []string{}
+						if info.IP != "" {
+							ips = append(ips, info.IP)
+						}
+						if info.FQDN != "" {
+							ips = append(ips, info.FQDN)
+						}
+						if len(ips) > 0 {
+							payload["tailnetIPs"] = ips
+						}
+					}
+					payload["cpuMilli"] = int64(runtime.NumCPU() * 1000)
+					if mb := readMemMB(); mb > 0 {
+						payload["memoryMB"] = mb
+					}
+					if sm := readStorageMB("/"); sm > 0 {
+						payload["storageMB"] = sm
+					}
+					payload["vramMB"] = 0
+					// list persisted clusters and post
+					var clusters []map[string]any
+					if err := ldb.List("clusters", &clusters); err == nil {
+						for _, c := range clusters {
+							cid := fmt.Sprint(c["id"])
+							if cid == "" {
+								continue
+							}
+							payload["clusterId"] = cid
+							b, _ := json.Marshal(payload)
+							req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://127.0.0.1:8090/v1/sites/heartbeat", strings.NewReader(string(b)))
+							req.Header.Set("Content-Type", "application/json")
+							if resp, err := client.Do(req); err != nil {
+								log.Printf("heartbeat post cluster=%s err=%v", cid, err)
+							} else {
+								io.Copy(io.Discard, resp.Body)
+								resp.Body.Close()
+							}
+						}
+					}
+				}
+			}
+		}()
+		log.Printf("heartbeat poster enabled")
+	}
 
 	// Smoke: resolve and attempt a tsnet dial to given id:port
 	mux.HandleFunc("/api/v1/smoke-dial", func(w http.ResponseWriter, r *http.Request) {

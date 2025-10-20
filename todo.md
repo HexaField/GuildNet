@@ -1,9 +1,5 @@
 - [ ] consolidate LOCAL_LISTEN and VITE_API_BASE to a single var
 - [ ] more clean up
-- [ ] Cluster settings UI
-  - [ ] show connected hostapp devices
-  - [ ] show cluster sharing devices
-  - [ ] show per-device capacities (available CPU/RAM/VRAM/storage)
 
 Completed recent tasks:
 

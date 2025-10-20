@@ -3,7 +3,14 @@ import { z } from 'zod'
 export const SiteSchema = z.object({
   id: z.string(),
   name: z.string().optional(),
-  state: z.string().optional()
+  state: z.string().optional(),
+  tailnetIPs: z.array(z.string()).optional(),
+  supportsCluster: z.boolean().optional(),
+  cpuMilli: z.number().int().optional(),
+  memoryMB: z.number().int().optional(),
+  storageMB: z.number().int().optional(),
+  vramMB: z.number().int().optional(),
+  lastSeen: z.string().optional()
 })
 
 export const SiteListSchema = z.array(SiteSchema)

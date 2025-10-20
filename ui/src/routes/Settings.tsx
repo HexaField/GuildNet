@@ -12,6 +12,31 @@ import {
 } from '../lib/api'
 import PublishedServices from '../components/PublishedServices'
 import { pushToast } from '../components/Toaster'
+import { listSites } from '../lib/api'
+
+function DeviceList(_props: { clusterId: string }) {
+  const [sites] = createResource(listSites)
+  return (
+    <div class="space-y-2">
+      <Show when={sites()} fallback={<div class="text-sm text-neutral-500">No devices</div>}>
+        {(s) => (
+          <div class="grid grid-cols-1 gap-2">
+            {s().map((d: any) => (
+              <div class="p-2 border rounded bg-white">
+                <div class="flex items-center justify-between">
+                  <div class="font-medium">{d.name || d.id}</div>
+                  <div class="text-xs text-neutral-500">{d.supportsCluster ? 'supports cluster' : 'hostapp-only'}</div>
+                </div>
+                <div class="text-xs text-neutral-600 mt-1">IPs: {(d.tailnetIPs || []).join(', ') || '-'}</div>
+                <div class="text-xs text-neutral-600 mt-1">CPU: {d.cpuMilli || '-'} m | Mem: {d.memoryMB || '-'} MB</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Show>
+    </div>
+  )
+}
 
 export default function Settings() {
   const params = useParams()
@@ -158,6 +183,10 @@ export default function Settings() {
               </div>
               <div class="pt-4">
                 <PublishedServices clusterId={c().id} />
+              </div>
+              <div class="pt-4">
+                <div class="font-medium mb-2">Connected devices</div>
+                <DeviceList clusterId={c().id} />
               </div>
             </div>
           )}

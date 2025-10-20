@@ -56,6 +56,13 @@ export type SiteRecord = {
   id: string
   name?: string
   state?: string
+  tailnetIPs?: string[]
+  supportsCluster?: boolean
+  cpuMilli?: number
+  memoryMB?: number
+  storageMB?: number
+  vramMB?: number
+  lastSeen?: string
 }
 
 export type MDSummary = {

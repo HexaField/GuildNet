@@ -67,6 +67,24 @@ type Status struct {
 	CreatedAt time.Time
 }
 
+// ExtendedStatus includes runtime capacity and role info for UI consumption.
+type ExtendedStatus struct {
+	Status
+	// Optional human-friendly name for the device
+	Name string `json:"name,omitempty"`
+	// Tailnet IPs assigned to the device (if using tsnet/tailscale)
+	TailnetIPs []string `json:"tailnetIPs,omitempty"`
+	// Whether this device hosts a K8s client and therefore can support cluster workloads
+	SupportsCluster bool `json:"supportsCluster"`
+	// Capacity metrics (best-effort / reported by device)
+	CPUMilli  int64 `json:"cpuMilli,omitempty"`
+	MemoryMB  int64 `json:"memoryMB,omitempty"`
+	StorageMB int64 `json:"storageMB,omitempty"`
+	VRAMMB    int64 `json:"vramMB,omitempty"`
+	// LastSeen is a best-effort timestamp when the instance was observed
+	LastSeen time.Time `json:"lastSeen,omitempty"`
+}
+
 // Resolver provides cluster-specific materials needed to start an Instance.
 type Resolver interface {
 	// KubeconfigYAML should return a kubeconfig for the cluster or empty when unknown.
