@@ -30,7 +30,7 @@ function DeviceList(_props: { id: string }) {
                 <div class="text-sm text-neutral-500">No devices for this cluster</div>
               ) : (
                 list.map((d: any) => (
-                  <div class="p-2 border rounded bg-white">
+                  <div class="p-2 border rounded bg-gray">
                     <div class="flex items-center justify-between">
                       <div class="font-medium">{d.name || d.id}</div>
                       <div class="text-xs text-neutral-500">{d.supportsCluster ? 'supports cluster' : 'hostapp-only'}</div>

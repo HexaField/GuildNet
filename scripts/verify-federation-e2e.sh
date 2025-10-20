@@ -10,10 +10,23 @@ set -euo pipefail
 #   This script will commit local changes, rsync repo to remote, run remote setup script and then
 #   run local verify steps. It is destructive and intended for CI or an isolated test environment.
 
-: ${FED_REMOTE:?Need to set FED_REMOTE (e.g. user@remote)}
-: ${FED_REMOTE_DIR:?Need to set FED_REMOTE_DIR (remote path to place repo)}
-
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Allow passing remote and remote dir as args or via env vars. Do not hardcode.
+# Usage: FED_REMOTE=user@host [FED_REMOTE_DIR=~/GuildNet] ./scripts/verify-federation-e2e.sh
+if [ "$#" -ge 1 ] && [[ "$1" != "--no-commit" ]]; then
+  FED_REMOTE_ARG="$1"
+  shift
+fi
+
+: ${FED_REMOTE:=${FED_REMOTE_ARG:-}}
+if [ -z "${FED_REMOTE}" ]; then
+  echo "Usage: FED_REMOTE=user@host [FED_REMOTE_DIR=~/GuildNet] $0 [--no-commit]" >&2
+  exit 2
+fi
+
+: ${FED_REMOTE_DIR:=${FED_REMOTE_DIR:-~/GuildNet}}
+
 REMOTE="$FED_REMOTE"
 REMOTE_DIR="$FED_REMOTE_DIR"
 
