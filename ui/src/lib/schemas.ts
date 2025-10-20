@@ -2,6 +2,8 @@ import { z } from 'zod'
 
 export const SiteSchema = z.object({
   id: z.string(),
+  // optional cluster UUID when server emits per-device records
+  clusterId: z.string().optional(),
   name: z.string().optional(),
   // server may emit a boolean or a string for state (legacy/boolean 'ready' marker)
   state: z.union([z.string(), z.boolean()]).optional(),

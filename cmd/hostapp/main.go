@@ -780,8 +780,9 @@ func main() {
 						}
 						payload["clusterId"] = cid
 						b, _ := json.Marshal(payload)
-						// Heartbeat target is fixed to the local hostapp API on port 8090
-						hbURL := "https://127.0.0.1:8090/v1/sites/heartbeat"
+						// Heartbeat target is fixed to the local hostapp API on port 8090.
+						// The server mounts federation APIs under /api, so post to /api/v1/...
+						hbURL := "https://127.0.0.1:8090/api/v1/sites/heartbeat"
 						req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, hbURL, strings.NewReader(string(b)))
 						req.Header.Set("Content-Type", "application/json")
 						if resp, err := client.Do(req); err != nil {

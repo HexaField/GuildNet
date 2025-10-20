@@ -242,12 +242,12 @@ Heartbeat poster configuration
 Devices that run the Host App poster may need to send their heartbeat to a Host App instance running on a different local port (for example when a system-installed hostapp is already running). Use the `GN_HEARTBEAT_URL` environment variable to override the poster target URL. Example:
 
 ```bash
-export GN_HEARTBEAT_URL="https://127.0.0.1:18090/v1/sites/heartbeat"
+export GN_HEARTBEAT_URL="https://127.0.0.1:18090/api/v1/sites/heartbeat"
 export GN_HEARTBEAT_INTERVAL=5s
 ./bin/hostapp serve
 ```
 
-When `GN_HEARTBEAT_URL` is unset the poster defaults to `https://127.0.0.1:8090/v1/sites/heartbeat`.
+When `GN_HEARTBEAT_URL` is unset the poster defaults to `https://127.0.0.1:8090/api/v1/sites/heartbeat`.
 
 
 ## Examples and notes
@@ -292,6 +292,8 @@ For step-by-step instructions and examples for attaching multiple devices to the
 Device capabilities
 -------------------
 Devices are considered the authoritative source for local capabilities (CPU, memory, storage, VRAM, tailnet IPs). The Host App exposes a small heartbeat endpoint (`POST /v1/sites/heartbeat`) that devices use to report these values. The server persists the payload in the per-cluster localdb under collection `devices` and the UI/placement logic will prefer these values when making placement decisions.
+
+> Note: the federation endpoints are mounted under `/api`, so the effective path for heartbeats is `POST /api/v1/sites/heartbeat`.
 
 
 ---

@@ -21,10 +21,8 @@ function DeviceList(_props: { clusterId: string }) {
       <Show when={sites()} fallback={<div class="text-sm text-neutral-500">No devices</div>}>
         {(s) => {
           const list = s().filter((d: any) => {
-            // If devices include clusterId, only show those for the current cluster
-            if (d.clusterId) return d.clusterId === _props.clusterId
-            // Otherwise show cluster-level entries whose id matches cluster
-            return d.id === _props.clusterId
+            // Only show devices that explicitly include a clusterId matching the current cluster
+            return d.clusterId === _props.clusterId
           })
           return (
             <div class="grid grid-cols-1 gap-2">
@@ -54,6 +52,7 @@ function DeviceList(_props: { clusterId: string }) {
 export default function Settings() {
   const params = useParams()
   const navigate = useNavigate()
+  // params.clusterId is expected to be the canonical clusterId (required)
   const clusterId = () => params.clusterId || ''
   const [cluster] = createResource(clusterId, getClusterRecord)
   const [health, { refetch: refetchHealth }] = createResource(clusterId, clusterHealth)
@@ -152,7 +151,7 @@ export default function Settings() {
               <div class="grid md:grid-cols-3 gap-4">
                 <div>
                   <div class="text-xs text-neutral-500">Cluster ID</div>
-                  <div class="font-mono text-sm">{c().id}</div>
+                  <div class="font-mono text-sm">{c().clusterId}</div>
                 </div>
                 <div>
                   <div class="text-xs text-neutral-500">Name</div>
@@ -195,11 +194,11 @@ export default function Settings() {
                 </button>
               </div>
               <div class="pt-4">
-                <PublishedServices clusterId={c().id} />
+                <PublishedServices clusterId={clusterId()} />
               </div>
               <div class="pt-4">
                 <div class="font-medium mb-2">Connected devices</div>
-                <DeviceList clusterId={c().id} />
+                <DeviceList clusterId={clusterId()} />
               </div>
             </div>
           )}

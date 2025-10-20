@@ -136,7 +136,7 @@ operator-build-load: operator-image-load ## Convenience target to build and load
 	@echo "operator image build+load complete"
 
 build-ui: ## Build UI (Vite)
-	cd ui && npm ci && npm run build
+	cd ui && npm run build
 
 # ---------- Run ----------
 run: build stop-hostapp ## Build all (backend+UI), stop any existing hostapp, then run backend (serve)

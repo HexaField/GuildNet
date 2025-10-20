@@ -199,7 +199,7 @@ function Sidebar() {
       <div class="space-y-1">
         <For each={clusters() ?? []}>
           {(c) => (
-            <ClusterRow id={c.id} name={c.name} />
+            <ClusterRow id={c.clusterId} name={c.name} />
           )}
         </For>
       </div>
@@ -307,8 +307,8 @@ export default function App() {
         <Route path="/c/:clusterId/databases/:dbId/tables/:table/permissions" component={TablePermissions} />
         <Route path="/c/:clusterId/databases/:dbId/tables/:table/import-export" component={TableImportExport} />
         <Route path="/c/:clusterId/settings" component={Settings} />
-  <Route path="/c/:clusterId/federation" component={MultiDevice} />
-  <Route path="/c/:clusterId/federation/create" component={FederatedCreate} />
+        <Route path="/c/:clusterId/federation" component={MultiDevice} />
+        <Route path="/c/:clusterId/federation/create" component={FederatedCreate} />
         {/* Home when no cluster */}
         <Route path="/" component={Home} />
       </Route>

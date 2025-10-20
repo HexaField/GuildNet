@@ -151,4 +151,7 @@ if [ -n "$listener_check_cmd" ] && eval "$listener_check_cmd" >/dev/null 2>&1; t
   fi
 fi
 
+# Ensure we run with the repository root as the working directory so relative
+# paths like ui/dist resolve correctly when the binary checks the CWD.
+cd "$ROOT_DIR"
 exec "$BIN" serve

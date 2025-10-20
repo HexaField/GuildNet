@@ -184,13 +184,17 @@ export async function listImages(signal?: AbortSignal): Promise<DeployImage[]> {
   }
 }
 
-export type ClusterRecord = { id: string; name?: string; state?: string }
+// clusterId may be present when records refer to a specific runtime instance
+// Client-side cluster record: use clusterId as the canonical identifier (required)
+export type ClusterRecord = { clusterId: string; name?: string; state?: string }
 
 export async function listClusters(): Promise<ClusterRecord[]> {
   try {
     const res = await fetch(apiUrl('/api/deploy/clusters'))
     if (!res.ok) return []
-    return (await res.json()) as ClusterRecord[]
+    const raw = (await res.json()) as any[]
+    // Normalize server-side `id` into client-side `clusterId`
+    return raw.map(r => ({ clusterId: (r.clusterId as string) || (r.id as string), name: r.name, state: r.state }))
   } catch {
     return []
   }
@@ -200,7 +204,8 @@ export async function getClusterRecord(id: string): Promise<ClusterRecord | null
   try {
     const res = await fetch(apiUrl(`/api/deploy/clusters/${encodeURIComponent(id)}`))
     if (!res.ok) return null
-    return (await res.json()) as ClusterRecord
+    const r = await res.json()
+    return { clusterId: (r.clusterId as string) || (r.id as string), name: r.name, state: r.state }
   } catch { return null }
 }
 
@@ -325,6 +330,7 @@ export async function deleteClusterRecord(id: string): Promise<boolean> {
 
 // Sites & FederatedService APIs
 export type SiteRecord = {
+  clusterId?: string
   id: string
   name?: string
   state?: string
