@@ -11,6 +11,11 @@ ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
 IMG_NAME="${TAG}"
 
 echo "Building image ${IMG_NAME} from images/agent..."
-docker buildx build --load -t "${IMG_NAME}" "${ROOT_DIR}/images/agent"
+if docker buildx version >/dev/null 2>&1; then
+	docker buildx build --load -t "${IMG_NAME}" "${ROOT_DIR}/images/agent"
+else
+	echo "docker buildx not available; using fallback docker build"
+	docker build -t "${IMG_NAME}" "${ROOT_DIR}/images/agent"
+fi
 
 echo "Done."

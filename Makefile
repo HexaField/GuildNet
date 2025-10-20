@@ -48,6 +48,11 @@ gen:
 	controller-gen object:headerFile=./hack/boilerplate.go.txt paths=./api/...
 	controller-gen crd:crdVersions=v1 paths=./api/... output:crd:dir=./config/crd/bases
 
+.PHONY: verify-federation-e2e
+verify-federation-e2e:
+	@echo "Running multi-cluster federation end-to-end verification"
+	@./scripts/verify-federation-e2e.sh
+
 .PHONY: gen-check
 gen-check: gen
 	@echo "Checking for uncommitted generated changes..."
