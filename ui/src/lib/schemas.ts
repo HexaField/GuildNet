@@ -1,19 +1,23 @@
 import { z } from 'zod'
 
-export const SiteSchema = z.object({
-  id: z.string(),
-  // optional cluster reference for device rows (server will emit `cluster` on device records)
+export const SiteSchema = z.object({ 
   cluster: z.string().optional(),
-  name: z.string().optional(),
-  // server may emit a boolean or a string for state (legacy/boolean 'ready' marker)
-  state: z.union([z.string(), z.boolean()]).optional(),
-  tailnetIPs: z.array(z.string()).optional(),
-  supportsCluster: z.boolean().optional(),
   cpuMilli: z.number().int().optional(),
+  createdAt: z.string().optional(),
+  forwards: z.number().int().optional(),
+  hasDB: z.boolean().optional(),
+  hasK8s: z.boolean().optional(),
+  id: z.string(),
+  lastSeen: z.string().optional(),
   memoryMB: z.number().int().optional(),
+  name: z.string().optional(),
+  started: z.boolean().optional(),
+  state: z.union([z.string(), z.boolean()]).optional(),
+  stateDir: z.string().optional(),
+  tailnetIPs: z.array(z.string()).optional(),
+  supportsCluster: z.union([z.boolean(), z.null()]).optional(),
   storageMB: z.number().int().optional(),
   vramMB: z.number().int().optional(),
-  lastSeen: z.string().optional()
 })
 
 export const SiteListSchema = z.array(SiteSchema)
