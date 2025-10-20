@@ -252,6 +252,67 @@ make diag-multi-device
 make verify-multi-device-failover
 ```
 
+Connecting multiple devices to the same cluster (explicit steps)
+
+This section shows the manual sequence to attach multiple Host App instances (devices) to the same Kubernetes cluster and to share published services. The `make multi-device-*` targets automate this, but doing the steps manually helps when debugging or customizing the flow.
+
+Prerequisites
+- A target Kubernetes cluster with a kubeconfig accessible from at least one device.
+- On each device: Host App (binary or built from repo), `kubectl`, and optionally `microk8s` for single-node testing.
+- Optional but recommended: tailscale/headscale so devices can reach each other over a secure tailnet.
+
+Steps (manual)
+1) Prepare the kubeconfig on the primary device (Device A). For microk8s:
+
+```bash
+sudo microk8s status --wait-ready
+mkdir -p ~/.guildnet
+microk8s config > ~/.guildnet/kubeconfig
+export KUBECONFIG=~/.guildnet/kubeconfig
+```
+
+2) Start Host App on Device A. Ensure TLS certs and `GUILDNET_MASTER_KEY` are configured:
+
+```bash
+export GUILDNET_MASTER_KEY="$(head -c 32 /dev/urandom | base64)"
+export LISTEN_LOCAL="0.0.0.0:8090"
+./bin/hostapp serve &
+# or for dev
+./scripts/run-hostapp.sh
+```
+
+3) Produce a join artifact (`guildnet.config`) that contains a kubeconfig or connection hints. Generate it on the joiner (Device B) or Device A and transfer it:
+
+```bash
+bash scripts/generate_join_config.sh --kubeconfig /path/to/kubeconfig --out guildnet.config
+```
+
+4) From Device B (the joiner), POST the join artifact to Device A's `/bootstrap` endpoint:
+
+```bash
+curl -k -X POST "https://<deviceA-host-or-tailnet-ip>:8090/bootstrap" -F "file=@guildnet.config"
+```
+
+5) Verify on Device A the cluster is attached and the kubeconfig is stored in the Host App DB (or visible via `GET /api/deploy/clusters`):
+
+```bash
+curl -s "https://127.0.0.1:8090/api/deploy/clusters" | jq .
+kubectl --kubeconfig=~/.guildnet/kubeconfig get nodes
+```
+
+6) Start Host App on Device B. If Device B cannot reach the cluster API directly, configure per-cluster `APIProxyURL` or rely on tailscale/tsnet connectors so Device B has a network path to the API server.
+
+Troubleshooting tips
+- If scripts fail with "set: Illegal option -o pipefail" or `syntax` errors, make sure you run them under `bash` (not `/bin/sh`). The orchestrator now invokes remote helpers with `bash`.
+- If `docker buildx --load` is missing on a host, `scripts/agent-build-load.sh` falls back to `docker build`.
+- When importing images to microk8s use `sudo microk8s ctr images import /tmp/image.tar` and set `imagePullPolicy: IfNotPresent` on operator Deployment to prefer local images.
+- To confirm cross-device service mirrors, check for ConfigMaps named `guildnet-system/published-<clusterid>` in the cluster; these are the mirrored published service mappings devices use to resync.
+
+Security notes
+- Use a unique `GUILDNET_MASTER_KEY` per Host App host and store it securely (do not commit to git).
+- Prefer the in-cluster operator in production instead of `GN_EMBED_OPERATOR` to centralize reconciliation and reduce host-side complexity.
+
+
 Operational notes:
 - The embedded operator uses controller-runtime leader election (coordination.k8s.io/leases) so multiple devices can run safely; only the leader reconciles at a time.
 - Published service mappings are mirrored into an in-cluster ConfigMap `guildnet-system/published-<clusterid>` so devices can resync consistently after restarts.

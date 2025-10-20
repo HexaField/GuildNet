@@ -273,6 +273,11 @@ curl -k -X POST "https://127.0.0.1:8090/api/cluster/<clusterID>/workspaces" -H '
   - TLS certificates and `GUILDNET_MASTER_KEY` are required for secure production runs.
 
 
+Connecting multiple devices
+
+For step-by-step instructions and examples for attaching multiple devices to the same cluster (join artifact, bootstrap flow, troubleshooting and sample commands) see the authoritative guide in `DEPLOYMENT.md` — the "Connecting multiple devices to the same cluster" section. API.md keeps the API reference concise; DEPLOYMENT.md is the how-to.
+
+
 ---
 
 This file was generated from code inspections of `internal/api/router.go`, `internal/settings/settings.go` and `pkg/config/config.go`, and the repository's `DEPLOYMENT.md` and `architecture.md`. If you want changes to the format or additional details (example payloads per endpoint, HTTP response shapes, or OpenAPI generation), I can add them.

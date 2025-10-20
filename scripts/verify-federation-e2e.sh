@@ -20,11 +20,21 @@ REMOTE_DIR="$FED_REMOTE_DIR"
 echo "Repo root: $REPO_ROOT"
 echo "Remote: $REMOTE -> $REMOTE_DIR"
 
-# Ensure working tree is clean or commit local changes
+# Allow skipping temporary commit by passing --no-commit
+NO_COMMIT=0
+if [ "${1:-}" = "--no-commit" ]; then
+  NO_COMMIT=1
+fi
+
+# Ensure working tree is clean or commit local changes (unless skipped)
 if ! git diff --quiet || ! git diff --staged --quiet; then
-  echo "Uncommitted changes detected. Committing with temporary message..."
-  git add -A
-  git commit -m "ci: temporary commit for verify-federation-e2e" || true
+  if [ "$NO_COMMIT" -eq 1 ]; then
+    echo "Uncommitted changes detected; --no-commit specified, will rsync working tree without committing."
+  else
+    echo "Uncommitted changes detected. Committing with temporary message..."
+    git add -A
+    git commit -m "ci: temporary commit for verify-federation-e2e" || true
+  fi
 fi
 
 # Ensure remote dir exists and rsync the repo
@@ -34,9 +44,9 @@ rsync -avz --delete --exclude .git --exclude tmp --exclude node_modules "$REPO_R
 # Copy the remote helper script as well
 scp "$REPO_ROOT/scripts/remote-run-verify-federation.sh" "$REMOTE:$REMOTE_DIR/scripts/"
 
-# Run remote script
+# Run remote script (invoke with bash to avoid /bin/sh semantics)
 echo "Running remote setup on $REMOTE..."
-ssh "$REMOTE" "bash -lc 'cd $REMOTE_DIR && bash scripts/remote-run-verify-federation.sh'"
+ssh "$REMOTE" "cd $REMOTE_DIR && bash ./scripts/remote-run-verify-federation.sh"
 
 # After remote returns, run local verify-e2e to ensure HostApp + operator on local cluster are functioning
 echo "Running local verify-e2e..."

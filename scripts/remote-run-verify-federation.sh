@@ -26,10 +26,13 @@ if [ -f "$REPO_ROOT/k8s/metallb-example.yaml" ]; then
   sudo microk8s kubectl apply -f $REPO_ROOT/k8s/metallb-example.yaml || true
 fi
 
-# Build and load operator image (if Makefile supports it); otherwise build and apply manifests
-if make -n agent-build >/dev/null 2>&1; then
-  echo "Building operator images and loading into microk8s (if supported)"
-  make agent-build || true
+# Build and load operator image using the provided helper script(s) where possible.
+# Use bash to ensure set -o pipefail and other bash features are available.
+if [ -x "$REPO_ROOT/scripts/agent-build-load.sh" ]; then
+  echo "Building operator/agent images using scripts/agent-build-load.sh"
+  bash "$REPO_ROOT/scripts/agent-build-load.sh" || echo "agent-build-load failed (continuing)"
+else
+  echo "No agent-build-load.sh found or not executable; skipping image build"
 fi
 
 # Run basic verify-e2e steps on remote (deploy rethinkdb, tailscale DaemonSet, etc.)

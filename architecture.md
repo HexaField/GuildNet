@@ -58,6 +58,20 @@ Note: see ADR and implementation plan for multi-device federated clusters:
 - Implementation plan: `docs/implementation/0001-multi-device-cluster-implementation.md`
 
 
+Connecting multiple devices (concept)
+
+Overview
+- The `Registry` maintains per-cluster `Instance` objects (kubeconfig, k8s client, dynamic client, local DB). Multiple Host App instances coordinate via the cluster control plane and share published-service mappings for cross-device access.
+
+Mirror & resync mechanism (short)
+- When a Host App publishes a service, it mirrors the mapping into `guildnet-system/published-<clusterid>` in the cluster. Other devices read that ConfigMap and resync local listeners/proxies so published services are visible across devices.
+
+Bootstrap & coordination (short)
+- Devices join by submitting a `guildnet.config` (or kubeconfig) to an existing Host App via `POST /bootstrap`. The receiver persists the kubeconfig and runs a short pre-warm probe. Leader election (controller-runtime) ensures only one reconciler actively changes cluster-scoped resources at a time.
+
+For full, step-by-step how-to (commands, examples, and troubleshooting), see `DEPLOYMENT.md` → "Connecting multiple devices to the same cluster". Keep `architecture.md` focused on the conceptual behavior and integration points.
+
+
 High level summary
 
 - Per-cluster kubeconfigs: the Host App stores kubeconfigs in local state and looks them up under the DB key `credentials:cl:{id}:kubeconfig` when creating per-cluster `Instance` clients. For interactive dev flows the code now prefers `~/.guildnet/kubeconfig` as the default kubeconfig before `~/.kube/config`.
