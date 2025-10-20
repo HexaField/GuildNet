@@ -773,16 +773,19 @@ func main() {
 				// list persisted clusters and post
 				var clusters []map[string]any
 				if err := ldb.List("clusters", &clusters); err == nil {
+					// allow overriding the heartbeat target via GN_HEARTBEAT_URL
+					hbURL := strings.TrimSpace(os.Getenv("GN_HEARTBEAT_URL"))
+					if hbURL == "" {
+						hbURL = "https://127.0.0.1:8090/api/v1/sites/heartbeat"
+					}
 					for _, c := range clusters {
 						cid := fmt.Sprint(c["id"])
 						if cid == "" {
 							continue
 						}
-						payload["clusterId"] = cid
+						// send the canonical `cluster` field (not legacy clusterId)
+						payload["cluster"] = cid
 						b, _ := json.Marshal(payload)
-						// Heartbeat target is fixed to the local hostapp API on port 8090.
-						// The server mounts federation APIs under /api, so post to /api/v1/...
-						hbURL := "https://127.0.0.1:8090/api/v1/sites/heartbeat"
 						req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, hbURL, strings.NewReader(string(b)))
 						req.Header.Set("Content-Type", "application/json")
 						if resp, err := client.Do(req); err != nil {
