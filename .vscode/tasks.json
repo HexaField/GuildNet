@@ -84,6 +84,21 @@
       "group": "test"
     },
     {
+      "label": "Admin: destroy cluster (destructive)",
+      "type": "shell",
+      "command": "bash -lc 'bash scripts/shutdown-test-clusters.sh --yes 2>&1 | tee /tmp/shutdown-test-clusters-$(date +%s).log'",
+      "group": "test",
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": true,
+        "panel": "shared",
+        "showReuseMessage": true,
+        "clear": false
+      },
+      "problemMatcher": []
+    },
+    {
       "label": "Generate join config (guildnet.config)",
       "type": "shell",
       "command": "bash scripts/generate_join_config.sh --out \"${GN_JOIN_OUT:-guildnet.config}\"",
