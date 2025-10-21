@@ -49,6 +49,7 @@ USAGE
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) OUT_FILE="${2:-}"; shift 2 ;;
+    --name) NAME_LABEL="${2:-}"; shift 2 ;;
     --kubeconfig) KUBECONFIG_PATH="${2:-}"; shift 2 ;;
     --help|-h) usage; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; usage; exit 2 ;;
