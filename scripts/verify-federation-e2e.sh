@@ -21,7 +21,7 @@ fi
 
 : ${FED_REMOTE:=${FED_REMOTE_ARG:-}}
 if [ -z "${FED_REMOTE}" ]; then
-  echo "FED_REMOTE is required. Example: FED_REMOTE=field@192.168.1.52 FED_REMOTE_DIR=~/GuildNet $0" >&2
+  echo "FED_REMOTE is required. Example: FED_REMOTE=user@192.168.0.1 FED_REMOTE_DIR=~/GuildNet $0" >&2
   exit 2
 fi
 
