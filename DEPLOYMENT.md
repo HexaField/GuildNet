@@ -199,6 +199,11 @@ In production you generally do NOT use a local `kubectl proxy`. If you must, exp
 
 7) Verify basic flow (easy Makefile shortcuts)
 
+Operational note (2025-10-21):
+- During recent local testing the operator image was rebuilt and imported into microk8s with the tag `guildnet/hostapp:local` and the operator Deployment was patched to use that image. Several CRDs in `config/crd/bases/` were applied to the test cluster to ensure all reconcilers are available (federatedclusters, federatedservices, sitestatuses, workspaces, capabilities).
+
+If you follow the local image import flow, remember to set imagePullPolicy to `IfNotPresent` or `Never` for local tags and perform a `kubectl -n guildnet-system rollout restart deployment workspace-operator` after updating the image.
+
 Quick health probe:
 
 ```bash

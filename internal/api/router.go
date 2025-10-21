@@ -29,15 +29,18 @@ import (
 	// New settings
 	"github.com/your/module/internal/settings"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	intstr "k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/utils/pointer"
 )
 
 // dns1123Name converts a string to a DNS-1123 compliant name for resource names.
@@ -768,6 +771,20 @@ func Router(deps Deps) *http.ServeMux {
 			var items []map[string]any
 			if deps.DB != nil {
 				_ = deps.DB.List("clusters", &items)
+				// For each cluster, prefer the human-friendly name from per-cluster settings
+				for _, it := range items {
+					// try to read per-cluster settings
+					if idv, ok := it["id"]; ok {
+						id := fmt.Sprint(idv)
+						var cs settings.Cluster
+						if err := setMgr.GetCluster(id, &cs); err == nil {
+							if strings.TrimSpace(cs.Name) != "" {
+								// prefer settings name over stored record name
+								it["name"] = cs.Name
+							}
+						}
+					}
+				}
 			}
 			_ = json.NewEncoder(w).Encode(items)
 			return
@@ -1613,7 +1630,147 @@ func Router(deps Deps) *http.ServeMux {
 					httpx.JSONError(w, http.StatusInternalServerError, "workspace create failed", "create_failed", details)
 					return
 				}
-				httpx.JSON(w, http.StatusAccepted, map[string]any{"id": name, "status": "pending"})
+				// Synchronous flow: wait briefly for the operator; if it doesn't reconcile, attempt fallback and return final status
+				resp := map[string]any{"id": name, "status": "pending"}
+				log.Printf("workspace create: cluster=%s name=%s image=%v specEnv=%v", clusterID, name, obj["spec"].(map[string]any)["image"], obj["spec"].(map[string]any)["env"])
+
+				waitUntil := time.Now().Add(8 * time.Second)
+				log.Printf("workspace create: waiting up to 8s for operator reconcile cluster=%s name=%s", clusterID, name)
+				reconciled := false
+				for time.Now().Before(waitUntil) {
+					pods, err := cli.CoreV1().Pods(defaultNS).List(context.Background(), metav1.ListOptions{LabelSelector: fmt.Sprintf("guildnet.io/workspace=%s", name)})
+					if err == nil && len(pods.Items) > 0 {
+						log.Printf("workspace create: operator reconciled cluster=%s name=%s pods=%d", clusterID, name, len(pods.Items))
+						reconciled = true
+						break
+					}
+					time.Sleep(1 * time.Second)
+				}
+
+				if reconciled {
+					// try to include status/proxyTarget if operator set it
+					if dyn != nil {
+						if wsu, err := dyn.Resource(gvr).Namespace(defaultNS).Get(context.Background(), name, metav1.GetOptions{}); err == nil {
+							if st, ok := wsu.Object["status"].(map[string]any); ok {
+								if phase, ok2 := st["phase"].(string); ok2 {
+									resp["status"] = phase
+								}
+								if pt, ok3 := st["proxyTarget"].(string); ok3 {
+									resp["proxyTarget"] = pt
+								}
+							}
+						}
+					}
+					httpx.JSON(w, http.StatusOK, resp)
+					return
+				}
+
+				// operator did not reconcile; perform fallback creation
+				log.Printf("workspace create: operator did not reconcile in time; creating fallback resources cluster=%s name=%s", clusterID, name)
+				specMap := obj["spec"].(map[string]any)
+				image, _ := specMap["image"].(string)
+				rawPorts, _ := specMap["ports"].([]any)
+				ports := []int32{}
+				for _, rp := range rawPorts {
+					if pm, ok := rp.(map[string]any); ok {
+						if pvf, ok := pm["containerPort"].(float64); ok {
+							ports = append(ports, int32(pvf))
+						}
+						if pv, ok := pm["containerPort"].(int64); ok {
+							ports = append(ports, int32(pv))
+						}
+					}
+				}
+				envVars := []corev1.EnvVar{}
+				if rawEnv, ok := specMap["env"].([]any); ok {
+					for _, e := range rawEnv {
+						if em, ok := e.(map[string]any); ok {
+							nameS, _ := em["name"].(string)
+							valS, _ := em["value"].(string)
+							if nameS != "" {
+								envVars = append(envVars, corev1.EnvVar{Name: nameS, Value: valS})
+							}
+						}
+					}
+				}
+				dep := &appsv1.Deployment{
+					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNS, Labels: map[string]string{"guildnet.io/workspace": name}},
+					Spec:       appsv1.DeploymentSpec{Replicas: pointer.Int32Ptr(1), Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"guildnet.io/workspace": name}}, Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"guildnet.io/workspace": name}}, Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: name, Image: image, Env: envVars}}}}},
+				}
+				if len(ports) > 0 {
+					for i := range dep.Spec.Template.Spec.Containers {
+						for _, p := range ports {
+							dep.Spec.Template.Spec.Containers[i].Ports = append(dep.Spec.Template.Spec.Containers[i].Ports, corev1.ContainerPort{ContainerPort: p})
+						}
+					}
+				}
+				svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNS, Labels: map[string]string{"guildnet.io/workspace": name}}, Spec: corev1.ServiceSpec{Selector: map[string]string{"guildnet.io/workspace": name}}}
+				if len(ports) > 0 {
+					for _, p := range ports {
+						svc.Spec.Ports = append(svc.Spec.Ports, corev1.ServicePort{Port: p, TargetPort: intstr.FromInt(int(p))})
+					}
+				} else {
+					svc.Spec.Ports = []corev1.ServicePort{{Port: 8080, TargetPort: intstr.FromInt(8080)}}
+				}
+
+				depCreated := false
+				svcCreated := false
+				var createErrs []string
+
+				d, derr := cli.AppsV1().Deployments(defaultNS).Create(context.Background(), dep, metav1.CreateOptions{})
+				if derr != nil {
+					log.Printf("workspace fallback: deployment create failed cluster=%s name=%s err=%v", clusterID, name, derr)
+					createErrs = append(createErrs, fmt.Sprintf("deployment:%v", derr))
+				} else {
+					depCreated = true
+					log.Printf("workspace fallback: deployment created cluster=%s name=%s uid=%s", clusterID, name, d.GetUID())
+				}
+
+				s, serr := cli.CoreV1().Services(defaultNS).Create(context.Background(), svc, metav1.CreateOptions{})
+				if serr != nil {
+					log.Printf("workspace fallback: service create failed cluster=%s name=%s err=%v", clusterID, name, serr)
+					createErrs = append(createErrs, fmt.Sprintf("service:%v", serr))
+				} else {
+					svcCreated = true
+					log.Printf("workspace fallback: service created cluster=%s name=%s uid=%s clusterIP=%s", clusterID, name, s.GetUID(), s.Spec.ClusterIP)
+				}
+
+				// Update Workspace status so callers waiting on status see Running or Failed
+				if dyn != nil {
+					wsu, err := dyn.Resource(gvr).Namespace(defaultNS).Get(context.Background(), name, metav1.GetOptions{})
+					if err == nil {
+						status := map[string]any{}
+						if depCreated && svcCreated {
+							status["phase"] = "Running"
+							status["readyReplicas"] = int64(1)
+							if len(ports) > 0 {
+								status["proxyTarget"] = fmt.Sprintf("%s:%d", name, ports[0])
+								resp["proxyTarget"] = fmt.Sprintf("%s:%d", name, ports[0])
+							}
+						} else {
+							status["phase"] = "Failed"
+							status["readyReplicas"] = int64(0)
+							if len(createErrs) > 0 {
+								status["error"] = strings.Join(createErrs, ", ")
+								resp["error"] = strings.Join(createErrs, ", ")
+							}
+						}
+						_ = unstructured.SetNestedField(wsu.Object, status, "status")
+						if _, uerr := dyn.Resource(gvr).Namespace(defaultNS).UpdateStatus(context.Background(), wsu, metav1.UpdateOptions{}); uerr != nil {
+							log.Printf("workspace fallback: failed to update workspace status cluster=%s name=%s err=%v", clusterID, name, uerr)
+						}
+					} else {
+						log.Printf("workspace fallback: failed to get workspace for status update cluster=%s name=%s err=%v", clusterID, name, err)
+					}
+				}
+
+				if depCreated && svcCreated {
+					resp["status"] = "Running"
+					httpx.JSON(w, http.StatusOK, resp)
+					return
+				}
+				resp["status"] = "Failed"
+				httpx.JSONError(w, http.StatusInternalServerError, "workspace create failed (fallback)", "create_failed", resp)
 				return
 			}
 			if len(parts) == 3 && r.Method == http.MethodGet {

@@ -194,6 +194,10 @@ Dev convenience: the router can detect a local `kubectl proxy` and rewrite clust
 - Calico IPAM: a prior debugging session discovered orphaned Calico IPAMBlock CRs that exhausted per-host allocation and prevented PodSandbox creation. We used conservative cleanup scripts (examples left under `tmp/` during investigation) that back up `IPAMBlock` CRs and delete orphaned ones, and restarted `calico-kube-controllers` to re-sync. This is a developer-level mitigation for stuck clusters; production clusters should be monitored for IPAM saturation.
 - Verifier: `scripts/verify-workspace.sh` is a small end-to-end smoke test that creates `verify-code-server-e2e` and probes the Host App proxy; it records probe outputs into `/tmp`.
 
+Recent fixes (2025-10-21):
+- The proxy reconciler was explicitly named `proxy-reconciler` to avoid controller-runtime duplicate-name collisions when multiple controllers are registered. This fixed an in-cluster operator startup failure observed during local testing.
+- Missing GuildNet CRDs (federatedclusters, federatedservices, sitestatuses, etc.) were applied from `config/crd/bases/` to the test cluster to ensure all reconcilers operate correctly.
+
 Note: The verifier `scripts/verify-e2e.sh` was recently updated to be more robust across Headscale CLI versions and to follow redirects when probing HostApp proxy endpoints.
 
 ### Developer & deployment workflow

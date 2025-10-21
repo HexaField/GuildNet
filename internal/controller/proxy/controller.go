@@ -105,7 +105,12 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 }
 
 func (r *ProxyReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Name this controller explicitly to avoid controller-runtime default-name collisions
+	// when multiple controllers watch the same resource kind. The operator previously
+	// attempted to register another controller for FederatedService and controller
+	// names must be unique.
 	return ctrl.NewControllerManagedBy(mgr).
+		Named("proxy-reconciler").
 		For(&v1.FederatedService{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&appsv1.DaemonSet{}).

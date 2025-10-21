@@ -326,3 +326,11 @@ Sample Role and ClusterRole YAML are available under `config/rbac/`.
 ---
 
 This file was generated from code inspections of `internal/api/router.go`, `internal/settings/settings.go` and `pkg/config/config.go`, and the repository's `DEPLOYMENT.md` and `architecture.md`. If you want changes to the format or additional details (example payloads per endpoint, HTTP response shapes, or OpenAPI generation), I can add them.
+
+Recent operational changes (2025-10-21):
+- The operator image was rebuilt and loaded into local clusters as `guildnet/hostapp:local` during testing.
+- Several GuildNet CRDs (federatedclusters, federatedservices, sitestatuses, workspaces, capabilities) were applied to the test cluster to ensure all reconcilers can operate.
+- A controller naming collision was fixed by explicitly naming the proxy reconciler (`proxy-reconciler`) to avoid duplicate controller registration when multiple controllers are registered.
+- The Host App implements a synchronous fallback for Workspace creation: if the in-cluster operator does not reconcile a newly-created Workspace within a bounded timeout, Host App will create a Deployment and Service and update the Workspace.status so the UI and end-to-end tests remain functional.
+
+See `internal/controller/proxy/controller.go` for the controller naming change and `internal/api/router.go` for the Workspace create/fallback implementation.
