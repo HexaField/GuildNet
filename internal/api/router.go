@@ -187,15 +187,23 @@ func Router(deps Deps) *http.ServeMux {
 		if body.Tailscale != nil {
 			_ = setMgr.PutTailscale(*body.Tailscale)
 		}
-		// If kubeconfig provided, create a cluster record with generated ID and persist optional settings
+		// If kubeconfig provided, compute deterministic id from kubeconfig and upsert cluster record.
 		if body.Cluster != nil && strings.TrimSpace(body.Cluster.Kubeconfig) != "" && deps.DB != nil {
-			id := uuid.NewString()
+			// Compute deterministic id from kubeconfig to ensure a single source-of-truth per control-plane.
+			detID, derr := cluster.DeterministicIDFromKubeconfig(body.Cluster.Kubeconfig)
+			id := detID
+			if derr != nil || strings.TrimSpace(id) == "" {
+				// fallback to a uuid if deterministic computation failed for unexpected reasons
+				id = uuid.NewString()
+			}
 			name := body.Cluster.Name
 			if strings.TrimSpace(name) == "" {
 				name = id
 			}
 			rec := map[string]any{"id": id, "name": name, "state": "imported"}
+			// Upsert cluster record by deterministic id
 			_ = deps.DB.Put("clusters", id, rec)
+			// Store kubeconfig under deterministic id key
 			_ = deps.DB.Put("credentials", fmt.Sprintf("cl:%s:kubeconfig", id), map[string]any{"value": body.Cluster.Kubeconfig})
 			// Attempt to pre-warm per-cluster clients via registry (if available).
 			// If pre-warm fails, remove persisted records and return an error to the caller.
