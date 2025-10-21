@@ -783,8 +783,8 @@ func main() {
 						if cid == "" {
 							continue
 						}
-						// send the canonical `cluster` field (not legacy clusterId)
-						payload["cluster"] = cid
+						// set canonical `clusterId` only
+						payload["clusterId"] = cid
 						b, _ := json.Marshal(payload)
 						req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, hbURL, strings.NewReader(string(b)))
 						req.Header.Set("Content-Type", "application/json")

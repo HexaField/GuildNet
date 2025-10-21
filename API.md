@@ -253,12 +253,12 @@ The server exposes a Server-Sent Events (SSE) endpoint to stream realtime presen
 - GET /v1/sites/stream
 
 Optional query parameters:
-- cluster: limit the stream to a single cluster id (normalized). If omitted the server will stream from all clusters that expose presence feeds.
+- `clusterId` (preferred) or `cluster`: limit the stream to a single cluster id (normalized). If omitted the server will stream from all clusters that expose presence feeds.
 
-Each SSE `data` event is a JSON object:
+Each SSE `data` event is a JSON object and includes a canonical `clusterId` field. For backward compatibility the server also sets `cluster`:
 
 {
-  "cluster": "<cluster-id>",
+  "clusterId": "<cluster-id>",
   "event": { /* changefeed event payload */ }
 }
 
@@ -268,7 +268,7 @@ The changefeed event payload follows the `ChangefeedEvent` DTO used elsewhere in
 
 When `GN_HEARTBEAT_URL` is unset the poster defaults to `https://127.0.0.1:8090/api/v1/sites/heartbeat`.
 
-Note: Heartbeat payloads accepted by the Host App should include a `cluster` field to identify the cluster the device is reporting for (e.g. `{"cluster":"<id>", "id":"device-name", ...}`). The server persists device rows with a `cluster` reference and cluster-level records use the canonical `id` field.
+Note: Heartbeat payloads accepted by the Host App must include the canonical `clusterId` field. Example: `{"clusterId":"<id>", "id":"device-name", ...}`. The server persists device rows with `clusterId` and cluster-level records use the canonical `id` field.
 
 
 ## Examples and notes
@@ -315,6 +315,12 @@ Device capabilities
 Devices are considered the authoritative source for local capabilities (CPU, memory, storage, VRAM, tailnet IPs). The Host App exposes a small heartbeat endpoint (`POST /v1/sites/heartbeat`) that devices use to report these values. The server persists the payload in the per-cluster localdb under collection `devices` and the UI/placement logic will prefer these values when making placement decisions.
 
 > Note: the federation endpoints are mounted under `/api`, so the effective path for heartbeats is `POST /api/v1/sites/heartbeat`.
+
+RBAC note: DeviceParticipant CRD
+
+The Host App may create/update `DeviceParticipant` custom resources in the `guildnet-system` namespace as an in-cluster source-of-truth for device presence. Operators should grant the Host App a namespaced Role (or a ClusterRole for cluster-wide deployments) with verbs `get,list,watch,create,update,patch` on `deviceparticipants` and `get,update,patch` on `deviceparticipants/status`.
+
+Sample Role and ClusterRole YAML are available under `config/rbac/`.
 
 
 ---

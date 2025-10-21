@@ -948,7 +948,10 @@ func Router(deps Deps) *http.ServeMux {
 				if cs.CertManagerIssuer != "" {
 					clusterRec["cert_manager_issuer"] = cs.CertManagerIssuer
 				}
+				// Expose canonical cluster id and include detailed cluster object for compatibility
+				clusterRec["id"] = id
 				out["cluster"] = clusterRec
+				out["clusterId"] = id
 
 				// Tailscale hints
 				var ts settings.Tailscale
@@ -1084,6 +1087,44 @@ func Router(deps Deps) *http.ServeMux {
 				return
 			}
 			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		// Quick overview endpoint: /api/cluster/{id}/overview
+		if len(parts) >= 2 && parts[1] == "overview" {
+			if r.Method != http.MethodGet {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			out := map[string]any{"clusterId": clusterID}
+			// cluster record from host DB if present
+			if deps.DB != nil {
+				var crec map[string]any
+				if err := deps.DB.Get("clusters", clusterID, &crec); err == nil && len(crec) > 0 {
+					out["record"] = crec
+				}
+			}
+			// devices from per-cluster DB when Instance available
+			if deps.Registry != nil {
+				if inst, err := deps.Registry.Get(r.Context(), clusterID); err == nil && inst != nil && inst.DB != nil {
+					var devices []map[string]any
+					if err := inst.DB.List("devices", &devices); err == nil {
+						out["sites"] = devices
+					}
+					// federated services via dynamic client when available
+					if inst.Dyn != nil {
+						gvr := schema.GroupVersionResource{Group: "guildnet.io", Version: "v1alpha1", Resource: "federatedservices"}
+						if ulist, err := inst.Dyn.Resource(gvr).Namespace(metav1.NamespaceAll).List(r.Context(), metav1.ListOptions{}); err == nil {
+							outFS := []map[string]any{}
+							for _, it := range ulist.Items {
+								outFS = append(outFS, map[string]any{"namespace": it.GetNamespace(), "name": it.GetName()})
+							}
+							out["federatedServices"] = outFS
+						}
+					}
+				}
+			}
+			_ = json.NewEncoder(w).Encode(out)
 			return
 		}
 		// Quick status endpoint for UI: /api/cluster/{id}/status

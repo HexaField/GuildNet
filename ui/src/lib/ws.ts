@@ -178,6 +178,13 @@ export function openLogsStream(params: {
   return ws
 }
 
+export function openSitesStream(cluster?: string) {
+  const qs = cluster ? `?cluster=${encodeURIComponent(cluster)}` : ''
+  const url = apiUrl(`/v1/sites/stream${qs}`)
+  const ws = new WSManager(url)
+  return ws
+}
+
 export function ringBuffer<T>(capacity: number) {
   let items: T[] = []
   return {

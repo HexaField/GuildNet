@@ -53,6 +53,7 @@ export type DeployImage = {
 }
 
 export type SiteRecord = {
+  clusterId?: string
   id: string
   name?: string
   state?: string

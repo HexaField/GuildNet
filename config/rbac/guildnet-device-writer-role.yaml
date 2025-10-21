@@ -1,0 +1,12 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: guildnet-deviceparticipant-writer
+  namespace: guildnet-system
+rules:
+  - apiGroups: ["guildnet.io"]
+    resources: ["deviceparticipants"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["guildnet.io"]
+    resources: ["deviceparticipants/status"]
+    verbs: ["get", "update", "patch"]

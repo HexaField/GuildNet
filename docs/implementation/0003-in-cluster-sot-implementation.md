@@ -110,7 +110,7 @@ Step 13 — Tests & verification plan
 	- Simulate device without kubeconfig: heartbeat should persist to RDB and localdb; pending CRD should be reconciled once credentials are available.  
 	- Device with kubeconfig creates DeviceParticipant; GET /api/v1/sites shows participating=true.  
 - Manual smoke commands:  
-	- curl -k -X POST https://127.0.0.1:8090/api/v1/sites/heartbeat -d '{"id":"deviceX","cluster":"<cid>","tailnetIPs":["100.64.0.9"]}' -H 'Content-Type: application/json'  
+	- curl -k -X POST https://127.0.0.1:8090/api/v1/sites/heartbeat -d '{"id":"deviceX","clusterId":"<cid>","tailnetIPs":["100.64.0.9"]}' -H 'Content-Type: application/json'  
 	- curl -k https://127.0.0.1:8090/api/v1/sites/stream?cluster=<cid> and observe events.  
 	- kubectl -n guildnet-system get deviceparticipants  
 

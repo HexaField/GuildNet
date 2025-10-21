@@ -1,7 +1,7 @@
 import { z } from 'zod'
 
 export const SiteSchema = z.object({ 
-  cluster: z.string().optional(),
+  clusterId: z.string().optional(),
   cpuMilli: z.number().int().optional(),
   createdAt: z.string().optional(),
   forwards: z.number().int().optional(),

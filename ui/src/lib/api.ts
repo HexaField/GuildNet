@@ -209,6 +209,14 @@ export async function getClusterRecord(id: string): Promise<ClusterRecord | null
   } catch { return null }
 }
 
+export async function getClusterOverview(id: string): Promise<any | null> {
+  try {
+    const res = await fetch(apiUrl(`/api/cluster/${encodeURIComponent(id)}/overview`))
+    if (!res.ok) return null
+    return await res.json()
+  } catch { return null }
+}
+
 export async function listClusterServers(clusterId: string): Promise<Server[]> {
   try {
     const res = await fetch(apiUrl(`/api/cluster/${encodeURIComponent(clusterId)}/servers`))
@@ -348,8 +356,11 @@ export async function listSites(): Promise<SiteRecord[]> {
     const res = await fetch(apiUrl('/api/v1/sites'))
     if (!res.ok) return []
     const data = await res.json()
+    // Normalize server-side 'cluster' -> client-side 'clusterId' so UI
+    // can rely on a single canonical field during migration.
+    const normalized = (data || []).map((s: any) => ({ ...s, clusterId: s.clusterId ?? s.cluster }))
     try {
-      return SiteListSchema.parse(data) as SiteRecord[]
+      return SiteListSchema.parse(normalized) as SiteRecord[]
     } catch {
       return []
     }

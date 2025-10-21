@@ -67,7 +67,7 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 							id := fmt.Sprint(dm["id"])
 							// Start with DB persisted record
 							rec := map[string]any{
-								"cluster":         s.ID,
+								"clusterId":       s.ID,
 								"id":              id,
 								"name":            fmt.Sprint(dm["name"]),
 								"state":           s.HasK8s || s.HasDB,
@@ -86,9 +86,12 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 								"lastSeen":        time.Now(),
 							}
 							for k, v := range dm {
-								// preserve device metadata, but normalize legacy clusterId -> cluster
+								// preserve device metadata; ignore any legacy `cluster` field
+								if k == "cluster" {
+									continue
+								}
 								if k == "clusterId" {
-									rec["cluster"] = fmt.Sprint(v)
+									rec["clusterId"] = fmt.Sprint(v)
 									continue
 								}
 								rec[k] = v
@@ -106,8 +109,7 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 							if _, ok := rec["lastSeen"]; !ok {
 								rec["lastSeen"] = time.Now()
 							}
-							// Ensure no legacy clusterId leaks into API responses
-							delete(rec, "clusterId")
+							// Ensure we expose the canonical clusterId only
 							out = append(out, rec)
 						}
 						seen[s.ID] = true
@@ -139,7 +141,7 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 					if err := db.List("devices", &devices); err == nil && len(devices) > 0 {
 						for _, dm := range devices {
 							rec := map[string]any{
-								"cluster":         cl,
+								"clusterId":       cl,
 								"name":            fmt.Sprint(dm["name"]),
 								"state":           false,
 								"createdAt":       time.Now(),
@@ -157,14 +159,15 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 								"lastSeen":        time.Now(),
 							}
 							for k, v := range dm {
+								if k == "cluster" {
+									continue
+								}
 								if k == "clusterId" {
-									rec["cluster"] = fmt.Sprint(v)
+									rec["clusterId"] = fmt.Sprint(v)
 									continue
 								}
 								rec[k] = v
 							}
-							// Ensure no legacy clusterId leaks into API responses
-							delete(rec, "clusterId")
 							out = append(out, rec)
 						}
 						seen[cl] = true
@@ -184,6 +187,7 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 				}
 				rec := map[string]any{
 					"id":              s.ID,
+					"clusterId":       s.ID,
 					"state":           s.HasK8s || s.HasDB,
 					"createdAt":       s.CreatedAt,
 					"started":         s.Started,
@@ -213,7 +217,8 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 			httpx.JSONError(w, http.StatusServiceUnavailable, "no registry", "no_registry", "stream unavailable")
 			return
 		}
-		clusterQ := strings.TrimSpace(r.URL.Query().Get("cluster"))
+		// Only accept the canonical clusterId query param
+		clusterQ := strings.TrimSpace(r.URL.Query().Get("clusterId"))
 		// prepare subscriptions
 		type sub struct {
 			id     string
@@ -279,7 +284,8 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 			ss := s
 			go func() {
 				for ev := range ss.stream.C {
-					m := map[string]any{"cluster": ss.id, "event": ev}
+					// Emit canonical clusterId only
+					m := map[string]any{"clusterId": ss.id, "event": ev}
 					select {
 					case ch <- m:
 					case <-ctx.Done():
@@ -328,8 +334,9 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 			httpx.JSONError(w, http.StatusBadRequest, "invalid json", "bad_request", err.Error())
 			return
 		}
-		clusterIDRaw, ok := payload["cluster"].(string)
-		if !ok || clusterIDRaw == "" {
+		// Require canonical clusterId in heartbeat payload
+		clusterIDRaw, _ := payload["clusterId"].(string)
+		if clusterIDRaw == "" {
 			httpx.JSONError(w, http.StatusBadRequest, "cluster required", "bad_request", "cluster required")
 			return
 		}
@@ -349,9 +356,8 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 			httpx.JSONError(w, http.StatusNotFound, "cluster not found", "not_found", fmt.Sprintf("cluster %s not found", clusterID))
 			return
 		}
-		// Normalize persisted payload to include `cluster` field and drop legacy `clusterId`.
-		payload["cluster"] = clusterID
-		delete(payload, "clusterId")
+		// Persist canonical clusterId only
+		payload["clusterId"] = clusterID
 		payload["lastSeen"] = time.Now().UTC()
 		if inst.DB == nil {
 			httpx.JSONError(w, http.StatusInternalServerError, "no per-cluster DB", "no_db", "per-cluster DB unavailable")
@@ -422,7 +428,11 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 			status["state"] = "online"
 			// Call create/update helper
 			if _, err := k8s.CreateOrUpdateDeviceParticipant(context.Background(), inst.Dyn, "guildnet-system", devID, spec, status); err != nil {
-				log.Printf("deviceparticipant upsert failed cluster=%s device=%s err=%v", p["cluster"], devID, err)
+				cid := p["clusterId"]
+				if cid == nil {
+					cid = p["cluster"]
+				}
+				log.Printf("deviceparticipant upsert failed cluster=%v device=%s err=%v", cid, devID, err)
 				// enqueue for reconciliation
 				if inst.DB != nil {
 					_ = inst.DB.Put("pending_deviceparticipants", devID, p)

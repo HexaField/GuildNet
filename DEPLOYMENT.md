@@ -99,6 +99,10 @@ sudo microk8s kubectl -n guildnet-system rollout restart deployment workspace-op
 
 5) If the operator needs to manage other clusters, mount the control-plane kubeconfig into the operator Deployment and set the environment variable `GN_CONTROL_PLANE_KUBECONFIG` to the mounted path (e.g., `/etc/guildnet/kubeconfig`). The operator will load kubeconfig from this env var first.
 
+RBAC: DeviceParticipant CRD
+
+Ensure the ServiceAccount used by HostApp or the operator has permission to manage `deviceparticipants.guildnet.io`. Sample Role and ClusterRole manifests are included under `config/rbac/` to grant minimal verbs for create/update/status operations.
+
 Notes:
 - Using digested image references may still make kubelet attempt a registry pull; prefer a local tag + imagePullPolicy=IfNotPresent or Never when importing images locally.
 - If you need to re-import, repeat steps 1-3, then set deployment image to the new digest or tag and rollout restart.

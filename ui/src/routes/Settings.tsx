@@ -4,79 +4,38 @@ import Input from '../components/Input'
 import { useNavigate, useParams } from '@solidjs/router'
 import {
   attachClusterKubeconfig,
-  clusterHealth,
   deleteClusterRecord,
   getClusterKubeconfig,
   getClusterJoinConfig,
-  getClusterRecord
+  getClusterRecord,
+  getClusterOverview
 } from '../lib/api'
 import PublishedServices from '../components/PublishedServices'
+import MultiDevice from './MultiDevice'
 import { pushToast } from '../components/Toaster'
 import { listSites } from '../lib/api'
 
-function DeviceList(_props: { id: string }) {
-  const [sites] = createResource(listSites)
-  return (
-    <div class="space-y-2">
-      <Show when={sites()} fallback={<div class="text-sm text-neutral-500">No devices</div>}>
-        {(s) => {
-          const list = s().filter((d: any) => {
-            // Only show devices that explicitly reference this cluster via `cluster`.
-            return d.cluster === _props.id
-          })
-          return (
-            <div class="grid grid-cols-1 gap-2">
-              {list.length === 0 ? (
-                <div class="text-sm text-neutral-500">No devices for this cluster</div>
-              ) : (
-                list.map((d: any) => (
-                  <div class="p-2 border rounded bg-gray">
-                    <div class="flex items-center justify-between">
-                      <div class="font-medium">{d.name || d.id}</div>
-                      <div class="text-xs text-neutral-500">{d.supportsCluster ? 'supports cluster' : 'hostapp-only'}</div>
-                    </div>
-                    <div class="text-xs text-neutral-600 mt-1">IPs: {(d.tailnetIPs || []).join(', ') || '-'}</div>
-                    <div class="text-xs text-neutral-600 mt-1">CPU: {d.cpuMilli || '-'} m | Mem: {d.memoryMB || '-'} MB</div>
-                    <div class="text-xs text-neutral-500 mt-1">Last seen: {d.lastSeen ? String(d.lastSeen) : '-'}</div>
-                  </div>
-                ))
-              )}
-            </div>
-          )
-        }}
-      </Show>
-    </div>
-  )
-}
+// DeviceList removed: MultiDevice now renders connected devices per-cluster.
 
 export default function Settings() {
   const params = useParams()
   const navigate = useNavigate()
   // params.clusterId (route param name) is expected to carry the canonical cluster id (required)
   const clusterId = () => params.clusterId || ''
-  const [cluster] = createResource(clusterId, getClusterRecord)
-  const [health, { refetch: refetchHealth }] = createResource(clusterId, clusterHealth)
+  const [overview, { refetch: refetchOverview }] = createResource(clusterId, getClusterOverview)
   const [kubeconfig, setKubeconfig] = createSignal('')
   const [busy, setBusy] = createSignal(false)
   const [healthDetail, setHealthDetail] = createSignal<{ status: string; code?: string; error?: string } | null>(null)
 
   const fetchHealthDetail = async () => {
-    try {
-      const res = await fetch(`/api/deploy/clusters/${encodeURIComponent(clusterId())}?action=health`, { method: 'POST' })
-      if (res.ok) {
-        const data = await res.json()
-        setHealthDetail({ status: String(data?.status || 'unknown'), code: data?.code, error: data?.error })
-      } else {
-        setHealthDetail({ status: 'unknown' })
-      }
-    } catch {
-      setHealthDetail({ status: 'unknown' })
-    }
+    // If overview contains health info in future, use it; otherwise fall back
+    setHealthDetail({ status: String(overview()?.record?.state || 'unknown') })
   }
 
-  // Keep health detail in sync with selected cluster
+  // Keep overview in sync with selected cluster
   createEffect(() => {
     const _ = clusterId()
+    refetchOverview()
     fetchHealthDetail()
   })
 
@@ -91,7 +50,7 @@ export default function Settings() {
       if (ok) {
         pushToast({ type: 'success', message: 'Kubeconfig attached' })
         setKubeconfig('')
-        refetchHealth()
+        refetchOverview()
         fetchHealthDetail()
       } else {
         pushToast({ type: 'error', message: 'Attach failed' })
@@ -145,25 +104,24 @@ export default function Settings() {
   return (
     <div class="flex flex-col gap-4">
       <Card title="Cluster Settings">
-        <Show when={cluster()} fallback={<div>Loading…</div>}>
-          {(c) => (
-            <div class="space-y-4">
+        <Show when={overview()} fallback={<div>Loading…</div>}>
+          <div class="space-y-4">
               <div class="grid md:grid-cols-3 gap-4">
                 <div>
                   <div class="text-xs text-neutral-500">Cluster ID</div>
-                  <div class="font-mono text-sm">{c().id}</div>
+                  <div class="font-mono text-sm">{(overview()?.record?.id) || clusterId()}</div>
                 </div>
                 <div>
                   <div class="text-xs text-neutral-500">Name</div>
-                  <div>{c().name || '-'}</div>
+                  <div>{(overview()?.record?.name) || '-'}</div>
                 </div>
                 <div>
                   <div class="flex items-center justify-between">
                     <div>
                       <div class="text-xs text-neutral-500">Health</div>
-                      <div>{healthDetail()?.status || health() || 'unknown'}</div>
+                      <div>{healthDetail()?.status || overview()?.record?.state || 'unknown'}</div>
                     </div>
-                    <button class="btn" onClick={() => { refetchHealth(); fetchHealthDetail() }}>Refresh</button>
+                    <button class="btn" onClick={() => { refetchOverview(); fetchHealthDetail() }}>Refresh</button>
                   </div>
                   <Show when={healthDetail()}>
                     {(h) => (
@@ -197,11 +155,10 @@ export default function Settings() {
                 <PublishedServices clusterId={clusterId()} />
               </div>
               <div class="pt-4">
-                <div class="font-medium mb-2">Connected devices</div>
-                <DeviceList id={clusterId()} />
+                <div class="font-medium mb-2">Federation</div>
+                <MultiDevice clusterId={clusterId()} />
               </div>
             </div>
-          )}
         </Show>
       </Card>
     </div>
