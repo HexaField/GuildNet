@@ -248,6 +248,18 @@ Quick health probe:
 make health
 ```
 
+Full teardown / reset
+---------------------
+
+For local test environments there is a guarded convenience target that performs a full teardown of locally managed artifacts (Headscale container, Tailscale router, Host App process, temporary cluster records, and local GN state):
+
+```bash
+# Requires explicit confirmation to avoid accidental data loss
+make reset MAKE_RESET_CONFIRM=1
+```
+
+This target is destructive for local state files (by default it removes `~/.guildnet` and the `GN_KUBECONFIG` file). It attempts best-effort cleanup of Docker Headscale and in-cluster subnet router, and deletes test-like clusters using the Host App API. Some remote resources may remain and require manual cleanup.
+
 Run the repository end-to-end verifier (this sequence exercises operator reconciliation and proxying):
 
 ```bash

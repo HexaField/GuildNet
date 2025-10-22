@@ -171,6 +171,18 @@ These components are referenced in code and deployment manifests and are expecte
 - Headscale (optional)
   - Headscale can be orchestrated via Host App jobs to provide a private tailnet for cluster access. Headscale endpoints and preauth keys are stored in local DB and optionally used to configure tsnet connectors.
 
+Local teardown helper (Makefile)
+-------------------------------
+
+For convenience during development there is a guarded Makefile target that performs a best-effort full teardown of local GuildNet artifacts (Headscale container, Tailscale router, Host App process, temporary cluster records, and local GN state):
+
+```bash
+# Requires explicit confirmation to run
+make reset MAKE_RESET_CONFIRM=1
+```
+
+This is intended for local/dev workflows and is destructive to local state (it removes `~/.guildnet` and the `GN_KUBECONFIG` file by default). Use with care.
+
 
 ## Cluster configuration options (per-cluster settings)
 

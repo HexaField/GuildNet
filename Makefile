@@ -164,6 +164,30 @@ tidy: ## go mod tidy
 clean: ## Remove build artifacts
 	rm -rf bin ui/dist
 
+.PHONY: reset
+reset: ## Full reset: stop hostapp, headscale, tailscale, delete test clusters, and remove local project configs (DANGEROUS)
+	@echo "This target will perform a full teardown of local GuildNet artifacts:\n  - stop hostapp process\n  - stop all managed workloads via API\n  - delete test/dev clusters via Host App API\n  - stop and remove local Headscale container\n  - bring down local Tailscale router\n  - remove local user config state (default: $(HOME)/.guildnet)\n  - remove GN_KUBECONFIG file (default: $(GN_KUBECONFIG))\n";
+	@if [ "$(MAKE_RESET_CONFIRM)" != "1" ] && [ "$(CONFIRM)" != "--yes" ]; then \
+		echo "To run this target, re-run with MAKE_RESET_CONFIRM=1 or CONFIRM=--yes (e.g., make reset MAKE_RESET_CONFIRM=1)"; exit 2; \
+	fi
+	@echo "[reset] Stopping hostapp (best-effort)";
+	LISTEN_LOCAL=$(LISTEN_LOCAL) bash ./scripts/stop-hostapp.sh || true
+	@echo "[reset] Requesting stop-all via admin API (best-effort)";
+	@curl -sk -X POST https://127.0.0.1:8090/api/admin/stop-all >/dev/null 2>&1 || true
+	@echo "[reset] Deleting test-like clusters via Host App API (best-effort)";
+	@bash ./scripts/shutdown-test-clusters.sh --yes || true
+	@echo "[reset] Stopping Headscale (if running)";
+	@$(MAKE) headscale-down || true
+	@echo "[reset] Bringing down Tailscale router (if configured)";
+	@$(MAKE) router-down || true
+	@echo "[reset] Running cleanup script to remove local state under ~/.guildnet (if present)";
+	@bash ./scripts/cleanup.sh --all || true
+	@echo "[reset] Removing local GN_KUBECONFIG file: $(GN_KUBECONFIG) (if present)";
+	@if [ -f "$(GN_KUBECONFIG)" ]; then rm -f "$(GN_KUBECONFIG)" && echo "  removed $(GN_KUBECONFIG)"; else echo "  not found: $(GN_KUBECONFIG)"; fi
+	@echo "[reset] Removing temporary headscale/router cluster files in tmp/ (if present)";
+	@rm -f tmp/cluster-*-headscale.json tmp/cluster-*-kubeconfig || true
+	@echo "[reset] Completed. Some resources (e.g., cluster objects on remote K8s, remote Tailscale state) may remain and require manual cleanup.";
+
 # ---------- Utilities ----------
 health: ## Check backend health endpoint
 	curl -k https://$(LISTEN_LOCAL)/healthz || true

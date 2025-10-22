@@ -91,6 +91,15 @@ High level summary
 - Per-cluster kubeconfigs: the Host App stores kubeconfigs in local state and looks them up under the DB key `credentials:cl:{id}:kubeconfig` when creating per-cluster `Instance` clients. For interactive dev flows the code now prefers `~/.guildnet/kubeconfig` as the default kubeconfig before `~/.kube/config`.
 - `POST /bootstrap` accepts a join payload (`guildnet.config` file or JSON with `cluster.kubeconfig`), persists a cluster record and kubeconfig, then performs a bounded pre-warm (10s) which attempts a light Kubernetes API call and a short `EnsureRDB`. On pre-warm failure bootstrap rolls back persisted state and returns an error.
 
+Developer teardown helper
+-------------------------
+
+For local development there is a guarded Makefile helper that performs a best-effort full teardown of local GuildNet artifacts (Headscale container, Tailscale router, Host App process, temporary cluster records, and local GN state). It is destructive to local state (removes `~/.guildnet` and the `GN_KUBECONFIG` file by default). Use only for disposable test environments:
+
+```bash
+make reset MAKE_RESET_CONFIRM=1
+```
+
 Multi-device bootstrap note
 
 For a simplified multi-device flow (Device A host + Device B joiner), see the multi-device helpers:
