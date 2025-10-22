@@ -1718,6 +1718,10 @@ func Router(deps Deps) *http.ServeMux {
 						}
 					}
 				}
+				// Normalize schedule value to a DNS-1123 compliant value so it matches typical Kubernetes node names.
+				if schedule != "" {
+					schedule = dns1123Name(schedule)
+				}
 				obj := map[string]any{
 					"apiVersion": "guildnet.io/v1alpha1",
 					"kind":       "Workspace",
