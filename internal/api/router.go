@@ -1815,6 +1815,15 @@ func Router(deps Deps) *http.ServeMux {
 					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNS, Labels: map[string]string{"guildnet.io/workspace": name}},
 					Spec:       appsv1.DeploymentSpec{Replicas: pointer.Int32Ptr(1), Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"guildnet.io/workspace": name}}, Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"guildnet.io/workspace": name}}, Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: name, Image: image, Env: envVars}}}}},
 				}
+				// Honor the scheduling hint in fallback mode as well: if a schedule target
+				// was computed, set a nodeSelector so the scheduler places the pod on the
+				// intended node (kubernetes.io/hostname).
+				if strings.TrimSpace(schedule) != "" {
+					if dep.Spec.Template.Spec.NodeSelector == nil {
+						dep.Spec.Template.Spec.NodeSelector = map[string]string{}
+					}
+					dep.Spec.Template.Spec.NodeSelector["kubernetes.io/hostname"] = schedule
+				}
 				if len(ports) > 0 {
 					for i := range dep.Spec.Template.Spec.Containers {
 						for _, p := range ports {
