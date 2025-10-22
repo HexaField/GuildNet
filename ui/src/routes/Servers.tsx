@@ -64,16 +64,17 @@ export default function Servers() {
         </td>
         <td class="py-2 pr-4">
           <div>{srv.node ?? '-'}</div>
-          <Show when={srv.machineName || (srv.tailnetIPs && srv.tailnetIPs.length > 0)}>
+          <Show
+            when={
+              srv.machineName || (srv.tailnetIPs && srv.tailnetIPs.length > 0)
+            }
+          >
             <div class="text-xs text-neutral-500">
               <Show when={srv.machineName}>
                 <span>{srv.machineName}</span>
               </Show>
               <Show when={srv.tailnetIPs && srv.tailnetIPs.length > 0}>
-                <span>
-                  {' '}
-                  ({(srv.tailnetIPs || []).join(', ')})
-                </span>
+                <span> ({(srv.tailnetIPs || []).join(', ')})</span>
               </Show>
             </div>
           </Show>
@@ -92,7 +93,9 @@ export default function Servers() {
           <button
             class="inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium border ml-2 bg-red-50 dark:bg-neutral-800 hover:bg-red-100 dark:hover:bg-neutral-700 text-red-700"
             onClick={async () => {
-              const ok = window.confirm(`Shut down server “${srv.name}”? This deletes the workspace.`)
+              const ok = window.confirm(
+                `Shut down server “${srv.name}”? This deletes the workspace.`
+              )
               if (!ok) return
               const done = await deleteClusterWorkspace(clusterId(), srv.name)
               if (!done) {

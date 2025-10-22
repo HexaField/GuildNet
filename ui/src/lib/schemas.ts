@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-export const SiteSchema = z.object({ 
+export const SiteSchema = z.object({
   clusterId: z.string().optional(),
   cpuMilli: z.number().int().optional(),
   createdAt: z.string().optional(),
@@ -17,7 +17,7 @@ export const SiteSchema = z.object({
   tailnetIPs: z.array(z.string()).optional(),
   supportsCluster: z.union([z.boolean(), z.null()]).optional(),
   storageMB: z.number().int().optional(),
-  vramMB: z.number().int().optional(),
+  vramMB: z.number().int().optional()
 })
 
 export const SiteListSchema = z.array(SiteSchema)
@@ -37,11 +37,13 @@ export const PerSiteStatusSchema = z.unknown()
 export const FederatedServiceInputSchema = z.object({
   apiVersion: z.string().optional(),
   kind: z.string().optional(),
-  metadata: z.object({
-    name: z.string().optional(),
-    namespace: z.string().optional(),
-    labels: z.record(z.string(), z.string()).optional()
-  }).optional(),
+  metadata: z
+    .object({
+      name: z.string().optional(),
+      namespace: z.string().optional(),
+      labels: z.record(z.string(), z.string()).optional()
+    })
+    .optional(),
   spec: z.record(z.string(), z.any()).optional()
 })
 

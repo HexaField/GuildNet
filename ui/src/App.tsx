@@ -1,4 +1,13 @@
-import { lazy, createResource, createSignal, For, Show, createEffect, onCleanup, createMemo } from 'solid-js'
+import {
+  lazy,
+  createResource,
+  createSignal,
+  For,
+  Show,
+  createEffect,
+  onCleanup,
+  createMemo
+} from 'solid-js'
 import {
   A,
   Route,
@@ -8,7 +17,13 @@ import {
   type RouteSectionProps
 } from '@solidjs/router'
 import Toaster, { pushToast } from './components/Toaster'
-import { listClusters, createClusterRecord, attachClusterKubeconfig, getHealthSummary, clusterHealth } from './lib/api'
+import {
+  listClusters,
+  createClusterRecord,
+  attachClusterKubeconfig,
+  getHealthSummary,
+  clusterHealth
+} from './lib/api'
 import Modal from './components/Modal'
 import { apiUrl } from './lib/config'
 
@@ -106,14 +121,20 @@ function Sidebar() {
       if (pasted) {
         const ok = await attachClusterKubeconfig(rec.id, pasted)
         if (!ok) {
-          pushToast({ type: 'error', message: 'Attach failed. Fix the kubeconfig and try again.' })
+          pushToast({
+            type: 'error',
+            message: 'Attach failed. Fix the kubeconfig and try again.'
+          })
           return
         }
         // Check health immediately and inform the user
         try {
           const st = await clusterHealth(rec.id)
           if (st !== 'ok') {
-            pushToast({ type: 'info', message: `Cluster not reachable yet (${st}). You can attach a different kubeconfig in Settings.` })
+            pushToast({
+              type: 'info',
+              message: `Cluster not reachable yet (${st}). You can attach a different kubeconfig in Settings.`
+            })
           } else {
             pushToast({ type: 'success', message: 'Cluster connected' })
           }
@@ -143,7 +164,7 @@ function Sidebar() {
       const item = m.get(props.id) as any
       if (!item) return `Health: ${status()}`
       if (item.status === 'error') {
-        const parts = ["Health: error"]
+        const parts = ['Health: error']
         if (item.code) parts.push(`code=${item.code}`)
         if (item.error) parts.push(item.error)
         return parts.join(' — ')
@@ -160,10 +181,16 @@ function Sidebar() {
       return 'bg-neutral-400'
     }
     return (
-      <A href={`/c/${encodeURIComponent(props.id)}/servers`} class="flex items-center gap-2 px-2 py-1 rounded hover:bg-neutral-100 dark:hover:bg-neutral-800" title={tooltip()}>
+      <A
+        href={`/c/${encodeURIComponent(props.id)}/servers`}
+        class="flex items-center gap-2 px-2 py-1 rounded hover:bg-neutral-100 dark:hover:bg-neutral-800"
+        title={tooltip()}
+      >
         <span class={`w-2 h-2 rounded-full ${dot()}`} />
         <span class="truncate text-sm">{props.name || props.id}</span>
-        <span class="ml-auto text-[10px] text-neutral-500 uppercase">{status()}</span>
+        <span class="ml-auto text-[10px] text-neutral-500 uppercase">
+          {status()}
+        </span>
       </A>
     )
   }
@@ -175,8 +202,13 @@ function Sidebar() {
     // store timestamp when health fetched
     refetchHealth()
     setHealthTs(Date.now())
-    htimer = window.setInterval(() => { refetchHealth(); setHealthTs(Date.now()) }, 30000)
-    onCleanup(() => { if (htimer) window.clearInterval(htimer) })
+    htimer = window.setInterval(() => {
+      refetchHealth()
+      setHealthTs(Date.now())
+    }, 30000)
+    onCleanup(() => {
+      if (htimer) window.clearInterval(htimer)
+    })
   })
 
   const lastUpdated = createMemo(() => {
@@ -191,47 +223,77 @@ function Sidebar() {
       <div class="flex items-center justify-between">
         <div class="font-semibold text-sm">Clusters</div>
         <div class="flex items-center gap-2">
-          <button class="btn" onClick={startWizard}>Add</button>
+          <button class="btn" onClick={startWizard}>
+            Add
+          </button>
         </div>
       </div>
       <div class="space-y-1">
         <For each={clusters() ?? []}>
-          {(c) => (
-            <ClusterRow id={c.id} name={c.name} />
-          )}
+          {(c) => <ClusterRow id={c.id} name={c.name} />}
         </For>
       </div>
       <div class="text-[10px] text-neutral-500">Health: {lastUpdated()}</div>
       <Modal
         title="Connect a cluster"
         open={open()}
-        onClose={() => { if (!busy()) setOpen(false) }}
+        onClose={() => {
+          if (!busy()) setOpen(false)
+        }}
         footer={
           <>
-            <button class="btn" onClick={() => setOpen(false)} disabled={busy()}>Cancel</button>
-            <button class="btn" onClick={submitWizard} disabled={busy() || !canSave()}>{busy() ? 'Connecting…' : 'Save'}</button>
+            <button
+              class="btn"
+              onClick={() => setOpen(false)}
+              disabled={busy()}
+            >
+              Cancel
+            </button>
+            <button
+              class="btn"
+              onClick={submitWizard}
+              disabled={busy() || !canSave()}
+            >
+              {busy() ? 'Connecting…' : 'Save'}
+            </button>
           </>
         }
       >
         <div class="space-y-3">
           <label class="block text-sm">
             Name (optional)
-            <input class="mt-1 w-full rounded-md border px-3 py-2" value={name()} onInput={e => setName(e.currentTarget.value)} />
+            <input
+              class="mt-1 w-full rounded-md border px-3 py-2"
+              value={name()}
+              onInput={(e) => setName(e.currentTarget.value)}
+            />
           </label>
           <div class="flex items-center justify-between gap-2">
             <div class="text-sm font-medium">Join file</div>
             <label class="inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium border bg-neutral-50 dark:bg-neutral-800 hover:bg-neutral-100 dark:hover:bg-neutral-700 cursor-pointer">
-              <input type="file" accept=".json,.config,application/json" class="hidden" onChange={(e) => {
-                const f = e.currentTarget.files?.[0]
-                if (f) importJoinFile(f)
-              }} />
+              <input
+                type="file"
+                accept=".json,.config,application/json"
+                class="hidden"
+                onChange={(e) => {
+                  const f = e.currentTarget.files?.[0]
+                  if (f) importJoinFile(f)
+                }}
+              />
               Import…
             </label>
           </div>
           <label class="block text-sm">
             Paste kubeconfig (optional)
-            <textarea class="mt-1 w-full h-40 rounded-md border px-3 py-2 font-mono text-xs" placeholder="Paste kubeconfig YAML" value={kc()} onInput={e => setKc(e.currentTarget.value)} />
-            <div class="text-xs text-neutral-500 mt-1">If omitted, you can attach later in Settings.</div>
+            <textarea
+              class="mt-1 w-full h-40 rounded-md border px-3 py-2 font-mono text-xs"
+              placeholder="Paste kubeconfig YAML"
+              value={kc()}
+              onInput={(e) => setKc(e.currentTarget.value)}
+            />
+            <div class="text-xs text-neutral-500 mt-1">
+              If omitted, you can attach later in Settings.
+            </div>
           </label>
         </div>
       </Modal>
@@ -248,7 +310,10 @@ function ClusterShell(props: RouteSectionProps) {
   const fetchStatus = async (id: string) => {
     if (!id) return null
     try {
-      const res = await fetch(apiUrl(`/api/cluster/${encodeURIComponent(id)}/status`), { cache: 'no-store' })
+      const res = await fetch(
+        apiUrl(`/api/cluster/${encodeURIComponent(id)}/status`),
+        { cache: 'no-store' }
+      )
       if (!res.ok) return null
       return await res.json()
     } catch (e) {
@@ -261,16 +326,57 @@ function ClusterShell(props: RouteSectionProps) {
     <div class="min-h-screen flex flex-col">
       <header class="border-b sticky top-0 z-10 bg-white/70 dark:bg-neutral-900/70 backdrop-blur">
         <div class="px-4 sm:px-6 lg:px-8 flex items-center gap-4 h-12">
-          <A href="/" class="font-semibold">GuildNet</A>
+          <A href="/" class="font-semibold">
+            GuildNet
+          </A>
           <Show when={!!cid()}>
             <nav class="flex items-center gap-3 text-sm">
               {/* Only show Servers/Launch/Databases when cluster status indicates kube is reachable or kubeconfig present+valid. Otherwise show only Settings. */}
-              <Show when={status() && (status().k8sReachable === true || (status().kubeconfigPresent && status().kubeconfigValid))} fallback={<A href={`/c/${enc(cid())}/settings`} activeClass="text-brand-600" class="hover:underline">Settings</A>}>
+              <Show
+                when={
+                  status() &&
+                  (status().k8sReachable === true ||
+                    (status().kubeconfigPresent && status().kubeconfigValid))
+                }
+                fallback={
+                  <A
+                    href={`/c/${enc(cid())}/settings`}
+                    activeClass="text-brand-600"
+                    class="hover:underline"
+                  >
+                    Settings
+                  </A>
+                }
+              >
                 <>
-                  <A href={`/c/${enc(cid())}/servers`} activeClass="text-brand-600" class="hover:underline">Servers</A>
-                  <A href={`/c/${enc(cid())}/launch`} activeClass="text-brand-600" class="hover:underline">Launch</A>
-                  <A href={`/c/${enc(cid())}/databases`} activeClass="text-brand-600" class="hover:underline">Databases</A>
-                  <A href={`/c/${enc(cid())}/settings`} activeClass="text-brand-600" class="hover:underline">Settings</A>
+                  <A
+                    href={`/c/${enc(cid())}/servers`}
+                    activeClass="text-brand-600"
+                    class="hover:underline"
+                  >
+                    Servers
+                  </A>
+                  <A
+                    href={`/c/${enc(cid())}/launch`}
+                    activeClass="text-brand-600"
+                    class="hover:underline"
+                  >
+                    Launch
+                  </A>
+                  <A
+                    href={`/c/${enc(cid())}/databases`}
+                    activeClass="text-brand-600"
+                    class="hover:underline"
+                  >
+                    Databases
+                  </A>
+                  <A
+                    href={`/c/${enc(cid())}/settings`}
+                    activeClass="text-brand-600"
+                    class="hover:underline"
+                  >
+                    Settings
+                  </A>
                 </>
               </Show>
             </nav>
@@ -298,12 +404,30 @@ export default function App() {
         <Route path="/c/:clusterId/launch" component={Launch} />
         <Route path="/c/:clusterId/databases" component={Databases} />
         {/* Database details and table routes */}
-        <Route path="/c/:clusterId/databases/:dbId" component={DatabaseDetail} />
-        <Route path="/c/:clusterId/databases/:dbId/tables/:table" component={TableView} />
-        <Route path="/c/:clusterId/databases/:dbId/tables/:table/schema" component={TableSchema} />
-        <Route path="/c/:clusterId/databases/:dbId/tables/:table/audit" component={TableAudit} />
-        <Route path="/c/:clusterId/databases/:dbId/tables/:table/permissions" component={TablePermissions} />
-        <Route path="/c/:clusterId/databases/:dbId/tables/:table/import-export" component={TableImportExport} />
+        <Route
+          path="/c/:clusterId/databases/:dbId"
+          component={DatabaseDetail}
+        />
+        <Route
+          path="/c/:clusterId/databases/:dbId/tables/:table"
+          component={TableView}
+        />
+        <Route
+          path="/c/:clusterId/databases/:dbId/tables/:table/schema"
+          component={TableSchema}
+        />
+        <Route
+          path="/c/:clusterId/databases/:dbId/tables/:table/audit"
+          component={TableAudit}
+        />
+        <Route
+          path="/c/:clusterId/databases/:dbId/tables/:table/permissions"
+          component={TablePermissions}
+        />
+        <Route
+          path="/c/:clusterId/databases/:dbId/tables/:table/import-export"
+          component={TableImportExport}
+        />
         <Route path="/c/:clusterId/settings" component={Settings} />
         {/* Home when no cluster */}
         <Route path="/" component={Home} />

@@ -13,7 +13,12 @@ import {
   onCleanup,
   onMount
 } from 'solid-js'
-import { getServer, getClusterWorkspace, getClusterWorkspaceLogs, deleteClusterWorkspace } from '../lib/api'
+import {
+  getServer,
+  getClusterWorkspace,
+  getClusterWorkspaceLogs,
+  deleteClusterWorkspace
+} from '../lib/api'
 import { formatDate } from '../lib/format'
 import { apiUrl } from '../lib/config'
 import { ringBuffer, WSManager } from '../lib/ws'
@@ -53,10 +58,20 @@ export default function ServerDetail() {
       const image = String(spec?.image || '')
       const phase = String(status?.phase || '')
       const rr = Number(status?.readyReplicas || 0)
-      const st = phase === 'Running' && rr > 0 ? 'running' : (phase?.toLowerCase() || 'pending')
-      const created = meta?.creationTimestamp ? new Date(meta.creationTimestamp).toISOString() : undefined
+      const st =
+        phase === 'Running' && rr > 0
+          ? 'running'
+          : phase?.toLowerCase() || 'pending'
+      const created = meta?.creationTimestamp
+        ? new Date(meta.creationTimestamp).toISOString()
+        : undefined
       const ports = Array.isArray(spec?.ports)
-        ? spec.ports.map((p: any) => ({ name: String(p?.name || ''), port: Number(p?.containerPort || p?.port || 0) })).filter((p: any) => p.port > 0)
+        ? spec.ports
+            .map((p: any) => ({
+              name: String(p?.name || ''),
+              port: Number(p?.containerPort || p?.port || 0)
+            }))
+            .filter((p: any) => p.port > 0)
         : []
       const envArr = Array.isArray(spec?.env) ? spec.env : []
       const env: Record<string, string> = {}
@@ -88,7 +103,9 @@ export default function ServerDetail() {
     if (isClusterScoped()) {
       const cid = clusterId()
       if (!cid) return ''
-      return apiUrl(`/api/cluster/${encodeURIComponent(cid)}/proxy/server/${encodeURIComponent(id)}/`)
+      return apiUrl(
+        `/api/cluster/${encodeURIComponent(cid)}/proxy/server/${encodeURIComponent(id)}/`
+      )
     }
     const s = srv()
     if (s?.url) return s.url
@@ -172,7 +189,9 @@ export default function ServerDetail() {
   })
 
   // Cluster-scoped logs SSE
-  const [wsLogs, setWsLogs] = createSignal<Array<{ t: string; msg: string }>>([])
+  const [wsLogs, setWsLogs] = createSignal<Array<{ t: string; msg: string }>>(
+    []
+  )
   let sse: WSManager | undefined
   let logBuf = ringBuffer<{ t: string; msg: string }>(2000)
 
@@ -194,7 +213,9 @@ export default function ServerDetail() {
     logBuf = ringBuffer<{ t: string; msg: string }>(2000)
     setWsLogs([])
 
-    const url = apiUrl(`/api/cluster/${encodeURIComponent(cid)}/workspaces/${encodeURIComponent(name)}/logs/stream`)
+    const url = apiUrl(
+      `/api/cluster/${encodeURIComponent(cid)}/workspaces/${encodeURIComponent(name)}/logs/stream`
+    )
     sse = new WSManager(url)
     const offState = sse.on('state', () => {})
     const offMsg = sse.on('message', (obj: any) => {
@@ -213,7 +234,9 @@ export default function ServerDetail() {
     })
   })
 
-  const [tab, setTab] = createSignal<'info' | 'debug' | 'error' | 'ide' | 'logs'>(isClusterScoped() ? 'logs' : 'info')
+  const [tab, setTab] = createSignal<
+    'info' | 'debug' | 'error' | 'ide' | 'logs'
+  >(isClusterScoped() ? 'logs' : 'info')
 
   return (
     <div class="flex flex-col gap-4">
@@ -230,14 +253,21 @@ export default function ServerDetail() {
                       class="inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium border bg-red-50 dark:bg-neutral-800 hover:bg-red-100 dark:hover:bg-neutral-700 text-red-700"
                       onClick={async () => {
                         const name = server().name
-                        const ok = window.confirm(`Shut down server “${name}”? This deletes the workspace.`)
+                        const ok = window.confirm(
+                          `Shut down server “${name}”? This deletes the workspace.`
+                        )
                         if (!ok) return
-                        const done = await deleteClusterWorkspace(clusterId(), name)
+                        const done = await deleteClusterWorkspace(
+                          clusterId(),
+                          name
+                        )
                         if (!done) {
                           window.alert('Failed to shut down server.')
                           return
                         }
-                        navigate(`/c/${encodeURIComponent(clusterId())}/servers`)
+                        navigate(
+                          `/c/${encodeURIComponent(clusterId())}/servers`
+                        )
                       }}
                     >
                       Shutdown
@@ -258,11 +288,15 @@ export default function ServerDetail() {
                   </div>
                   <div class="text-sm">
                     <span class="text-neutral-500">Created:</span>{' '}
-                    {server().created_at ? formatDate(server().created_at) : '-'}
+                    {server().created_at
+                      ? formatDate(server().created_at)
+                      : '-'}
                   </div>
                   <div class="text-sm">
                     <span class="text-neutral-500">Updated:</span>{' '}
-                    {server().updated_at ? formatDate(server().updated_at) : '-'}
+                    {server().updated_at
+                      ? formatDate(server().updated_at)
+                      : '-'}
                   </div>
                   <div class="text-sm">
                     <span class="text-neutral-500">Ports:</span>{' '}
@@ -295,19 +329,17 @@ export default function ServerDetail() {
             <Card title="Logs & Tools">
               <Tabs
                 tabs={
-                  (
-                    isClusterScoped()
-                      ? [
-                          { id: 'logs', label: 'Logs' },
-                          ...(ideUrl() ? [{ id: 'ide', label: 'IDE' }] : [])
-                        ]
-                      : [
-                          { id: 'info', label: 'Info' },
-                          { id: 'debug', label: 'Debug' },
-                          { id: 'error', label: 'Error' },
-                          ...(ideUrl() ? [{ id: 'ide', label: 'IDE' }] : [])
-                        ]
-                  ) as { id: string; label: string }[]
+                  (isClusterScoped()
+                    ? [
+                        { id: 'logs', label: 'Logs' },
+                        ...(ideUrl() ? [{ id: 'ide', label: 'IDE' }] : [])
+                      ]
+                    : [
+                        { id: 'info', label: 'Info' },
+                        { id: 'debug', label: 'Debug' },
+                        { id: 'error', label: 'Error' },
+                        ...(ideUrl() ? [{ id: 'ide', label: 'IDE' }] : [])
+                      ]) as { id: string; label: string }[]
                 }
                 value={tab()}
                 onChange={(t) => setTab(t as any)}
@@ -319,9 +351,7 @@ export default function ServerDetail() {
                       {wsLogs().length === 0 ? (
                         <div class="text-neutral-400">No logs yet…</div>
                       ) : (
-                        wsLogs().map((l) => (
-                          <div>{`${l.t} ${l.msg}`}</div>
-                        ))
+                        wsLogs().map((l) => <div>{`${l.t} ${l.msg}`}</div>)
                       )}
                     </div>
                     <div class="text-xs text-neutral-500">Live logs</div>
@@ -341,7 +371,14 @@ export default function ServerDetail() {
                       return (
                         <div class="relative border rounded-md overflow-hidden h-[70vh]">
                           <div class="absolute top-2 right-2 z-10">
-                            <a href={frameSrc() || url()} target="_blank" rel="noreferrer" class="btn btn-sm">Open in new tab</a>
+                            <a
+                              href={frameSrc() || url()}
+                              target="_blank"
+                              rel="noreferrer"
+                              class="btn btn-sm"
+                            >
+                              Open in new tab
+                            </a>
                           </div>
                           <iframe
                             src={frameSrc() || ''}
@@ -386,7 +423,14 @@ export default function ServerDetail() {
                         return (
                           <div class="relative border rounded-md overflow-hidden h-[70vh]">
                             <div class="absolute top-2 right-2 z-10">
-                              <a href={frameSrc() || url()} target="_blank" rel="noreferrer" class="btn btn-sm">Open in new tab</a>
+                              <a
+                                href={frameSrc() || url()}
+                                target="_blank"
+                                rel="noreferrer"
+                                class="btn btn-sm"
+                              >
+                                Open in new tab
+                              </a>
                             </div>
                             <iframe
                               src={frameSrc() || ''}

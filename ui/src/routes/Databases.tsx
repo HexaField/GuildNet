@@ -67,7 +67,12 @@ export default function Databases() {
             const onDelete = async (e: Event) => {
               e.preventDefault()
               e.stopPropagation()
-              if (!window.confirm(`Delete database ${d.id}? This cannot be undone.`)) return
+              if (
+                !window.confirm(
+                  `Delete database ${d.id}? This cannot be undone.`
+                )
+              )
+                return
               const ok = await deleteClusterDatabase(clusterId(), d.id)
               if (ok) {
                 pushToast({ type: 'success', message: 'Database deleted' })
@@ -87,7 +92,10 @@ export default function Databases() {
                 </div>
                 <div class="flex items-center gap-3">
                   <div class="text-xs text-neutral-500">{d.created_at}</div>
-                  <button class="text-xs text-red-600 hover:underline" onClick={onDelete}>
+                  <button
+                    class="text-xs text-red-600 hover:underline"
+                    onClick={onDelete}
+                  >
                     Delete
                   </button>
                 </div>
@@ -106,8 +114,19 @@ export default function Databases() {
         onClose={() => setOpen(false)}
         footer={
           <>
-            <Button type="button" onClick={() => setOpen(false)} class="!bg-neutral-100 dark:!bg-neutral-800">Cancel</Button>
-            <Button type="button" variant="primary" disabled={creating() || name().trim().length === 0} onClick={submit}>
+            <Button
+              type="button"
+              onClick={() => setOpen(false)}
+              class="!bg-neutral-100 dark:!bg-neutral-800"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="primary"
+              disabled={creating() || name().trim().length === 0}
+              onClick={submit}
+            >
               {creating() ? 'Creating…' : 'Create'}
             </Button>
           </>
@@ -116,17 +135,31 @@ export default function Databases() {
         <div class="space-y-4">
           <div>
             <label class="block text-xs font-medium mb-1">Database ID</label>
-            <Input value={id()} onInput={(e) => setId(e.currentTarget.value)} placeholder="analytics" />
+            <Input
+              value={id()}
+              onInput={(e) => setId(e.currentTarget.value)}
+              placeholder="analytics"
+            />
           </div>
           <div>
             <label class="block text-xs font-medium mb-1">Name</label>
-            <Input value={name()} onInput={(e) => setName(e.currentTarget.value)} placeholder="Analytics" />
+            <Input
+              value={name()}
+              onInput={(e) => setName(e.currentTarget.value)}
+              placeholder="Analytics"
+            />
           </div>
           <div>
             <label class="block text-xs font-medium mb-1">Description</label>
-            <Input value={desc()} onInput={(e) => setDesc(e.currentTarget.value)} placeholder="Optional description" />
+            <Input
+              value={desc()}
+              onInput={(e) => setDesc(e.currentTarget.value)}
+              placeholder="Optional description"
+            />
           </div>
-          <p class="text-xs text-neutral-500">Create a new logical database scoped to this cluster.</p>
+          <p class="text-xs text-neutral-500">
+            Create a new logical database scoped to this cluster.
+          </p>
         </div>
       </Modal>
     </div>
