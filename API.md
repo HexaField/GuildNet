@@ -113,6 +113,9 @@ Deterministic cluster IDs and attach-kubeconfig behavior
   - Creates a Workspace CR. On create, the Host App injects a metadata label `guildnet.io/schedule-node=<launcher-hostname>` to guide placement.
   - The in-cluster operator honors this hint by setting `podSpec.nodeSelector["kubernetes.io/hostname"]` to the provided value, ensuring the pod is scheduled on the target node.
   - If the target node does not exist in the cluster, normal Kubernetes scheduling applies and placement may differ.
+  - Optional scheduling override from client:
+    - Provide `scheduleNode: "<node-name>"` in the POST body to explicitly target a device (node). This will override the default launcher hostname.
+    - Alternatively, include a label `guildnet.io/schedule-node` in `labels` (array of `{name,value}` or map) and it will be used as the scheduling hint.
 
     - Response shape (array):
       - id: string — workspace name

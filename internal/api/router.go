@@ -1678,12 +1678,46 @@ func Router(deps Deps) *http.ServeMux {
 				if name == "" {
 					name = fmt.Sprintf("ws-%s", uuid.NewString()[:8])
 				}
-				// Determine the launcher hostname to guide scheduling to the launching device's node.
+				// Determine the schedule target (defaults to this host's hostname) and allow override via payload.
 				hn, _ := os.Hostname()
+				schedule := strings.TrimSpace(hn)
+				// Optional explicit override: top-level field `scheduleNode` in the request body.
+				if v, ok := spec["scheduleNode"]; ok && v != nil {
+					if s, ok2 := v.(string); ok2 && strings.TrimSpace(s) != "" {
+						schedule = strings.TrimSpace(s)
+					} else {
+						// Accept non-string types too (coerce to string)
+						sv := strings.TrimSpace(fmt.Sprint(v))
+						if sv != "" {
+							schedule = sv
+						}
+					}
+				}
+				// Also allow specifying the scheduling hint via labels (array or map) using the canonical key.
+				if lv, ok := spec["labels"]; ok && lv != nil {
+					// labels may arrive as []{name,value} or map[string]string
+					switch lt := lv.(type) {
+					case []any:
+						for _, it := range lt {
+							if m, okm := it.(map[string]any); okm {
+								k := strings.TrimSpace(fmt.Sprint(m["name"]))
+								if strings.EqualFold(k, "guildnet.io/schedule-node") {
+									sv := strings.TrimSpace(fmt.Sprint(m["value"]))
+									if sv != "" { schedule = sv }
+								}
+							}
+						}
+					case map[string]any:
+						if v2, ok2 := lt["guildnet.io/schedule-node"]; ok2 {
+							sv := strings.TrimSpace(fmt.Sprint(v2))
+							if sv != "" { schedule = sv }
+						}
+					}
+				}
 				obj := map[string]any{
 					"apiVersion": "guildnet.io/v1alpha1",
 					"kind":       "Workspace",
-					"metadata":   map[string]any{"name": name, "labels": map[string]any{"guildnet.io/schedule-node": strings.TrimSpace(hn)}},
+					"metadata":   map[string]any{"name": name, "labels": map[string]any{"guildnet.io/schedule-node": schedule}},
 					"spec": map[string]any{
 						"image":     spec["image"],
 						"env":       spec["env"],
