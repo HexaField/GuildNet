@@ -397,6 +397,15 @@ JSON body example:
 
 The server stores this under the per-cluster localdb collection `devices`. Subsequent UI calls and the placement planner prefer these device-reported values when present.
 
+Servers list enrichment
+-----------------------
+The UI lists servers per cluster by calling `GET /api/cluster/{id}/servers`, which returns a simplified view of `Workspace` CRs and enriches each entry with:
+
+- `node`: the Kubernetes node hosting the workspace pod (resolved by listing pods with label `guildnet.io/workspace=<name>`).
+- `machineName` and `tailnetIPs`: derived from `DeviceParticipant` CRs in the `guildnet-system` namespace when available.
+
+This metadata helps operators quickly identify which machine a server is running on and how it can be reached over the tailnet.
+
 Troubleshooting tips
 - If scripts fail with "set: Illegal option -o pipefail" or `syntax` errors, make sure you run them under `bash` (not `/bin/sh`). The orchestrator now invokes remote helpers with `bash`.
 - If `docker buildx --load` is missing on a host, `scripts/agent-build-load.sh` falls back to `docker build`.

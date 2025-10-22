@@ -108,6 +108,20 @@ Deterministic cluster IDs and attach-kubeconfig behavior
     - This endpoint performs service discovery (Service -> Pod selection) and supports port-forward fallback, tsnet publishing, and streamable websocket proxying.
   - GET /api/cluster/{id}/servers
     - List Workspaces (maps `Workspace` CRs to a simplified Server model: id, name, image, status, ports).
+    - Now includes machine identity for each server when available.
+    - Response shape (array):
+      - id: string — workspace name
+      - name: string — workspace name
+      - image: string
+      - status: 'pending' | 'running' | 'failed' | 'stopped'
+      - ports: [{ name?: string, port: number }]
+      - node?: string — Kubernetes node name hosting the pod
+      - machineName?: string — device name (usually the hostname) derived from DeviceParticipant
+      - tailnetIPs?: string[] — tailnet IPs/FQDNs for the hosting device
+    - Implementation details:
+      - The API lists Workspace CRs and, for each, resolves the node via the associated pod(s).
+      - It cross-references DeviceParticipant CRs (guildnet-system namespace) to map node -> device name and tailnet IPs.
+      - When DeviceParticipant data is unavailable, node is still returned and machine fields are omitted.
   - POST /api/cluster/{id}/workspaces
     - Create a Workspace CR in target cluster (body: workspace spec with image, env, ports, args, resources, labels). Returns { id, status } accepted if creation succeeded.
   - GET /api/cluster/{id}/workspaces/{name}

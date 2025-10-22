@@ -6,6 +6,8 @@ export type Server = {
   image: string
   status: 'pending' | 'running' | 'failed' | 'stopped'
   node?: string
+  machineName?: string
+  tailnetIPs?: string[]
   created_at?: string
   updated_at?: string
   url?: string

@@ -62,7 +62,22 @@ export default function Servers() {
         <td class="py-2 pr-4">
           <StatusPill status={srv.status} />
         </td>
-        <td class="py-2 pr-4">{srv.node ?? '-'}</td>
+        <td class="py-2 pr-4">
+          <div>{srv.node ?? '-'}</div>
+          <Show when={srv.machineName || (srv.tailnetIPs && srv.tailnetIPs.length > 0)}>
+            <div class="text-xs text-neutral-500">
+              <Show when={srv.machineName}>
+                <span>{srv.machineName}</span>
+              </Show>
+              <Show when={srv.tailnetIPs && srv.tailnetIPs.length > 0}>
+                <span>
+                  {' '}
+                  ({(srv.tailnetIPs || []).join(', ')})
+                </span>
+              </Show>
+            </div>
+          </Show>
+        </td>
         <td class="py-2 pr-4">{timeAgo(srv.created_at)}</td>
         <td class="py-2 pr-4">
           {(srv.ports ?? []).map((p) => `${p.name ?? ''}:${p.port}`).join(', ')}

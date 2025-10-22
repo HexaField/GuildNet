@@ -1529,17 +1529,54 @@ func Router(deps Deps) *http.ServeMux {
 				httpx.JSON(w, http.StatusOK, []any{})
 				return
 			}
+			// Build a quick lookup of device participants to enrich with machine identity.
+			// Key by lowercased device name/id for loose matching against node names.
+			deviceMap := map[string]struct {
+				name string
+				ips  []string
+			}{}
+			if dyn != nil {
+				if ulist, err := dyn.Resource(schema.GroupVersionResource{Group: "guildnet.io", Version: "v1alpha1", Resource: "deviceparticipants"}).Namespace("guildnet-system").List(r.Context(), metav1.ListOptions{}); err == nil {
+					for _, it := range ulist.Items {
+						m := it.Object
+						nameKey := strings.ToLower(strings.TrimSpace(it.GetName()))
+						// spec.name is the human hostname when provided
+						if sp, ok := m["spec"].(map[string]any); ok {
+							if v, ok2 := sp["name"]; ok2 {
+								if s := strings.ToLower(strings.TrimSpace(fmt.Sprint(v))); s != "" {
+									nameKey = s
+								}
+							}
+							ips := []string{}
+							if v, ok2 := sp["tailnetIPs"]; ok2 {
+								if arr, ok3 := v.([]any); ok3 {
+									for _, a := range arr {
+										ips = append(ips, strings.TrimSpace(fmt.Sprint(a)))
+									}
+								}
+							}
+							deviceMap[nameKey] = struct {
+								name string
+								ips  []string
+							}{name: strings.TrimSpace(fmt.Sprint(sp["name"])), ips: ips}
+						}
+					}
+				}
+			}
 			// map to Server model (local, keep fields minimal)
 			type Port struct {
 				Name string `json:"name,omitempty"`
 				Port int    `json:"port"`
 			}
 			type Server struct {
-				ID     string `json:"id"`
-				Name   string `json:"name"`
-				Image  string `json:"image"`
-				Status string `json:"status"`
-				Ports  []Port `json:"ports"`
+				ID          string   `json:"id"`
+				Name        string   `json:"name"`
+				Image       string   `json:"image"`
+				Status      string   `json:"status"`
+				Ports       []Port   `json:"ports"`
+				Node        string   `json:"node,omitempty"`
+				MachineName string   `json:"machineName,omitempty"`
+				TailnetIPs  []string `json:"tailnetIPs,omitempty"`
 			}
 			out := []Server{}
 			for _, item := range lst.Items {
@@ -1576,7 +1613,30 @@ func Router(deps Deps) *http.ServeMux {
 						}
 					}
 				}
-				out = append(out, Server{ID: name, Name: name, Image: image, Status: st, Ports: ports})
+				// Attempt to determine the node/pod location for this workspace
+				nodeName := ""
+				if cli != nil {
+					if pods, err := cli.CoreV1().Pods(defaultNS).List(r.Context(), metav1.ListOptions{LabelSelector: fmt.Sprintf("guildnet.io/workspace=%s", name)}); err == nil {
+						for _, p := range pods.Items {
+							if strings.TrimSpace(p.Spec.NodeName) != "" {
+								nodeName = p.Spec.NodeName
+								break
+							}
+						}
+					}
+				}
+				machineName := ""
+				ips := []string{}
+				if nodeName != "" {
+					if rec, ok := deviceMap[strings.ToLower(nodeName)]; ok {
+						machineName = rec.name
+						ips = rec.ips
+					} else {
+						// Fallback: use node name when no DeviceParticipant matches
+						machineName = nodeName
+					}
+				}
+				out = append(out, Server{ID: name, Name: name, Image: image, Status: st, Ports: ports, Node: nodeName, MachineName: machineName, TailnetIPs: ips})
 			}
 			httpx.JSON(w, http.StatusOK, out)
 			return

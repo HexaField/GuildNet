@@ -190,6 +190,10 @@ Dev convenience: the router can detect a local `kubectl proxy` and rewrite clust
 - Per-cluster operations
   - GET/PUT `/api/settings/cluster/{id}` — cluster settings
   - GET `/api/cluster/{id}/servers` — list workspaces
+    - Enriches each record with the machine identity when available by:
+      - Listing pods with label `guildnet.io/workspace=<name>` to determine the node hosting the workspace.
+      - Cross-referencing `DeviceParticipant` CRs in `guildnet-system` to attach `machineName` and `tailnetIPs`.
+    - When DeviceParticipant data is missing, only the `node` field is returned.
   - Proxy: `/api/cluster/{id}/proxy/server/{name}/...` — proxy to workspace servers (sets `X-Forwarded-Prefix`)
 
 - Database API (per cluster)
