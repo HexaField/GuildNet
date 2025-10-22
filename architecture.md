@@ -79,11 +79,21 @@ Mirror & resync mechanism (short)
 Bootstrap & coordination (short)
 - Devices join by submitting a `guildnet.config` (or kubeconfig) to an existing Host App via `POST /bootstrap`. The receiver persists the kubeconfig and runs a short pre-warm probe. Leader election (controller-runtime) ensures only one reconciler actively changes cluster-scoped resources at a time.
 
+Deterministic cluster identity
+------------------------------
+- Cluster identity is derived deterministically from kubeconfig content (normalized API server URL and certificate-authority material). This ensures all devices that attach the same kubeconfig compute the same canonical cluster ID and therefore operate on the same logical cluster record.
+- The attach path `POST /api/deploy/clusters/{id}?action=attach-kubeconfig` accepts any placeholder ID. The server computes the canonical ID and creates a cluster record with state `imported` if missing, enabling late attachment of secondary devices without re-running full bootstrap.
+
 For full, step-by-step how-to (commands, examples, and troubleshooting), see `DEPLOYMENT.md` → "Connecting multiple devices to the same cluster". Keep `architecture.md` focused on the conceptual behavior and integration points.
 
 Device ownership of capabilities
 --------------------------------
 In the multi-device design, individual Host App devices are the authoritative source for their local capabilities (CPU, memory, storage, VRAM, tailnet IPs). The cluster remains the source-of-truth for any data that must be identical or replicated across devices (for example, published service mappings mirrored into a ConfigMap). Devices report capabilities via a heartbeat (`POST /v1/sites/heartbeat`) which the Host App persists per-cluster. The placement planner and UI prefer those device-reported capabilities when present.
+
+In-cluster DeviceParticipant SOT and name sanitization
+-----------------------------------------------------
+- When credentials/RBAC allow, Host App upserts a `DeviceParticipant` CR in the `guildnet-system` namespace to represent device participation in-cluster. This CRD is the canonical source-of-truth for which devices participate in a cluster.
+- Device identifiers used as Kubernetes resource names are sanitized to valid RFC 1123 DNS subdomain names (lowercase, [a-z0-9-], start/end alphanumeric, max 253 chars) to avoid resource creation errors when hostnames include uppercase or unsupported characters.
 
 
 High level summary

@@ -89,6 +89,11 @@ Multi-device automation: Use `make multi-device-host` on Device A and `make mult
     - kubeconfig: returns the persisted kubeconfig as YAML
     - other actions delegated as `cluster.<action>` jobs
 
+Deterministic cluster IDs and attach-kubeconfig behavior
+-------------------------------------------------------
+- Cluster IDs are deterministic: when a kubeconfig is provided (via POST /bootstrap or attach-kubeconfig), the backend computes a canonical ID from the kubeconfig's normalized server URL and certificate-authority data.
+- POST `/api/deploy/clusters/{id}?action=attach-kubeconfig` may be invoked with any placeholder `{id}`. The backend will compute the deterministic ID and, if no record exists yet, create a cluster record with state `imported` so that UIs/agents can reference the same cluster across devices. The response includes `{ id: <deterministicId>, ok: true }` on success.
+
 - GET /ui-config
   - UI runtime config placeholder (returns {} in current implementation).
 
@@ -340,7 +345,7 @@ Devices are considered the authoritative source for local capabilities (CPU, mem
 
 RBAC note: DeviceParticipant CRD
 
-The Host App may create/update `DeviceParticipant` custom resources in the `guildnet-system` namespace as an in-cluster source-of-truth for device presence. Operators should grant the Host App a namespaced Role (or a ClusterRole for cluster-wide deployments) with verbs `get,list,watch,create,update,patch` on `deviceparticipants` and `get,update,patch` on `deviceparticipants/status`.
+The Host App may create/update `DeviceParticipant` custom resources in the `guildnet-system` namespace as an in-cluster source-of-truth for device presence. Operators should grant the Host App a namespaced Role (or a ClusterRole for cluster-wide deployments) with verbs `get,list,watch,create,update,patch` on `deviceparticipants` and `get,update,patch` on `deviceparticipants/status`. Device IDs used as Kubernetes resource names are sanitized to valid RFC 1123 DNS names (lowercase, alnum and '-', start/end alnum, max 253 chars).
 
 Sample Role and ClusterRole YAML are available under `config/rbac/`.
 

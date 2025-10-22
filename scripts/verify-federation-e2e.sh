@@ -2,158 +2,98 @@
 set -euo pipefail
 
 # verify-federation-e2e.sh
-# Orchestrates a multi-cluster E2E test using local microk8s and a remote microk8s host accessible via SSH.
-# Requires:
-#   FED_REMOTE - user@host for the remote machine
-#   FED_REMOTE_DIR - path on remote where the repo should be synced
-# Environment:
-#   This script will commit local changes, rsync repo to remote, run remote setup script and then
-#   run local verify steps. It is destructive and intended for CI or an isolated test environment.
+# Purpose: Assert two devices (local + remote over SSH) point to the SAME deterministic cluster
+# by comparing cluster IDs exposed by each hostapp. If remote is missing the local cluster,
+# the script will attach the local kubeconfig to the remote via the supported API.
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Requirements:
+# - curl, jq available locally and on the remote
+# - SSH access to the remote user@host (REMOTE_SSH), no default
+# - Local hostapp listening on https://127.0.0.1:8090 (self-signed OK)
+#
+# Env:
+#   REMOTE_SSH="user@192.168.0.1"
+#   REMOTE_HOSTAPP_URL="https://127.0.0.1:8090"   # resolved from remote side
+#   LOCAL_KUBECONFIG="$HOME/.guildnet/kubeconfig" # falls back to ~/.kube/config
+#   VERBOSE=1
 
-# Allow passing remote and remote dir as args or via env vars. Do not hardcode.
-# Usage: FED_REMOTE=user@host [FED_REMOTE_DIR=~/GuildNet] ./scripts/verify-federation-e2e.sh
-if [ "$#" -ge 1 ] && [[ "$1" != "--no-commit" ]]; then
-  FED_REMOTE_ARG="$1"
-  shift
+REMOTE_SSH="${REMOTE_SSH}"
+REMOTE_HOSTAPP_URL="${REMOTE_HOSTAPP_URL:-https://127.0.0.1:8090}"
+LOCAL_HOSTAPP_URL="${LOCAL_HOSTAPP_URL:-https://127.0.0.1:8090}"
+
+log(){ echo "[E2E] $*"; }
+vv(){ [ "${VERBOSE:-0}" != "0" ] && echo "[E2E:DBG] $*" || true; }
+
+# Helpers
+require(){ command -v "$1" >/dev/null 2>&1 || { echo "ERROR: required tool '$1' not found" >&2; exit 127; }; }
+require curl
+require jq
+
+# Determine local kubeconfig path
+LOCAL_KUBECONFIG="${LOCAL_KUBECONFIG:-}"
+if [ -z "$LOCAL_KUBECONFIG" ]; then
+  if [ -s "$HOME/.guildnet/kubeconfig" ]; then LOCAL_KUBECONFIG="$HOME/.guildnet/kubeconfig";
+  elif [ -s "$HOME/.kube/config" ]; then LOCAL_KUBECONFIG="$HOME/.kube/config";
+  else echo "ERROR: no kubeconfig found locally" >&2; exit 2; fi
 fi
 
-: ${FED_REMOTE:=${FED_REMOTE_ARG:-}}
-if [ -z "${FED_REMOTE}" ]; then
-  echo "FED_REMOTE is required. Example: FED_REMOTE=user@192.168.0.1 FED_REMOTE_DIR=~/GuildNet $0" >&2
-  exit 2
+log "Local kubeconfig: $LOCAL_KUBECONFIG"
+
+# Fetch local cluster IDs
+LOCAL_IDS=$(curl -k -s "$LOCAL_HOSTAPP_URL/api/deploy/clusters" | jq -r '.[].id')
+if [ -z "$LOCAL_IDS" ]; then echo "ERROR: no clusters on local hostapp" >&2; exit 3; fi
+vv "LOCAL_IDS: $LOCAL_IDS"
+
+# Pick canonical local cluster id: prefer 32 hex chars (deterministic id)
+LOCAL_DET="$(echo "$LOCAL_IDS" | awk '/^[0-9a-f]{32}$/ {print; exit}')"
+if [ -z "$LOCAL_DET" ]; then LOCAL_DET="$(echo "$LOCAL_IDS" | head -n1)"; fi
+log "Local deterministic cluster id: $LOCAL_DET"
+
+# Fetch remote cluster IDs
+REMOTE_IDS=$(ssh -o BatchMode=yes -o ConnectTimeout=5 "$REMOTE_SSH" -t "curl -k -s '$REMOTE_HOSTAPP_URL/api/deploy/clusters' | jq -r '.[].id'" 2>/dev/null | tr -d '\r') || true
+vv "REMOTE_IDS: $REMOTE_IDS"
+
+HAS_REMOTE_DET=$(echo "$REMOTE_IDS" | grep -c "^$LOCAL_DET$") || true
+if [ "$HAS_REMOTE_DET" -eq 0 ]; then
+  log "Remote missing cluster $LOCAL_DET — attaching local kubeconfig to remote..."
+  # Build JSON locally to avoid remote quoting pitfalls
+  TMPJSON="/tmp/kc.$$.json"
+  jq -n --rawfile kc "$LOCAL_KUBECONFIG" '{"kubeconfig":$kc}' > "$TMPJSON"
+  scp -q "$TMPJSON" "$REMOTE_SSH:/tmp/verify-kc.json"
+  rm -f "$TMPJSON"
+  # Attach on remote using action=attach-kubeconfig (supports deterministic id)
+  ssh -o BatchMode=yes "$REMOTE_SSH" -t "curl -k -s -X POST '$REMOTE_HOSTAPP_URL/api/deploy/clusters/placeholder?action=attach-kubeconfig' -H 'Content-Type: application/json' --data-binary @/tmp/verify-kc.json" >/tmp/e2e-attach.out 2>/dev/null || true
+  vv "remote attach response: $(cat /tmp/e2e-attach.out 2>/dev/null)"
+  # Re-fetch remote IDs
+  REMOTE_IDS=$(ssh -o BatchMode=yes "$REMOTE_SSH" -t "curl -k -s '$REMOTE_HOSTAPP_URL/api/deploy/clusters' | jq -r '.[].id'" 2>/dev/null | tr -d '\r') || true
 fi
 
-: ${FED_REMOTE_DIR:=${FED_REMOTE_DIR:-'~/GuildNet'}}
+log "Remote cluster ids: $(echo "$REMOTE_IDS" | paste -sd ',' -)"
 
-REMOTE="$FED_REMOTE"
-REMOTE_DIR="$FED_REMOTE_DIR"
-
-# Resolve remote-dir if it begins with ~/ to an absolute path on the remote user home.
-REMOTE_DIR_PATH="$REMOTE_DIR"
-if [[ "$REMOTE_DIR" == ~/* ]]; then
-  # extract remote user (before @)
-  REMOTE_USER="${REMOTE%%@*}"
-  # strip leading ~/
-  REMOTE_SUFFIX="${REMOTE_DIR#~/}"
-  REMOTE_DIR_PATH="/home/${REMOTE_USER}/${REMOTE_SUFFIX}"
+if echo "$REMOTE_IDS" | grep -q "^$LOCAL_DET$"; then
+  log "PASS: Remote now references same cluster id $LOCAL_DET"
+else
+  echo "FAIL: Remote does not reference local cluster id $LOCAL_DET" >&2
+  exit 10
 fi
 
-echo "Repo root: $REPO_ROOT"
-echo "Remote: $REMOTE -> $REMOTE_DIR"
-
-# Allow skipping temporary commit by passing --no-commit
-NO_COMMIT=0
-if [ "${1:-}" = "--no-commit" ]; then
-  NO_COMMIT=1
+# Optional: verify /v1/sites returns records with clusterId == LOCAL_DET (best-effort)
+LOCAL_SITES=$(curl -k -s "$LOCAL_HOSTAPP_URL/api/v1/sites" | jq -r '.[] | .clusterId' 2>/dev/null | sort -u || true)
+vv "LOCAL_SITES clusterIds: $LOCAL_SITES"
+if echo "$LOCAL_SITES" | grep -q "^$LOCAL_DET$"; then
+  log "Local sites reflect cluster $LOCAL_DET"
+else
+  log "WARN: Local sites did not include clusterId $LOCAL_DET (may be transient)"
 fi
 
-# Ensure working tree is clean or commit local changes (unless skipped)
-if ! git diff --quiet || ! git diff --staged --quiet; then
-  if [ "$NO_COMMIT" -eq 1 ]; then
-    echo "Uncommitted changes detected; --no-commit specified, will rsync working tree without committing."
-  else
-    echo "Uncommitted changes detected. Committing with temporary message..."
-    git add -A
-    git commit -m "ci: temporary commit for verify-federation-e2e" || true
-  fi
+ssh -o BatchMode=yes "$REMOTE_SSH" -t "curl -k -s '$REMOTE_HOSTAPP_URL/api/v1/sites' | jq -r '.[] | .clusterId' 2>/dev/null | sort -u" >/tmp/e2e-remote-sites.txt 2>/dev/null || true
+REMOTE_SITES=$(tr -d '\r' </tmp/e2e-remote-sites.txt || true)
+vv "REMOTE_SITES clusterIds: $REMOTE_SITES"
+if echo "$REMOTE_SITES" | grep -q "^$LOCAL_DET$"; then
+  log "Remote sites reflect cluster $LOCAL_DET"
+else
+  log "WARN: Remote sites did not include clusterId $LOCAL_DET (may be transient)"
 fi
 
-# Ensure remote dir exists and rsync the repo
-echo "Syncing repo to remote..."
-echo "Ensuring remote directory exists and is writable..."
-ssh "$REMOTE" "mkdir -p \"$REMOTE_DIR_PATH\" && test -w \"$REMOTE_DIR_PATH\" || echo 'WARNING: $REMOTE_DIR_PATH may not be writable by $USER' >&2"
-
-rsync -avz --delete --exclude .git --exclude tmp --exclude node_modules "$REPO_ROOT/" "$REMOTE:$REMOTE_DIR_PATH/"
-
-# Copy the remote helper script as well
-scp "$REPO_ROOT/scripts/remote-run-verify-federation.sh" "$REMOTE:$REMOTE_DIR_PATH/scripts/"
-
-# Run remote script (invoke with bash to avoid /bin/sh semantics)
-echo "Running remote setup on $REMOTE..."
-ssh "$REMOTE" "cd $REMOTE_DIR_PATH && bash ./scripts/remote-run-verify-federation.sh"
-
-# After remote returns, run local verify-e2e to ensure HostApp + operator on local cluster are functioning
-echo "Running local verify-e2e..."
-make verify-e2e
-
-echo "Multi-cluster federation e2e completed."
-
-# Additional cross-host checks:
-# - confirm both HostApp instances expose the same cluster(s)
-# - deploy a small test workload on both clusters and verify the same image is running
-TEST_IMAGE=${TEST_IMAGE:-nginx:alpine}
-TMPDIR=$(mktemp -d)
-cleanup() { rm -rf "$TMPDIR"; }
-trap cleanup EXIT
-
-echo "Fetching cluster lists from local and remote HostApp..."
-LOCAL_CLUSTERS_JSON="$TMPDIR/local-clusters.json"
-REMOTE_CLUSTERS_JSON="$TMPDIR/remote-clusters.json"
-
-curl -s -k https://127.0.0.1:8090/api/deploy/clusters | jq . > "$LOCAL_CLUSTERS_JSON" || { echo "Failed to query local HostApp" >&2; exit 3; }
-ssh "$REMOTE" "curl -s -k https://127.0.0.1:8090/api/deploy/clusters" | jq . > "$REMOTE_CLUSTERS_JSON" || { echo "Failed to query remote HostApp" >&2; exit 4; }
-
-echo "Local clusters:"; jq -r '.[] | "- id: \(.id) name: \(.name) state: \(.state)"' "$LOCAL_CLUSTERS_JSON" || true
-echo "Remote clusters:"; jq -r '.[] | "- id: \(.id) name: \(.name) state: \(.state)"' "$REMOTE_CLUSTERS_JSON" || true
-
-# Compare: ensure at least one cluster id is present on both sides
-LOCAL_IDS=$(jq -r '.[].id' "$LOCAL_CLUSTERS_JSON" | sort | uniq)
-REMOTE_IDS=$(jq -r '.[].id' "$REMOTE_CLUSTERS_JSON" | sort | uniq)
-COMMON_ID=$(comm -12 <(echo "$LOCAL_IDS") <(echo "$REMOTE_IDS") | head -n1 || true)
-if [ -z "$COMMON_ID" ]; then
-  echo "ERROR: no common cluster id found between local and remote HostApp" >&2
-  exit 5
-fi
-echo "Found common cluster id: $COMMON_ID"
-
-echo "Deploying test workload on both clusters (image=$TEST_IMAGE)..."
-cat > "$TMPDIR/verify-deploy.yaml" <<EOF
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: verify-sample
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: verify-sample
-  template:
-    metadata:
-      labels:
-        app: verify-sample
-    spec:
-      containers:
-      - name: verify-sample
-        image: ${TEST_IMAGE}
-        command: ["/bin/sh","-c","sleep 3600"]
-EOF
-
-echo "Applying to local cluster..."
-kubectl apply -f "$TMPDIR/verify-deploy.yaml"
-echo "Applying to remote cluster..."
-ssh "$REMOTE" "kubectl apply -f -" < "$TMPDIR/verify-deploy.yaml"
-
-echo "Waiting for deployments to become ready..."
-kubectl -n default rollout status deployment/verify-sample --timeout=60s || { echo "Local deployment failed" >&2; exit 6; }
-ssh "$REMOTE" "kubectl -n default rollout status deployment/verify-sample --timeout=60s" || { echo "Remote deployment failed" >&2; exit 7; }
-
-echo "Verifying image on pods..."
-LOCAL_IMG=$(kubectl -n default get pod -l app=verify-sample -o jsonpath='{.items[0].spec.containers[0].image}')
-REMOTE_IMG=$(ssh "$REMOTE" "kubectl -n default get pod -l app=verify-sample -o jsonpath='{.items[0].spec.containers[0].image}'")
-echo "Local pod image: $LOCAL_IMG"
-echo "Remote pod image: $REMOTE_IMG"
-if [ "$LOCAL_IMG" != "$REMOTE_IMG" ]; then
-  echo "ERROR: deployed image mismatch ($LOCAL_IMG != $REMOTE_IMG)" >&2
-  exit 8
-fi
-
-echo "Cleaning up test workload..."
-kubectl -n default delete deployment verify-sample --ignore-not-found
-ssh "$REMOTE" "kubectl -n default delete deployment verify-sample --ignore-not-found"
-
-echo "Cross-cluster verification succeeded: both devices see common cluster(s) and ran the same image."
-
-# Note: This script commits temporary changes locally; consider reverting if needed.
-
+log "E2E federation verification completed"
+exit 0

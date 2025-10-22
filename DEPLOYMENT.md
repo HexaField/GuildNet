@@ -384,7 +384,7 @@ POST /v1/sites/heartbeat
 JSON body example:
 ```
 {
-	"id": "my-cluster",
+	"clusterId": "<deterministic-cluster-id>",
 	"id": "device-a",
 	"name": "device-a.home",
 	"tailnetIPs": ["100.101.102.103"],
@@ -402,6 +402,19 @@ Troubleshooting tips
 - If `docker buildx --load` is missing on a host, `scripts/agent-build-load.sh` falls back to `docker build`.
 - When importing images to microk8s use `sudo microk8s ctr images import /tmp/image.tar` and set `imagePullPolicy: IfNotPresent` on operator Deployment to prefer local images.
 - To confirm cross-device service mirrors, check for ConfigMaps named `guildnet-system/published-<id>` in the cluster; these are the mirrored published service mappings devices use to resync.
+
+Deterministic cluster identity and multi-device attach
+-----------------------------------------------------
+- Cluster IDs are computed deterministically from kubeconfig attributes (normalized server URL and CA data).
+- On a secondary device that should reference the same cluster, POST the kubeconfig to the primary device using:
+
+	`POST /api/deploy/clusters/{any}?action=attach-kubeconfig` with body `{ "kubeconfig": "..." }`.
+
+	The server will compute the canonical cluster ID and, if a record doesn't exist yet, create one with state `imported`. This ensures UIs and agents on all devices refer to the same cluster ID.
+
+DeviceParticipant name sanitization
+-----------------------------------
+When creating in-cluster `DeviceParticipant` resources, device identifiers are sanitized to valid Kubernetes resource names per RFC 1123 (lowercase, alphanumeric and '-', must start/end with alphanumeric, max length 253). This avoids failures when hostnames contain uppercase or invalid characters.
 
 Security notes
 - Use a unique `GUILDNET_MASTER_KEY` per Host App host and store it securely (do not commit to git).

@@ -871,6 +871,20 @@ func Router(deps Deps) *http.ServeMux {
 				if err == nil && detID != "" {
 					id = detID
 				}
+				// Ensure a cluster record exists for this deterministic id so that UIs/agents
+				// can reference the same cluster across devices even when bootstrap wasn't used.
+				if deps.DB != nil {
+					var rec map[string]any
+					if derr := deps.DB.Get("clusters", id, &rec); derr != nil || len(rec) == 0 {
+						rec = map[string]any{
+							"id":        id,
+							"name":      id,
+							"state":     "imported",
+							"createdAt": time.Now().UTC().Format(time.RFC3339),
+						}
+						_ = deps.DB.Put("clusters", id, rec)
+					}
+				}
 				enc := body.Kubeconfig
 				encrypted := false
 				if deps.Secrets != nil {
