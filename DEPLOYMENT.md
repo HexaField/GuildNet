@@ -406,6 +406,14 @@ The UI lists servers per cluster by calling `GET /api/cluster/{id}/servers`, whi
 
 This metadata helps operators quickly identify which machine a server is running on and how it can be reached over the tailnet.
 
+Stopping a server (UI)
+----------------------
+From the Servers list and the Server detail page, you can shut down a single server (Workspace) using the "Shutdown" button. This issues a cluster-scoped delete to the backend:
+
+- DELETE /api/cluster/{id}/workspaces/{name}
+
+Authorization follows the same rules as other mutating endpoints (loopback-or-token). On success, the UI refreshes the list or returns to the Servers page.
+
 Per-device placement (same cluster)
 -----------------------------------
 When a device launches a workspace via `POST /api/cluster/{id}/workspaces`, the Host App adds a metadata label `guildnet.io/schedule-node=<launcher-hostname>`. The in-cluster operator applies this hint by setting a `nodeSelector` on the underlying Pod for `kubernetes.io/hostname`, which results in the Kubernetes scheduler placing the pod on the specified node.

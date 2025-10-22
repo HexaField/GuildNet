@@ -508,6 +508,22 @@ export async function listPublishedServices(clusterId: string): Promise<Publishe
   }
 }
 
+// Cluster-scoped: delete a workspace (Shutdown)
+export async function deleteClusterWorkspace(
+  clusterId: string,
+  name: string
+): Promise<boolean> {
+  try {
+    const res = await fetch(
+      apiUrl(`/api/cluster/${encodeURIComponent(clusterId)}/workspaces/${encodeURIComponent(name)}`),
+      { method: 'DELETE' }
+    )
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
 export async function deletePublishedService(clusterId: string, service: string): Promise<boolean> {
   try {
     const res = await fetch(apiUrl(`/api/cluster/${encodeURIComponent(clusterId)}/published-services/${encodeURIComponent(service)}`), { method: 'DELETE' })

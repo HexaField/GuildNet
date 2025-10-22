@@ -3,7 +3,7 @@ import Card from '../components/Card'
 import StatusPill from '../components/StatusPill'
 import KeyValueList from '../components/KeyValueList'
 import LogViewer from '../components/LogViewer'
-import { useParams } from '@solidjs/router'
+import { useParams, useNavigate } from '@solidjs/router'
 import {
   Show,
   createEffect,
@@ -13,13 +13,14 @@ import {
   onCleanup,
   onMount
 } from 'solid-js'
-import { getServer, getClusterWorkspace, getClusterWorkspaceLogs } from '../lib/api'
+import { getServer, getClusterWorkspace, getClusterWorkspaceLogs, deleteClusterWorkspace } from '../lib/api'
 import { formatDate } from '../lib/format'
 import { apiUrl } from '../lib/config'
 import { ringBuffer, WSManager } from '../lib/ws'
 
 export default function ServerDetail() {
   const params = useParams()
+  const navigate = useNavigate()
   const clusterId = () => params.clusterId || ''
   const isClusterScoped = () => !!clusterId()
   const serverId = () => params.id
@@ -221,7 +222,29 @@ export default function ServerDetail() {
           <>
             <Card
               title={server().name}
-              actions={<StatusPill status={server().status as any} />}
+              actions={
+                <div class="flex items-center gap-2">
+                  <StatusPill status={server().status as any} />
+                  <Show when={isClusterScoped()}>
+                    <button
+                      class="inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium border bg-red-50 dark:bg-neutral-800 hover:bg-red-100 dark:hover:bg-neutral-700 text-red-700"
+                      onClick={async () => {
+                        const name = server().name
+                        const ok = window.confirm(`Shut down server “${name}”? This deletes the workspace.`)
+                        if (!ok) return
+                        const done = await deleteClusterWorkspace(clusterId(), name)
+                        if (!done) {
+                          window.alert('Failed to shut down server.')
+                          return
+                        }
+                        navigate(`/c/${encodeURIComponent(clusterId())}/servers`)
+                      }}
+                    >
+                      Shutdown
+                    </button>
+                  </Show>
+                </div>
+              }
             >
               <div class="grid sm:grid-cols-2 gap-4">
                 <div>

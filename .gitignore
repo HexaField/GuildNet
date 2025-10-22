@@ -36,3 +36,5 @@ ui/dist/
 guildnet.config
 guildnet*.config
 *.config
+
+module-repos/

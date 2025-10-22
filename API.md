@@ -137,7 +137,7 @@ Deterministic cluster IDs and attach-kubeconfig behavior
   - GET /api/cluster/{id}/workspaces/{name}/logs
     - Aggregate pod logs for the workspace (returns list of log lines with timestamps).
   - DELETE /api/cluster/{id}/workspaces/{name}
-    - Delete workspace CR (auth required for mutating)
+    - Delete workspace CR (auth required for mutating). Used by the UI "Shutdown" action on the Servers list and Server detail pages.
   - GET /api/cluster/{id}/workspaces/{name}/logs/stream
     - SSE / Event-stream of pod logs (text/event-stream)
   - GET /api/cluster/{id}/health
