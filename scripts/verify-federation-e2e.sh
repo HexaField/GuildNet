@@ -96,4 +96,123 @@ else
 fi
 
 log "E2E federation verification completed"
+
+# --- Distributed workspace verification: both devices spawn and see code-server ---
+
+WS_IMG="${WS_IMG:-codercom/code-server:4.90.3}"
+TSUFFIX="$(date +%s)"
+WS_LOCAL_NAME="e2e-codeserver-local-${TSUFFIX}"
+WS_REMOTE_NAME="e2e-codeserver-remote-${TSUFFIX}"
+TIMEOUT_SEC="${TIMEOUT_SEC:-300}"
+SLEEP_SEC="${SLEEP_SEC:-5}"
+
+post_local_workspace(){
+  local name="$1"
+  vv "Creating local workspace: ${name}"
+  local payload
+  payload=$(jq -nc --arg img "$WS_IMG" --arg name "$name" '{image:$img,name:$name}')
+  curl -k -s -X POST "$LOCAL_HOSTAPP_URL/api/cluster/$LOCAL_DET/workspaces" \
+    -H 'Content-Type: application/json' \
+    -d "$payload" | jq -r '.' || true
+}
+
+post_remote_workspace(){
+  local name="$1"
+  vv "Creating remote workspace: ${name}"
+  local payload
+  payload=$(jq -nc --arg img "$WS_IMG" --arg name "$name" '{image:$img,name:$name}')
+  ssh -o BatchMode=yes "$REMOTE_SSH" -t \
+    "curl -k -s -X POST '$REMOTE_HOSTAPP_URL/api/cluster/$LOCAL_DET/workspaces' -H 'Content-Type: application/json' -d '$payload' | jq -r '.'" \
+    >/tmp/e2e-remote-create-${name}.json 2>/dev/null || true
+}
+
+workspace_exists_local(){
+  local name="$1"
+  curl -k -s "$LOCAL_HOSTAPP_URL/api/cluster/$LOCAL_DET/workspaces/$name" | jq -e '.metadata.name=="'$name'"' >/dev/null 2>&1
+}
+
+workspace_exists_remote(){
+  local name="$1"
+  ssh -o BatchMode=yes "$REMOTE_SSH" -t \
+    "curl -k -s '$REMOTE_HOSTAPP_URL/api/cluster/$LOCAL_DET/workspaces/$name' | jq -e '.metadata.name==\"$name\"' >/dev/null 2>&1; echo \$?" \
+    2>/dev/null | tr -d '\r' | grep -q '^0$'
+}
+
+wait_workspace_local(){
+  local name="$1"; local waited=0
+  while [ $waited -lt $TIMEOUT_SEC ]; do
+    if workspace_exists_local "$name"; then return 0; fi
+    sleep "$SLEEP_SEC"; waited=$((waited+SLEEP_SEC))
+  done
+  return 1
+}
+
+wait_workspace_remote(){
+  local name="$1"; local waited=0
+  while [ $waited -lt $TIMEOUT_SEC ]; do
+    if workspace_exists_remote "$name"; then return 0; fi
+    sleep "$SLEEP_SEC"; waited=$((waited+SLEEP_SEC))
+  done
+  return 1
+}
+
+list_servers_local(){
+  curl -k -s "$LOCAL_HOSTAPP_URL/api/cluster/$LOCAL_DET/servers" | jq -r '.[].name' 2>/dev/null || true
+}
+
+list_servers_remote(){
+  ssh -o BatchMode=yes "$REMOTE_SSH" -t \
+    "curl -k -s '$REMOTE_HOSTAPP_URL/api/cluster/$LOCAL_DET/servers' | jq -r '.[].name'" \
+    2>/dev/null | tr -d '\r' || true
+}
+
+fetch_logs_local(){
+  local name="$1"
+  curl -k -s "$LOCAL_HOSTAPP_URL/api/cluster/$LOCAL_DET/workspaces/$name/logs" | jq -r '.[]?' 2>/dev/null || true
+}
+
+fetch_logs_remote(){
+  local name="$1"
+  ssh -o BatchMode=yes "$REMOTE_SSH" -t \
+    "curl -k -s '$REMOTE_HOSTAPP_URL/api/cluster/$LOCAL_DET/workspaces/$name/logs' | jq -r '.[]?'" \
+    2>/dev/null | tr -d '\r' || true
+}
+
+log "Spawning code-server from local: $WS_LOCAL_NAME"
+post_local_workspace "$WS_LOCAL_NAME"
+if ! wait_workspace_local "$WS_LOCAL_NAME"; then
+  echo "FAIL: Local workspace $WS_LOCAL_NAME not observed within $TIMEOUT_SEC s" >&2; exit 21
+fi
+
+log "Spawning code-server from remote: $WS_REMOTE_NAME"
+post_remote_workspace "$WS_REMOTE_NAME"
+if ! wait_workspace_remote "$WS_REMOTE_NAME"; then
+  echo "FAIL: Remote workspace $WS_REMOTE_NAME not observed within $TIMEOUT_SEC s" >&2; exit 22
+fi
+
+# Visibility checks from local perspective
+LOCAL_SERVERS=$(list_servers_local)
+vv "Local sees servers: $LOCAL_SERVERS"
+echo "$LOCAL_SERVERS" | grep -q "^$WS_LOCAL_NAME$" || { echo "FAIL: Local does not list its own workspace $WS_LOCAL_NAME" >&2; exit 23; }
+echo "$LOCAL_SERVERS" | grep -q "^$WS_REMOTE_NAME$" || { echo "FAIL: Local does not list remote workspace $WS_REMOTE_NAME" >&2; exit 24; }
+
+# Visibility checks from remote perspective
+REMOTE_SERVERS=$(list_servers_remote)
+vv "Remote sees servers: $REMOTE_SERVERS"
+echo "$REMOTE_SERVERS" | grep -q "^$WS_LOCAL_NAME$" || { echo "FAIL: Remote does not list local workspace $WS_LOCAL_NAME" >&2; exit 25; }
+echo "$REMOTE_SERVERS" | grep -q "^$WS_REMOTE_NAME$" || { echo "FAIL: Remote does not list its own workspace $WS_REMOTE_NAME" >&2; exit 26; }
+
+# Logs checks – allow some time for app to start
+sleep "$SLEEP_SEC"
+LOCAL_LOGS_SELF=$(fetch_logs_local "$WS_LOCAL_NAME")
+LOCAL_LOGS_PEER=$(fetch_logs_local "$WS_REMOTE_NAME")
+REMOTE_LOGS_SELF=$(fetch_logs_remote "$WS_REMOTE_NAME")
+REMOTE_LOGS_PEER=$(fetch_logs_remote "$WS_LOCAL_NAME")
+
+if [ -z "$LOCAL_LOGS_SELF" ]; then echo "FAIL: Local could not read logs for its own workspace $WS_LOCAL_NAME" >&2; exit 27; fi
+if [ -z "$LOCAL_LOGS_PEER" ]; then echo "FAIL: Local could not read logs for remote workspace $WS_REMOTE_NAME" >&2; exit 28; fi
+if [ -z "$REMOTE_LOGS_SELF" ]; then echo "FAIL: Remote could not read logs for its own workspace $WS_REMOTE_NAME" >&2; exit 29; fi
+if [ -z "$REMOTE_LOGS_PEER" ]; then echo "FAIL: Remote could not read logs for local workspace $WS_LOCAL_NAME" >&2; exit 30; fi
+
+log "PASS: Distributed cluster verified — both devices spawned code-server, see each other, and can read logs for both."
 exit 0
