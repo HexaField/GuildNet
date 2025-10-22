@@ -145,14 +145,14 @@ up() {
       echo "[headscale] Recreating container $CONTAINER with current config."
       docker rm -f "$CONTAINER" >/dev/null || true
       echo "[headscale] Starting container $CONTAINER on ${BIND_HOST}:${HOST_PORT}"
-        docker run -d \
-          --name "$CONTAINER" \
-          --restart unless-stopped \
-          -p ${BIND_HOST}:${HOST_PORT}:8080 \
-          -v "$DATA_DIR:/var/lib/headscale" \
-          -v "$CONF_DIR:/etc/headscale:ro" \
-          --entrypoint /bin/sh \
-          "$IMAGE" -c "/ko-app/headscale serve" >/dev/null
+      docker run -d \
+        --name "$CONTAINER" \
+        --restart unless-stopped \
+        -p ${BIND_HOST}:${HOST_PORT}:8080 \
+        -v "$DATA_DIR:/var/lib/headscale" \
+        -v "$CONF_DIR:/etc/headscale:ro" \
+        --entrypoint /bin/sh \
+        "$IMAGE" -c "/bin/headscale serve" >/dev/null
     fi
   else
     echo "[headscale] Starting container $CONTAINER on ${BIND_HOST}:${HOST_PORT}"
@@ -163,7 +163,7 @@ up() {
         -v "$DATA_DIR:/var/lib/headscale" \
         -v "$CONF_DIR:/etc/headscale:ro" \
         --entrypoint /bin/sh \
-        "$IMAGE" -c "/ko-app/headscale serve" >/dev/null
+        "$IMAGE" -c "/bin/headscale serve" >/dev/null
   fi
   # Determine the actual mapped host:port for 8080/tcp
   MAPPED_HOST=$(docker inspect -f '{{ (index (index .NetworkSettings.Ports "8080/tcp") 0).HostIp }}' "$CONTAINER" 2>/dev/null || echo "")
