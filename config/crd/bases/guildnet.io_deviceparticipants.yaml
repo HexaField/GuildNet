@@ -1,0 +1,58 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: deviceparticipants.guildnet.io
+spec:
+  group: guildnet.io
+  names:
+    kind: DeviceParticipant
+    plural: deviceparticipants
+    singular: deviceparticipant
+    shortNames:
+    - dp
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              tailnetIPs:
+                type: array
+                items:
+                  type: string
+              hostappVersion:
+                type: string
+              resources:
+                type: object
+                properties:
+                  cpuMilli:
+                    type: integer
+                  memoryMb:
+                    type: integer
+                  storageMb:
+                    type: integer
+          status:
+            type: object
+            properties:
+              lastSeen:
+                type: string
+              state:
+                type: string
+              health:
+                type: string
+    subresources:
+      status: {}
+    additionalPrinterColumns:
+    - name: State
+      type: string
+      jsonPath: .status.state

@@ -141,6 +141,12 @@ RBAC: DeviceParticipant CRD
 
 Ensure the ServiceAccount used by HostApp or the operator has permission to manage `deviceparticipants.guildnet.io`. Sample Role and ClusterRole manifests are included under `config/rbac/` to grant minimal verbs for create/update/status operations.
 
+DeviceParticipant CRD
+---------------------
+The Host App expects the `DeviceParticipant` CustomResourceDefinition to exist in the cluster so it can create per-device presence records in-cluster. If the CRD is missing the Host App will store pending deviceparticipant entries locally and repeatedly attempt to create them; logs will show `create deviceparticipant failed: the server could not find the requested resource` until the CRD is applied.
+
+Apply the CRD manifest at `config/crd/bases/guildnet.io_deviceparticipants.yaml` to enable in-cluster device presence records.
+
 Notes:
 - Using digested image references may still make kubelet attempt a registry pull; prefer a local tag + imagePullPolicy=IfNotPresent or Never when importing images locally.
 - If you need to re-import, repeat steps 1-3, then set deployment image to the new digest or tag and rollout restart.
