@@ -175,11 +175,20 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		Tolerations:    []corev1.Toleration{{Key: "node-role.kubernetes.io/control-plane", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule}},
 	}
 	// If the Workspace metadata has a scheduling hint, prefer scheduling to that specific node.
-	if v := strings.TrimSpace(ws.Labels["guildnet.io/schedule-node"]); v != "" {
+	// Accept both label and annotation forms; normalize to lower-case DNS-1123 which matches typical node names.
+	schedule := ""
+	if ws.Labels != nil {
+		schedule = strings.TrimSpace(ws.Labels["guildnet.io/schedule-node"])
+	}
+	if schedule == "" && ws.Annotations != nil {
+		schedule = strings.TrimSpace(ws.Annotations["guildnet.io/schedule-node"])
+	}
+	if schedule != "" {
+		schedule = strings.ToLower(schedule)
 		if podSpec.NodeSelector == nil {
 			podSpec.NodeSelector = map[string]string{}
 		}
-		podSpec.NodeSelector["kubernetes.io/hostname"] = v
+		podSpec.NodeSelector["kubernetes.io/hostname"] = schedule
 	}
 	if strings.Contains(imgLower, "nginx") {
 		// Use non-root pod-level securityContext for the unprivileged nginx
