@@ -1703,14 +1703,18 @@ func Router(deps Deps) *http.ServeMux {
 								k := strings.TrimSpace(fmt.Sprint(m["name"]))
 								if strings.EqualFold(k, "guildnet.io/schedule-node") {
 									sv := strings.TrimSpace(fmt.Sprint(m["value"]))
-									if sv != "" { schedule = sv }
+									if sv != "" {
+										schedule = sv
+									}
 								}
 							}
 						}
 					case map[string]any:
 						if v2, ok2 := lt["guildnet.io/schedule-node"]; ok2 {
 							sv := strings.TrimSpace(fmt.Sprint(v2))
-							if sv != "" { schedule = sv }
+							if sv != "" {
+								schedule = sv
+							}
 						}
 					}
 				}
