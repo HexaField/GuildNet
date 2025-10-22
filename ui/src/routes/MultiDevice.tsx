@@ -85,13 +85,43 @@ export default function MultiDevice(props: { clusterId?: string } = {}) {
           <For each={(sites() ?? []).filter(s => { if (!props.clusterId) return true; const c = (s as any).cluster || (s as any).clusterId; return c === props.clusterId || s.id === props.clusterId })}>{(s: any) => {
             const name = s.name || s.id
             const tailnet = Array.isArray(s.tailnetIPs) ? s.tailnetIPs : []
-            const last = s.lastSeen as string | undefined
+            const rawLast = s.lastSeen as any
+            const parseLastSeen = (v: any): number | null => {
+              try {
+                if (v == null) return null
+                if (typeof v === 'string') {
+                  const n = Date.parse(v)
+                  if (!Number.isNaN(n)) return n
+                  // numeric string fallback
+                  const pn = parseInt(v, 10)
+                  if (!Number.isNaN(pn)) return (pn > 1e12 ? pn : pn * 1000)
+                  return null
+                }
+                if (typeof v === 'number') {
+                  return v > 1e12 ? v : v * 1000
+                }
+                if (typeof v === 'object') {
+                  // Common proto shapes
+                  if (typeof v.seconds === 'number') {
+                    const sec = v.seconds
+                    const ns = typeof v.nanos === 'number' ? v.nanos : 0
+                    return sec * 1000 + Math.floor(ns / 1e6)
+                  }
+                  if (v.Time) {
+                    const n = Date.parse(String(v.Time))
+                    if (!Number.isNaN(n)) return n
+                  }
+                }
+                return null
+              } catch { return null }
+            }
+            const lastTs = parseLastSeen(rawLast)
             const cpuMilli = typeof s.cpuMilli === 'number' ? s.cpuMilli : undefined
             const memoryMB = typeof s.memoryMB === 'number' ? s.memoryMB : undefined
             const storageMB = typeof s.storageMB === 'number' ? s.storageMB : undefined
             const vramMB = typeof s.vramMB === 'number' ? s.vramMB : undefined
             const supportsCluster = !!s.supportsCluster
-            const online = last ? (Date.now() - new Date(last).getTime() < 90_000) : false
+            const online = (lastTs != null ? (Date.now() - lastTs) < 5 * 60 * 1000 : false) || String(s.state).toLowerCase() === 'online'
 
             const fmtCPU = (m?: number) => (m == null ? '' : `${(m/1000).toFixed(1)} CPU`)
             const fmtMB = (mb?: number) => {
@@ -117,8 +147,8 @@ export default function MultiDevice(props: { clusterId?: string } = {}) {
                   <Show when={vramMB != null}><span>VRAM {fmtMB(vramMB)}</span></Show>
                 </div>
                 <div class="text-[11px] text-neutral-400 mt-0.5">
-                  <Show when={last} fallback={<span>last seen: —</span>}>
-                    last seen: {timeAgo(last)}
+                  <Show when={lastTs != null} fallback={<span>last seen: —</span>}>
+                    last seen: {timeAgo(new Date(lastTs!).toISOString())}
                   </Show>
                   <Show when={supportsCluster}>
                     <span class="ml-2 px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200 text-[10px] align-middle">supports cluster</span>
