@@ -174,6 +174,13 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		Volumes:        []corev1.Volume{{Name: "nginx-cache", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}},
 		Tolerations:    []corev1.Toleration{{Key: "node-role.kubernetes.io/control-plane", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule}},
 	}
+	// If the Workspace metadata has a scheduling hint, prefer scheduling to that specific node.
+	if v := strings.TrimSpace(ws.Labels["guildnet.io/schedule-node"]); v != "" {
+		if podSpec.NodeSelector == nil {
+			podSpec.NodeSelector = map[string]string{}
+		}
+		podSpec.NodeSelector["kubernetes.io/hostname"] = v
+	}
 	if strings.Contains(imgLower, "nginx") {
 		// Use non-root pod-level securityContext for the unprivileged nginx
 		// image so the container runs as uid/gid 101 and can use the

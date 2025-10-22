@@ -1678,10 +1678,12 @@ func Router(deps Deps) *http.ServeMux {
 				if name == "" {
 					name = fmt.Sprintf("ws-%s", uuid.NewString()[:8])
 				}
+				// Determine the launcher hostname to guide scheduling to the launching device's node.
+				hn, _ := os.Hostname()
 				obj := map[string]any{
 					"apiVersion": "guildnet.io/v1alpha1",
 					"kind":       "Workspace",
-					"metadata":   map[string]any{"name": name},
+					"metadata":   map[string]any{"name": name, "labels": map[string]any{"guildnet.io/schedule-node": strings.TrimSpace(hn)}},
 					"spec": map[string]any{
 						"image":     spec["image"],
 						"env":       spec["env"],

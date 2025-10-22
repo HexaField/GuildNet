@@ -194,6 +194,10 @@ Dev convenience: the router can detect a local `kubectl proxy` and rewrite clust
       - Listing pods with label `guildnet.io/workspace=<name>` to determine the node hosting the workspace.
       - Cross-referencing `DeviceParticipant` CRs in `guildnet-system` to attach `machineName` and `tailnetIPs`.
     - When DeviceParticipant data is missing, only the `node` field is returned.
+  - POST `/api/cluster/{id}/workspaces`
+    - The Host App injects a metadata label `guildnet.io/schedule-node` set to the launching device's hostname.
+    - The operator reads this label and sets a nodeSelector for `kubernetes.io/hostname` so the workspace is scheduled on that device's node.
+    - This requires that each device is a node in the same Kubernetes cluster and node names match the device hostnames (or that your nodes are labeled accordingly).
   - Proxy: `/api/cluster/{id}/proxy/server/{name}/...` — proxy to workspace servers (sets `X-Forwarded-Prefix`)
 
 - Database API (per cluster)

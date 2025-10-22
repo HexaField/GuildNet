@@ -406,6 +406,15 @@ The UI lists servers per cluster by calling `GET /api/cluster/{id}/servers`, whi
 
 This metadata helps operators quickly identify which machine a server is running on and how it can be reached over the tailnet.
 
+Per-device placement (same cluster)
+-----------------------------------
+When a device launches a workspace via `POST /api/cluster/{id}/workspaces`, the Host App adds a metadata label `guildnet.io/schedule-node=<launcher-hostname>`. The in-cluster operator applies this hint by setting a `nodeSelector` on the underlying Pod for `kubernetes.io/hostname`, which results in the Kubernetes scheduler placing the pod on the specified node.
+
+Requirements:
+- Each participating device must be joined as a node in the same Kubernetes cluster.
+- Node names should match the device hostnames (default). Alternatively, label nodes appropriately and adapt the operator if your naming differs.
+- If the specified node is not part of the cluster, Kubernetes will ignore the selector and placement will follow standard scheduling.
+
 Troubleshooting tips
 - If scripts fail with "set: Illegal option -o pipefail" or `syntax` errors, make sure you run them under `bash` (not `/bin/sh`). The orchestrator now invokes remote helpers with `bash`.
 - If `docker buildx --load` is missing on a host, `scripts/agent-build-load.sh` falls back to `docker build`.

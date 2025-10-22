@@ -109,6 +109,11 @@ Deterministic cluster IDs and attach-kubeconfig behavior
   - GET /api/cluster/{id}/servers
     - List Workspaces (maps `Workspace` CRs to a simplified Server model: id, name, image, status, ports).
     - Now includes machine identity for each server when available.
+- POST /api/cluster/{id}/workspaces
+  - Creates a Workspace CR. On create, the Host App injects a metadata label `guildnet.io/schedule-node=<launcher-hostname>` to guide placement.
+  - The in-cluster operator honors this hint by setting `podSpec.nodeSelector["kubernetes.io/hostname"]` to the provided value, ensuring the pod is scheduled on the target node.
+  - If the target node does not exist in the cluster, normal Kubernetes scheduling applies and placement may differ.
+
     - Response shape (array):
       - id: string — workspace name
       - name: string — workspace name
