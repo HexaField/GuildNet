@@ -80,5 +80,80 @@ make verify-e2e
 
 echo "Multi-cluster federation e2e completed."
 
+# Additional cross-host checks:
+# - confirm both HostApp instances expose the same cluster(s)
+# - deploy a small test workload on both clusters and verify the same image is running
+TEST_IMAGE=${TEST_IMAGE:-nginx:alpine}
+TMPDIR=$(mktemp -d)
+cleanup() { rm -rf "$TMPDIR"; }
+trap cleanup EXIT
+
+echo "Fetching cluster lists from local and remote HostApp..."
+LOCAL_CLUSTERS_JSON="$TMPDIR/local-clusters.json"
+REMOTE_CLUSTERS_JSON="$TMPDIR/remote-clusters.json"
+
+curl -s -k https://127.0.0.1:8090/api/deploy/clusters | jq . > "$LOCAL_CLUSTERS_JSON" || { echo "Failed to query local HostApp" >&2; exit 3; }
+ssh "$REMOTE" "curl -s -k https://127.0.0.1:8090/api/deploy/clusters" | jq . > "$REMOTE_CLUSTERS_JSON" || { echo "Failed to query remote HostApp" >&2; exit 4; }
+
+echo "Local clusters:"; jq -r '.[] | "- id: \(.id) name: \(.name) state: \(.state)"' "$LOCAL_CLUSTERS_JSON" || true
+echo "Remote clusters:"; jq -r '.[] | "- id: \(.id) name: \(.name) state: \(.state)"' "$REMOTE_CLUSTERS_JSON" || true
+
+# Compare: ensure at least one cluster id is present on both sides
+LOCAL_IDS=$(jq -r '.[].id' "$LOCAL_CLUSTERS_JSON" | sort | uniq)
+REMOTE_IDS=$(jq -r '.[].id' "$REMOTE_CLUSTERS_JSON" | sort | uniq)
+COMMON_ID=$(comm -12 <(echo "$LOCAL_IDS") <(echo "$REMOTE_IDS") | head -n1 || true)
+if [ -z "$COMMON_ID" ]; then
+  echo "ERROR: no common cluster id found between local and remote HostApp" >&2
+  exit 5
+fi
+echo "Found common cluster id: $COMMON_ID"
+
+echo "Deploying test workload on both clusters (image=$TEST_IMAGE)..."
+cat > "$TMPDIR/verify-deploy.yaml" <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: verify-sample
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: verify-sample
+  template:
+    metadata:
+      labels:
+        app: verify-sample
+    spec:
+      containers:
+      - name: verify-sample
+        image: ${TEST_IMAGE}
+        command: ["/bin/sh","-c","sleep 3600"]
+EOF
+
+echo "Applying to local cluster..."
+kubectl apply -f "$TMPDIR/verify-deploy.yaml"
+echo "Applying to remote cluster..."
+ssh "$REMOTE" "kubectl apply -f -" < "$TMPDIR/verify-deploy.yaml"
+
+echo "Waiting for deployments to become ready..."
+kubectl -n default rollout status deployment/verify-sample --timeout=60s || { echo "Local deployment failed" >&2; exit 6; }
+ssh "$REMOTE" "kubectl -n default rollout status deployment/verify-sample --timeout=60s" || { echo "Remote deployment failed" >&2; exit 7; }
+
+echo "Verifying image on pods..."
+LOCAL_IMG=$(kubectl -n default get pod -l app=verify-sample -o jsonpath='{.items[0].spec.containers[0].image}')
+REMOTE_IMG=$(ssh "$REMOTE" "kubectl -n default get pod -l app=verify-sample -o jsonpath='{.items[0].spec.containers[0].image}'")
+echo "Local pod image: $LOCAL_IMG"
+echo "Remote pod image: $REMOTE_IMG"
+if [ "$LOCAL_IMG" != "$REMOTE_IMG" ]; then
+  echo "ERROR: deployed image mismatch ($LOCAL_IMG != $REMOTE_IMG)" >&2
+  exit 8
+fi
+
+echo "Cleaning up test workload..."
+kubectl -n default delete deployment verify-sample --ignore-not-found
+ssh "$REMOTE" "kubectl -n default delete deployment verify-sample --ignore-not-found"
+
+echo "Cross-cluster verification succeeded: both devices see common cluster(s) and ran the same image."
+
 # Note: This script commits temporary changes locally; consider reverting if needed.
 

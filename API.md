@@ -202,6 +202,16 @@ Notes:
 
 Host App configuration lives in two areas:
 - `pkg/config.Config` (persistent config file under `~/.guildnet/config.json`)
+
+Operator requirements (multi-device)
+----------------------------------
+
+The operator (workspace-operator) expects the following at runtime when deployed in multi-device/operator mode:
+
+- A valid `~/.guildnet/config.json` mounted or present inside the operator container that contains `login_server` and `auth_key` so tsnet can perform a non-interactive tailscale/headscale login.
+- TLS cert and key available under `/root/.guildnet/state/certs/server.crt` and `/root/.guildnet/state/certs/server.key` (the deployment can mount the repository `certs/` directory as a ConfigMap at that path during tests).
+
+When running the operator in Kubernetes, set `GN_CONTROL_PLANE_KUBECONFIG` to point at a mounted kubeconfig file if the operator must act on a control-plane other than the local cluster.
 - Environment variables and runtime settings in `cmd/hostapp/main.go` and `internal/settings`.
 
 ### Persistent config (`pkg/config.Config` fields)

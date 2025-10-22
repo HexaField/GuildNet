@@ -57,6 +57,16 @@ Note: see ADR and implementation plan for multi-device federated clusters:
 - ADR: `docs/adr/0001-multi-device-cluster.md`
 - Implementation plan: `docs/implementation/0001-multi-device-cluster-implementation.md`
 
+Multi-device operator notes
+---------------------------
+
+For operator-driven federation the operator requires a couple of runtime artifacts to operate non-interactively in multi-device tests:
+
+- A valid `~/.guildnet/config.json` containing `login_server` and `auth_key` so tsnet can login to the headscale/tailscale server without interactive prompts. In-cluster operator deployments can mount this as a ConfigMap (we use `operator-config` in tests).
+- TLS certificate and private key available under the operator's state path (e.g. `/root/.guildnet/state/certs/server.crt` and `/root/.guildnet/state/certs/server.key`). For development the repository `certs/` directory can be mounted into the pod as a ConfigMap (we use `operator-certs` in tests).
+
+These two items are required for the operator to drive cross-device behavior: tsnet provides tailnet connectivity and the TLS certs allow the operator to serve secure endpoints and validate HostApp connections during verification. The verifier script `scripts/verify-federation-e2e.sh` will check that both devices see at least one common cluster and will deploy a minimal test workload to ensure both clusters can run the same image.
+
 
 Connecting multiple devices (concept)
 

@@ -99,6 +99,44 @@ sudo microk8s kubectl -n guildnet-system rollout restart deployment workspace-op
 
 5) If the operator needs to manage other clusters, mount the control-plane kubeconfig into the operator Deployment and set the environment variable `GN_CONTROL_PLANE_KUBECONFIG` to the mounted path (e.g., `/etc/guildnet/kubeconfig`). The operator will load kubeconfig from this env var first.
 
+Operator certs and test verification
+-----------------------------------
+
+During multi-device testing the operator expects TLS cert/key under `/root/.guildnet/state/certs`. For quick tests you can mount the repository `certs/` directory into the operator pod (as a ConfigMap) so the operator finds `server.crt` and `server.key`.
+
+Additionally, for operator to start non-interactively it must be provided a small `operator-config` JSON containing tailscale/headscale hints. The operator will look for `/root/.guildnet/config.json` and expects the following minimal fields:
+
+- `login_server` — URL of the headscale/tailscale control plane (e.g. `http://192.168.1.2:8081`).
+- `auth_key` — a reusable preauth key so the operator can perform a non-interactive tsnet login.
+- `hostname`, `listen_local`, `dial_timeout_ms` — sensible defaults are acceptable.
+
+To make setup simple there's a helper script included:
+
+- `scripts/k8s/ensure-operator-setup.sh`
+
+What the script does (idempotent):
+
+- Ensures a ConfigMap `operator-config` exists with `login_server` and `auth_key` (it will read `~/.guildnet/headscale/preauth-*.txt` locally if present).
+- Creates or updates a `operator-certs` ConfigMap from the repository `certs/` directory (if present).
+- Patches the `workspace-operator` Deployment to mount `operator-certs` and restarts the deployment.
+
+Usage (on a machine that can talk to the remote cluster's kube-apiserver):
+
+```bash
+# either rely on local headscale-generated preauth (scripts/headscale-bootstrap.sh)
+scripts/k8s/ensure-operator-setup.sh
+
+# or provide explicit values:
+TS_LOGIN_SERVER=http://192.168.1.2:8081 TS_AUTHKEY=<preauth-key> scripts/k8s/ensure-operator-setup.sh
+```
+
+After the script runs, monitor the operator pod logs and ensure tsnet transitions from NeedsLogin to a logged-in state. Once logged in the operator will enable CRD/operator features and federation will proceed.
+
+The `scripts/verify-federation-e2e.sh` performs cross-host checks:
+
+- Validates there is at least one common cluster id exposed by both HostApp instances.
+- Deploys a small test deployment (`verify-sample`) to each cluster and verifies the same image is running on both.
+
 RBAC: DeviceParticipant CRD
 
 Ensure the ServiceAccount used by HostApp or the operator has permission to manage `deviceparticipants.guildnet.io`. Sample Role and ClusterRole manifests are included under `config/rbac/` to grant minimal verbs for create/update/status operations.
