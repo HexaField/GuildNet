@@ -4,7 +4,8 @@ import {
   For,
   Show,
   onCleanup,
-  onMount
+  onMount,
+  createEffect
 } from 'solid-js'
 import { listSites, listFederatedServices, getPerSiteStatus } from '../lib/api'
 import { openSitesStream } from '../lib/ws'
@@ -101,13 +102,13 @@ export default function MultiDevice(props: { clusterId?: string } = {}) {
       <div class="flex items-center justify-between">
         <h2 class="text-lg font-semibold">Federated services</h2>
         <div class="text-sm text-neutral-500">
-          Clusters: {sites()?.length ?? 0}
+          Devices: {sites()?.length ?? 0}
         </div>
       </div>
 
       <div class="grid grid-cols-3 gap-4">
         <div class="col-span-1 bg-gray rounded p-3 border">
-          <div class="font-medium mb-2">Sites</div>
+          <div class="font-medium mb-2">Devices</div>
           <For
             each={(sites() ?? [])
               .filter((s) => {

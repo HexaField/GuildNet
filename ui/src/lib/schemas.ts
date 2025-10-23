@@ -8,15 +8,16 @@ export const SiteSchema = z.object({
   hasDB: z.boolean().optional(),
   hasK8s: z.boolean().optional(),
   id: z.string(),
-  lastSeen: z.string().optional(),
+  lastSeen: z.union([z.string(), z.number(), z.null()]).optional(),
   memoryMB: z.number().int().optional(),
   name: z.string().optional(),
+  self: z.union([z.boolean(), z.null()]).optional(),
   started: z.boolean().optional(),
   state: z.union([z.string(), z.boolean()]).optional(),
   stateDir: z.string().optional(),
-  tailnetIPs: z.array(z.string()).optional(),
-  supportsCluster: z.union([z.boolean(), z.null()]).optional(),
   storageMB: z.number().int().optional(),
+  supportsCluster: z.union([z.boolean(), z.null()]).optional(),
+  tailnetIPs: z.array(z.string()).optional(),
   vramMB: z.number().int().optional()
 })
 

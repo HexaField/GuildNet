@@ -60,7 +60,8 @@ export async function listClusterDatabases(
     )
     if (!res.ok) return []
     return await res.json()
-  } catch {
+  } catch (e) {
+    console.error(e)
     return []
   }
 }
@@ -114,7 +115,8 @@ export async function listClusterTables(
     )
     if (!res.ok) return []
     return await res.json()
-  } catch {
+  } catch (e) {
+    console.error(e)
     return []
   }
 }
@@ -177,7 +179,8 @@ export async function getLogs(
       { signal }
     )
     return await handle<LogLine[]>(res)
-  } catch {
+  } catch (e) {
+    console.error(e)
     return []
   }
 }
@@ -219,7 +222,8 @@ export async function listImages(signal?: AbortSignal): Promise<DeployImage[]> {
   try {
     const res = await fetch(apiUrl('/api/images'), { signal })
     return await handle<DeployImage[]>(res)
-  } catch {
+  } catch (e) {
+    console.error(e)
     return []
   }
 }
@@ -239,7 +243,8 @@ export async function listClusters(): Promise<ClusterRecord[]> {
       name: r.name,
       state: r.state
     }))
-  } catch {
+  } catch (e) {
+    console.error(e)
     return []
   }
 }
@@ -278,7 +283,8 @@ export async function listClusterServers(clusterId: string): Promise<Server[]> {
     )
     if (!res.ok) return []
     return (await res.json()) as Server[]
-  } catch {
+  } catch (e) {
+    console.error(e)
     return []
   }
 }
@@ -412,6 +418,7 @@ export type SiteRecord = {
   id: string
   name?: string
   state?: string
+  self?: boolean
   tailnetIPs?: string[]
   supportsCluster?: boolean
   cpuMilli?: number
@@ -428,16 +435,18 @@ export async function listSites(): Promise<SiteRecord[]> {
     const data = await res.json()
     // Normalize server-side 'cluster' -> client-side 'clusterId' so UI
     // can rely on a single canonical field during migration.
-    const normalized = (data || []).map((s: any) => ({
-      ...s,
-      clusterId: s.clusterId ?? s.cluster
-    }))
     try {
+      const normalized = (data || []).map((s: any) => ({
+        ...s,
+        clusterId: s.clusterId ?? s.cluster
+      }))
       return SiteListSchema.parse(normalized) as SiteRecord[]
-    } catch {
+    } catch (e) {
+      console.error(e)
       return []
     }
-  } catch {
+  } catch (e) {
+    console.error(e)
     return []
   }
 }
@@ -454,7 +463,8 @@ export async function listFederatedServices(): Promise<MDSummary[]> {
     } catch {
       return []
     }
-  } catch {
+  } catch (e) {
+    console.error(e)
     return []
   }
 }
@@ -624,7 +634,8 @@ export async function getClusterWorkspaceLogs(
     )
     if (!res.ok) return []
     return (await res.json()) as Array<{ t: string; msg: string }>
-  } catch {
+  } catch (e) {
+    console.error(e)
     return []
   }
 }
@@ -646,7 +657,8 @@ export async function listPublishedServices(
     )
     if (!res.ok) return []
     return (await res.json()) as PublishedService[]
-  } catch {
+  } catch (e) {
+    console.error(e)
     return []
   }
 }

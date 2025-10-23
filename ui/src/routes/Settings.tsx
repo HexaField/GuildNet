@@ -7,15 +7,11 @@ import {
   deleteClusterRecord,
   getClusterKubeconfig,
   getClusterJoinConfig,
-  getClusterRecord,
   getClusterOverview
 } from '../lib/api'
 import PublishedServices from '../components/PublishedServices'
 import MultiDevice from './MultiDevice'
 import { pushToast } from '../components/Toaster'
-import { listSites } from '../lib/api'
-
-// DeviceList removed: MultiDevice now renders connected devices per-cluster.
 
 export default function Settings() {
   const params = useParams()

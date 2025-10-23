@@ -127,6 +127,21 @@ export class WSManager extends Emitter {
               statusText: res.statusText,
               body
             })
+
+            // Special-case: server indicates there are no subscriptions.
+            // In that case treat the stream as permanently unavailable and
+            // do not attempt exponential backoff reconnects. This avoids
+            // hot-loop reconnecting when `/v1/sites/stream` returns a
+            // structured { code: 'no_subs' } body or 404.
+            const noSubs =
+              res.status === 404 || (body && body.code === 'no_subs')
+            if (noSubs) {
+              // Close without scheduling retries.
+              this.cleanup()
+              this.state = 'closed'
+              this.emit('state', this.state, this.retries, 'no_subs')
+              return
+            }
           } catch (e) {
             this.emit('error', {
               probeFailed: true,
