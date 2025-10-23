@@ -17,6 +17,7 @@ import (
 	"github.com/your/module/internal/httpx"
 	"github.com/your/module/internal/k8s"
 	"github.com/your/module/internal/localdb"
+	"github.com/your/module/internal/settings"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
@@ -33,6 +34,29 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 	mux.HandleFunc("/v1/sites", func(w http.ResponseWriter, r *http.Request) {
 		out := make([]any, 0)
 		seen := map[string]bool{}
+
+		// Determine the local device hostname to mark self entries for callers hitting this Host App.
+		selfHost := ""
+		if deps.DB != nil {
+			setMgr := settings.Manager{DB: deps.DB}
+			var ts settings.Tailscale
+			_ = setMgr.GetTailscale(&ts)
+			selfHost = strings.ToLower(strings.TrimSpace(ts.Hostname))
+		}
+		if selfHost == "" {
+			if h, err := os.Hostname(); err == nil {
+				selfHost = strings.ToLower(strings.TrimSpace(h))
+			}
+		}
+		isSelf := func(rec map[string]any) bool {
+			if selfHost == "" {
+				return false
+			}
+			id := strings.ToLower(strings.TrimSpace(fmt.Sprint(rec["id"])))
+			name := strings.ToLower(strings.TrimSpace(fmt.Sprint(rec["name"])))
+			// Consider self if either id or name matches the local hostname (common case).
+			return id == selfHost || name == selfHost
+		}
 
 		// First, attempt to enumerate clusters using the registry and read their
 		// per-cluster DBs when an Instance is available.
@@ -110,6 +134,11 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 								rec["lastSeen"] = time.Now()
 							}
 							// Ensure we expose the canonical clusterId only
+							// Mark self entries and null lastSeen for UI to optionally hide them locally
+							if isSelf(rec) {
+								rec["self"] = true
+								rec["lastSeen"] = nil
+							}
 							out = append(out, rec)
 						}
 						seen[s.ID] = true
@@ -168,6 +197,11 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 								}
 								rec[k] = v
 							}
+							// Mark self entries and null lastSeen for UI to optionally hide them locally
+							if isSelf(rec) {
+								rec["self"] = true
+								rec["lastSeen"] = nil
+							}
 							out = append(out, rec)
 						}
 						seen[cl] = true
@@ -202,6 +236,10 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 					"storageMB":       0,
 					"vramMB":          0,
 					"lastSeen":        time.Now(),
+				}
+				if isSelf(rec) {
+					rec["self"] = true
+					rec["lastSeen"] = nil
 				}
 				out = append(out, rec)
 			}

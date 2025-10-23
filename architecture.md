@@ -208,6 +208,11 @@ Dev convenience: the router can detect a local `kubectl proxy` and rewrite clust
   - Import/Export, permissions, audit endpoints
   - SSE changefeeds: `/sse/cluster/{id}/db/{dbId}/tables/{table}/changes`
 
+Multi-device Sites API
+----------------------
+- GET `/api/v1/sites` — aggregated per-device records. The server sets a canonical `clusterId` per record.
+- For the device hosting the current Host App instance, the server marks the record with `self: true` and omits `lastSeen` (null). This allows the UI to hide the local device from “remote sites” listings without ambiguous online/offline status.
+
 ### Wiring, lifecycle and implementation notes
 
 - `Registry.Get(ctx,id)` creates and caches `Instance` objects. `Registry.RDBPresent` avoids expensive RDB initialization during normal request handling.

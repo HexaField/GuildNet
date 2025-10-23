@@ -406,6 +406,11 @@ The UI lists servers per cluster by calling `GET /api/cluster/{id}/servers`, whi
 
 This metadata helps operators quickly identify which machine a server is running on and how it can be reached over the tailnet.
 
+Sites UI (multi-device)
+-----------------------
+- The Sites list (Federated services page) calls `GET /api/v1/sites`.
+- The server marks the local Host App’s device record with `self: true` and sets `lastSeen` to null, so the UI can hide it when showing “remote” devices.
+
 Stopping a server (UI)
 ----------------------
 From the Servers list and the Server detail page, you can shut down a single server (Workspace) using the "Shutdown" button. This issues a cluster-scoped delete to the backend:

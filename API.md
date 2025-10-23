@@ -319,6 +319,11 @@ When `GN_HEARTBEAT_URL` is unset the poster defaults to `https://127.0.0.1:8090/
 
 Note: Heartbeat payloads accepted by the Host App must include the canonical `clusterId` field. Example: `{"clusterId":"<id>", "id":"device-name", ...}`. The server persists device rows with `clusterId` and cluster-level records use the canonical `id` field.
 
+Sites listing (multi-device UI)
+--------------------------------
+- GET `/api/v1/sites` returns per-device records aggregated across clusters. Fields include `id`, `name`, `clusterId`, `tailnetIPs`, resource hints, and `lastSeen`.
+- Records corresponding to the local Host App device are marked with `self: true` and intentionally set `lastSeen: null` so UIs can hide or de-emphasize the local device when listing “remote” sites.
+
 
 ## Examples and notes
 
