@@ -139,6 +139,26 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 								rec["self"] = true
 								rec["lastSeen"] = nil
 							}
+
+							// If we don't have tailnet IPs from the persisted record or CR, try
+							// to obtain them from the per-cluster tsnet connector (best-effort).
+							if inst != nil && inst.TS != nil {
+								// only try when nothing present
+								if arr, ok := rec["tailnetIPs"].([]any); !ok || len(arr) == 0 {
+									if st, det := inst.TS.Health(r.Context()); st == "ok" {
+										ips := []string{}
+										if v, ok2 := det["ip"].(string); ok2 && v != "" {
+											ips = append(ips, v)
+										}
+										if v, ok2 := det["fqdn"].(string); ok2 && v != "" {
+											ips = append(ips, v)
+										}
+										if len(ips) > 0 {
+											rec["tailnetIPs"] = ips
+										}
+									}
+								}
+							}
 							out = append(out, rec)
 						}
 						seen[s.ID] = true
@@ -236,6 +256,21 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 					"storageMB":       0,
 					"vramMB":          0,
 					"lastSeen":        time.Now(),
+				}
+				// attempt to attach tailnet IPs from the registry instance's TS connector
+				if inst, err := deps.Registry.Get(r.Context(), s.ID); err == nil && inst != nil && inst.TS != nil {
+					if st, det := inst.TS.Health(r.Context()); st == "ok" {
+						ips := []string{}
+						if v, ok := det["ip"].(string); ok && v != "" {
+							ips = append(ips, v)
+						}
+						if v, ok := det["fqdn"].(string); ok && v != "" {
+							ips = append(ips, v)
+						}
+						if len(ips) > 0 {
+							rec["tailnetIPs"] = ips
+						}
+					}
 				}
 				if isSelf(rec) {
 					rec["self"] = true

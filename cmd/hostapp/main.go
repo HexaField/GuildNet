@@ -750,7 +750,21 @@ func main() {
 			case <-time.After(interval):
 				// build payload
 				payload := map[string]any{"id": deviceID, "name": deviceID}
-				if info, err := ts.Info(context.Background(), tsServer); err == nil && info != nil {
+				// Try to obtain tailscale/tsnet info with a few retries; tsnet may be still starting.
+				var info *ts.InfoResult
+				var ierr error
+				for i := 0; i < 3; i++ {
+					info, ierr = ts.Info(context.Background(), tsServer)
+					if ierr == nil && info != nil && (info.IP != "" || info.FQDN != "") {
+						break
+					}
+					// small backoff
+					time.Sleep(250 * time.Millisecond)
+				}
+				if ierr != nil {
+					log.Printf("ts.Info() failed while building heartbeat: %v", ierr)
+				}
+				if info != nil {
 					ips := []string{}
 					if info.IP != "" {
 						ips = append(ips, info.IP)
@@ -760,7 +774,11 @@ func main() {
 					}
 					if len(ips) > 0 {
 						payload["tailnetIPs"] = ips
+					} else {
+						log.Printf("heartbeat: ts.Info() returned no IP/FQDN; posting without tailnetIPs")
 					}
+				} else {
+					log.Printf("heartbeat: ts.Info() returned nil info; posting without tailnetIPs")
 				}
 				payload["cpuMilli"] = int64(runtime.NumCPU() * 1000)
 				if mb := readMemMB(); mb > 0 {
