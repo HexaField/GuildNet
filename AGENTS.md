@@ -2,7 +2,7 @@ The point of this repo is to give consistent and reliable Kubernetes deployments
 
 IMPORTANT: Multi-line quoted commands usually stall the CLI - avoid them if possible.
 
-Any new features or configurations must work by default, but can be customized via environment variables or other configurations as appropriate. There is no dev flow for this project, only a production flow as this is a developer tool. Everything should work out of the box with sensible defaults.
+Any new features or configurations must work by default, but can be customized via environment variables or other configurations as appropriate. This project only has a production flow as this is a developer tool. Everything should work out of the box with sensible defaults.
 
 Do NOT create 'dev' or 'local' modes or configurations. Everything should work the same in all environments.
 
