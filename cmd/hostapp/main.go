@@ -475,7 +475,7 @@ func main() {
 	}()
 
 	// Per-cluster registry (always on in prototype)
-	reg := cluster.NewRegistry(cluster.Options{StateDir: stateDir, Resolver: kubeconfigResolver{DB: ldb, Sec: sec}})
+	reg := cluster.NewRegistry(cluster.Options{StateDir: stateDir, Resolver: kubeconfigResolver{DB: ldb, Sec: sec}, GlobalDB: ldb})
 
 	// In-memory hostapp site registry (discovery/federation PoC)
 	hReg := hostapppkg.NewRegistry()
@@ -772,13 +772,47 @@ func main() {
 					if info.FQDN != "" {
 						ips = append(ips, info.FQDN)
 					}
+					// If ts.Info returned nothing, attempt a best-effort fallback by
+					// reading the host 'tailscale0' interface address. This helps in
+					// cases where the embedded tsnet.LocalClient hasn't populated
+					// status yet but the kernel interface exists.
+					if len(ips) == 0 {
+						if ifi, err := net.InterfaceByName("tailscale0"); err == nil && ifi != nil {
+							ifaddrs, _ := ifi.Addrs()
+							for _, a := range ifaddrs {
+								if ipnet, ok := a.(*net.IPNet); ok {
+									if ip := ipnet.IP; ip != nil && ip.To4() != nil {
+										ips = append(ips, ip.String())
+										break
+									}
+								}
+							}
+						}
+					}
 					if len(ips) > 0 {
 						payload["tailnetIPs"] = ips
 					} else {
 						log.Printf("heartbeat: ts.Info() returned no IP/FQDN; posting without tailnetIPs")
 					}
 				} else {
-					log.Printf("heartbeat: ts.Info() returned nil info; posting without tailnetIPs")
+					// ts.Info() returned nil; try fallback to tailscale0 interface
+					ips := []string{}
+					if ifi, err := net.InterfaceByName("tailscale0"); err == nil && ifi != nil {
+						ifaddrs, _ := ifi.Addrs()
+						for _, a := range ifaddrs {
+							if ipnet, ok := a.(*net.IPNet); ok {
+								if ip := ipnet.IP; ip != nil && ip.To4() != nil {
+									ips = append(ips, ip.String())
+									break
+								}
+							}
+						}
+					}
+					if len(ips) > 0 {
+						payload["tailnetIPs"] = ips
+					} else {
+						log.Printf("heartbeat: ts.Info() returned nil info; posting without tailnetIPs")
+					}
 				}
 				payload["cpuMilli"] = int64(runtime.NumCPU() * 1000)
 				if mb := readMemMB(); mb > 0 {

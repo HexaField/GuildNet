@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -10,10 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"context"
+	_ "modernc.org/sqlite"
 
 	"github.com/your/module/internal/cluster"
 	"github.com/your/module/internal/db"
+	"github.com/your/module/internal/headscale"
 	"github.com/your/module/internal/httpx"
 	"github.com/your/module/internal/k8s"
 	"github.com/your/module/internal/localdb"
@@ -56,6 +58,36 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 			name := strings.ToLower(strings.TrimSpace(fmt.Sprint(rec["name"])))
 			// Consider self if either id or name matches the local hostname (common case).
 			return id == selfHost || name == selfHost
+		}
+
+		// helper: when no tailnetIPs are present, try to query Headscale admin
+		// API (remote) using global Tailscale settings when available. This
+		// replaces the old local sqlite fallback and keeps the behavior remote-
+		// first and production-ready. Token wiring (if required) should be
+		// provided via settings or per-cluster secrets; for now we call with
+		// an empty token and prefer the configured login server.
+		fetchFromHeadscale := func(devID string) []string {
+			ips := []string{}
+			if deps.DB == nil {
+				return ips
+			}
+			var ts settings.Tailscale
+			_ = settings.Manager{DB: deps.DB}.GetTailscale(&ts)
+			endpoint := strings.TrimSpace(ts.LoginServer)
+			if endpoint == "" {
+				return ips
+			}
+			// TODO: wire an admin token via settings / credentials if Headscale
+			// requires authentication. For now call unauthenticated.
+			found, _, err := headscale.FindMachineIPsByHostname(endpoint, "", devID)
+			if err != nil {
+				log.Printf("fetchFromHeadscale: headscale lookup failed dev=%s err=%v", devID, err)
+				return ips
+			}
+			if len(found) > 0 {
+				ips = append(ips, found...)
+			}
+			return ips
 		}
 
 		// First, attempt to enumerate clusters using the registry and read their
@@ -145,7 +177,14 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 							if inst != nil && inst.TS != nil {
 								// only try when nothing present
 								if arr, ok := rec["tailnetIPs"].([]any); !ok || len(arr) == 0 {
-									if st, det := inst.TS.Health(r.Context()); st == "ok" {
+									// Debug: log that we're attempting a TS Health call for this cluster/device
+									log.Printf("backfill: attempting TS.Health cluster=%s device=%s", s.ID, id)
+									// use HealthWithRetry with a small timeout and retries so
+									// transient tsnet startup delays don't immediately fail.
+									st, det := inst.TS.HealthWithRetry(context.Background(), 5*time.Second, 3, 200*time.Millisecond)
+									// Debug: log the returned status and details to aid debugging
+									log.Printf("backfill: TS.Health returned cluster=%s device=%s status=%s details=%v", s.ID, id, st, det)
+									if st == "ok" {
 										ips := []string{}
 										if v, ok2 := det["ip"].(string); ok2 && v != "" {
 											ips = append(ips, v)
@@ -155,8 +194,66 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 										}
 										if len(ips) > 0 {
 											rec["tailnetIPs"] = ips
+											// Persist the backfilled tailnetIPs into the per-cluster DB
+											// so future reads don't need to re-query the TS connector.
+											if inst.DB != nil {
+												// only persist when the original persisted record lacked tailnetIPs
+												needPersist := true
+												if t, ok := dm["tailnetIPs"]; ok {
+													switch x := t.(type) {
+													case []any:
+														if len(x) > 0 {
+															needPersist = false
+														}
+													case []string:
+														if len(x) > 0 {
+															needPersist = false
+														}
+													}
+												}
+												if needPersist {
+													dm["tailnetIPs"] = ips
+													if err := inst.DB.Put("devices", id, dm); err != nil {
+														log.Printf("persist backfilled tailnetIPs cluster=%s device=%s err=%v", s.ID, id, err)
+													} else {
+														log.Printf("persisted backfilled tailnetIPs cluster=%s device=%s ips=%v", s.ID, id, ips)
+													}
+												}
+											}
 										}
 									}
+								} else {
+									// schedule a background, longer-running backfill attempt which will try longer
+									// and persist when an IP becomes available. This avoids blocking API callers
+									// while still ensuring eventual consistency.
+									go func(inst *cluster.Instance, clusterID, deviceID string) {
+										// longer retry window for background attempts
+										// increase attempts and backoff so tsnet has ample time to finish login/initialization
+										st2, det2 := inst.TS.HealthWithRetry(context.Background(), 6*time.Second, 20, 1*time.Second)
+										if st2 == "ok" {
+											var bgips []string
+											if ip2, ok := det2["ip"].(string); ok && ip2 != "" {
+												bgips = append(bgips, ip2)
+											}
+											if fqdn2, ok := det2["fqdn"].(string); ok && fqdn2 != "" {
+												bgips = append(bgips, fqdn2)
+											}
+											if len(bgips) > 0 {
+												// load device row and only persist if empty
+												var row map[string]any
+												if err := inst.DB.Get("devices", deviceID, &row); err == nil {
+													if cur, ok := row["tailnetIPs"].([]string); !ok || len(cur) == 0 {
+														row["tailnetIPs"] = bgips
+														if err := inst.DB.Put("devices", deviceID, row); err != nil {
+															log.Printf("backfill-bg: persist err=%v cluster=%s device=%s", err, clusterID, deviceID)
+														} else {
+															log.Printf("backfill-bg: persisted backfilled tailnetIPs cluster=%s device=%s ips=%v", clusterID, deviceID, bgips)
+														}
+													}
+												}
+											}
+										}
+									}(inst, s.ID, id)
 								}
 							}
 							out = append(out, rec)
@@ -217,6 +314,15 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 								}
 								rec[k] = v
 							}
+							// if no tailnetIPs in persisted record, try headscale DB best-effort
+							if t, ok := rec["tailnetIPs"].([]any); !ok || len(t) == 0 {
+								if id, ok := rec["id"].(string); ok && id != "" {
+									ips := fetchFromHeadscale(id)
+									if len(ips) > 0 {
+										rec["tailnetIPs"] = ips
+									}
+								}
+							}
 							// Mark self entries and null lastSeen for UI to optionally hide them locally
 							if isSelf(rec) {
 								rec["self"] = true
@@ -259,7 +365,9 @@ func RegisterFederationAPIs(mux *http.ServeMux, deps Deps) {
 				}
 				// attempt to attach tailnet IPs from the registry instance's TS connector
 				if inst, err := deps.Registry.Get(r.Context(), s.ID); err == nil && inst != nil && inst.TS != nil {
-					if st, det := inst.TS.Health(r.Context()); st == "ok" {
+					// call HealthWithRetry to tolerate short startup delays.
+					st, det := inst.TS.HealthWithRetry(context.Background(), 5*time.Second, 3, 200*time.Millisecond)
+					if st == "ok" {
 						ips := []string{}
 						if v, ok := det["ip"].(string); ok && v != "" {
 							ips = append(ips, v)

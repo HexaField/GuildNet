@@ -12,6 +12,8 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/portforward"
 	spdy "k8s.io/client-go/transport/spdy"
+
+	connectorpkg "github.com/your/module/internal/ts/connector"
 )
 
 // PortForwardManager maintains on-demand port-forwards to pods.
@@ -83,7 +85,10 @@ func (m *PortForwardManager) Ensure(ctx context.Context, namespace, pod string, 
 	}
 	path := fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/portforward", namespace, pod)
 	u := &url.URL{Scheme: hostURL.Scheme, Host: hostURL.Host, Path: path}
-	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: rt}, "POST", u)
+	// Wrap the roundtripper with the connector debug logger when enabled so
+	// we capture X-Tailscale-Handshake values during development.
+	wrappedRT := connectorpkg.LoggingTransport(rt, m.clusterID)
+	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: wrappedRT}, "POST", u)
 
 	stopCh := make(chan struct{}, 1)
 	readyCh := make(chan struct{}, 1)

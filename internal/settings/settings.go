@@ -2,9 +2,11 @@ package settings
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/your/module/internal/localdb"
+	"github.com/your/module/internal/secrets"
 )
 
 // Tailscale holds tsnet control-plane settings managed at runtime.
@@ -220,7 +222,21 @@ func (m Manager) PutCluster(clusterID string, cs Cluster) error {
 	}
 	// Store client auth key in credentials bucket to avoid accidental echo
 	if strings.TrimSpace(cs.TSClientAuthKey) != "" && m.DB != nil {
-		_ = m.DB.Put("credentials", fmt.Sprintf("cl:%s:ts_client_auth", clusterID), map[string]any{"value": cs.TSClientAuthKey, "encrypted": false})
+		// Use the hostapp master key (if present) to encrypt stored secrets.
+		// This uses the same envelope mechanism as the rest of the app via
+		// internal/secrets.Manager. If no master key is configured, store
+		// the plaintext value with encrypted=false for backwards compat.
+		enc := false
+		val := cs.TSClientAuthKey
+		if mk := strings.TrimSpace(os.Getenv("GUILDNET_MASTER_KEY")); mk != "" {
+			if sec, err := secrets.New(mk); err == nil {
+				if e, err2 := sec.Encrypt(cs.TSClientAuthKey); err2 == nil {
+					val = e
+					enc = true
+				}
+			}
+		}
+		_ = m.DB.Put("credentials", fmt.Sprintf("cl:%s:ts_client_auth", clusterID), map[string]any{"value": val, "encrypted": enc})
 	}
 	return m.DB.Put(bucketClusters, clusterID, rec)
 }
