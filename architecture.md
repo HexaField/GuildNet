@@ -67,6 +67,13 @@ For operator-driven federation the operator requires a couple of runtime artifac
 
 These two items are required for the operator to drive cross-device behavior: tsnet provides tailnet connectivity and the TLS certs allow the operator to serve secure endpoints and validate HostApp connections during verification. The verifier script `scripts/verify-federation-e2e.sh` will check that both devices see at least one common cluster and will deploy a minimal test workload to ensure both clusters can run the same image.
 
+Containerized node runtime (k0s in Docker)
+-------------------------------------------
+- Each device can now run a self-contained node stack using Docker only: a privileged k0s container (controller+worker), an optional Tailscale container for tailnet routing, and a Docker-in-Docker daemon for local image builds. The script `scripts/k0s-node-up.sh` orchestrates these and emits a kubeconfig (default `~/.guildnet/kubeconfig`).
+- The Host App consumes that kubeconfig unchanged. Deterministic cluster IDs and bootstrap flows work identically to other clusters. Per-cluster settings (APIProxyURL, PreferPodProxy, UsePortForward, etc.) apply as before.
+- Inter-device networking is expected to use the tailnet; initial binding defaults to local-only for the API (127.0.0.1:16443) and can be exposed privately via Tailscale routing/serve in follow-ups.
+- Local image pipeline for single-node clusters: for fast inner-loop development without a registry, images can be built inside the DinD container and imported directly into the k0s node's containerd (`ctr -n k8s.io images import`). When the image tag is non-latest (e.g., `:local`), the default Kubernetes `imagePullPolicy: IfNotPresent` ensures the locally imported image is used without external pulls. See `scripts/image-pipeline-smoke.sh` and `make smoke-image-pipeline`.
+
 tsnet connectors and Headscale auth (implementation details)
 -----------------------------------------------------------
 - The Host App embeds per-cluster tsnet connectors. Each connector is configured with a login server URL and a preauth key.

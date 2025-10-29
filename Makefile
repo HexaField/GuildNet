@@ -95,14 +95,15 @@ setup-all: ## One-command: Headscale up -> LAN sync -> ensure Kubernetes (microk
 	echo "[setup-all] Using cluster: $$CL"; \
 	$(MAKE) headscale-up; \
 	$(MAKE) env-sync-lan; \
-	# Ensure Kubernetes is reachable; if not, try microk8s setup or fail
+	# Ensure Kubernetes is reachable; if not, try containerized k0s first, then microk8s as fallback
 	ok=1; kubectl --request-timeout=3s get --raw=/readyz >/dev/null 2>&1 || ok=0; \
 	if [ $$ok -eq 0 ]; then \
-		# Attempt microk8s setup if helper script exists
-		if [ -x "./scripts/microk8s-setup.sh" ]; then \
+		if [ -x "./scripts/k0s-node-up.sh" ]; then \
+			bash ./scripts/k0s-node-up.sh || true; \
+			kubectl --request-timeout=5s get --raw=/readyz >/dev/null 2>&1 || ok=0; \
+		fi; \
+		if [ $$ok -eq 0 ] && [ -x "./scripts/microk8s-setup.sh" ]; then \
 			bash ./scripts/microk8s-setup.sh $(GN_KUBECONFIG) || { echo "microk8s setup failed"; exit 2; }; \
-		else \
-			echo "Kubernetes API not reachable; please configure KUBECONFIG or install microk8s"; exit 2; \
 		fi; \
 	fi; \
 	CLUSTER=$$CL $(MAKE) headscale-namespace; \
@@ -281,7 +282,7 @@ headscale-approve-routes: ## Approve tailscale routes for the router in Headscal
 export KUBECONFIG := $(GN_KUBECONFIG)
 
 # ---------- Provision / Addons / Deploy / Verify ----------
-.PHONY: deploy-k8s-addons deploy-operator deploy-hostapp verify-e2e diag-router diag-k8s diag-db
+.PHONY: deploy-k8s-addons deploy-operator deploy-hostapp verify-e2e diag-router diag-k8s diag-db verify-k0s verify-operator ts-serve-kubeapi smoke-workspace smoke-image-pipeline
 
 deploy-k8s-addons: ## Install MetalLB (pool from .env), CRDs, imagePullSecret, DB
 	bash ./scripts/deploy-metallb.sh
@@ -314,6 +315,21 @@ diag-k8s: ## Show kube API status and nodes
 
 diag-db: ## Print DB service details
 	bash ./scripts/rethinkdb-setup.sh || true
+
+verify-k0s: ## Verify Docker-only k0s node readiness
+	bash ./scripts/verify-k0s.sh
+
+verify-operator: ## Verify CRDs and operator are installed and running
+	bash ./scripts/verify-crds-operator.sh
+
+ts-serve-kubeapi: ## Expose local kube-API over tailnet via tailscale serve tcp
+	bash ./scripts/ts-serve-kubeapi.sh
+
+smoke-workspace: ## Apply a tiny Workspace CR from template (idempotent)
+	bash ./scripts/smoke-workspace.sh
+
+smoke-image-pipeline: ## Build in DinD -> import into k0s -> deploy Workspace
+	bash ./scripts/image-pipeline-smoke.sh
 
 .PHONY: diag-multi-device
 diag-multi-device: ## Summarize multi-device status (operator, CRDs, router, health)
@@ -403,6 +419,22 @@ router-ensure: ## Deploy Tailscale subnet router DaemonSet (uses tmp/cluster-<id
 
 plain-quickstart: ## Alias to setup-all for plain K8S flow
 	$(MAKE) setup-all
+
+# ---------- Containerized k0s (Docker-only) ----------
+.PHONY: node-up node-down attach-local-node deploy-k0s-node
+
+node-up: ## Start Docker-only node stack (k0s + tailscale? + DinD) and emit kubeconfig
+	bash ./scripts/k0s-node-up.sh
+
+node-down: ## Stop node stack (k0s, tailscale, DinD) [add --purge to delete state]
+	bash ./scripts/k0s-node-down.sh ${ARGS}
+
+attach-local-node: ## Attach the locally emitted kubeconfig to Host App via /bootstrap
+	bash ./scripts/attach-local-k0s.sh
+
+deploy-k0s-node: ## One-command: node-up then attach to Host App
+	$(MAKE) node-up
+	$(MAKE) attach-local-node
 
 .PHONY: deploy-networkpolicies
 deploy-networkpolicies: ## Apply recommended network policies for workspace isolation

@@ -1,4 +1,58 @@
 GuildNet — Production Deployment Guide
+Containerized node (Docker-only, k0s)
+-------------------------------------
+
+In addition to legacy MicroK8s, GuildNet now supports a Docker-only runtime using k0s inside a privileged container per device, plus optional Tailscale and Docker-in-Docker for image builds. This path is the new default for local and production-style setups where only Docker is available on the host.
+
+Quick path (one-liners):
+
+```bash
+# Bring up node stack and emit kubeconfig to ~/.guildnet/kubeconfig
+scripts/k0s-node-up.sh
+
+# Attach the emitted kubeconfig to the Host App via /bootstrap
+scripts/attach-local-k0s.sh
+
+# Deploy cluster addons, CRDs, DB, and operator (as before)
+make deploy-k8s-addons
+make deploy-operator
+
+# Optional: verify node, CRDs/operator, and a test workspace
+make verify-k0s
+make verify-operator
+make smoke-workspace
+```
+
+Notes:
+- The k0s API is bound locally to 127.0.0.1:16443 by default. Tailnet exposure is layered via the Tailscale container and routing in follow-ups.
+- The node stack also starts a DinD container for local image builds; use `DOCKER_HOST=tcp://localhost:2375` only if you explicitly expose DinD, otherwise use `docker exec guildnet-dind` for builds.
+- The existing `setup-all` target prefers the Docker-only path; it will fall back to MicroK8s when necessary.
+
+Image pipeline smoke (no registry)
+----------------------------------
+To quickly validate that local image builds run inside the cluster without setting up a registry, use the built-in smoke that builds in DinD, imports into the k0s node's containerd, and deploys a Workspace that uses the image:
+
+```bash
+make smoke-image-pipeline
+```
+
+What it does:
+- Builds a tiny BusyBox+httpd image inside the `guildnet-dind` container and tags it `gn/smoke-app:local`.
+- Streams the image tar into the `guildnet-k0s` container and imports it into containerd (`ctr -n k8s.io images import`).
+- Creates a `Workspace` CR pointing at `gn/smoke-app:local` (non-latest tag -> imagePullPolicy=IfNotPresent) so the node uses the locally imported image without a pull.
+
+You can override defaults via env vars:
+- `GN_WORKSPACE_NS`, `GN_WORKSPACE_NAME`, `GN_WORKSPACE_PORT`
+- `GN_SMOKE_IMAGE` (tag built/imported and used for the Workspace)
+
+Tailnet exposure of kube-API (optional)
+--------------------------------------
+To expose the kube-API privately over the tailnet, configure Tailscale "serve tcp" from the tailscale container (host network mode is assumed):
+
+```bash
+make ts-serve-kubeapi
+```
+
 
 IMPORTANT NOTE: Local code generation (controller-gen)
 
@@ -43,7 +97,7 @@ Prerequisites
 
 1) Install CRDs, DB, and deploy the operator (single Makefile flow)
 
-This repository provides Makefile targets that bundle the recommended production install steps. Use these to keep the process simple and repeatable.
+This repository provides Makefile targets that bundle the recommended production install steps. Use these to keep the process simple and repeatable. When running the Docker-only node path, ensure `scripts/k0s-node-up.sh` has emitted a valid kubeconfig first (default `~/.guildnet/kubeconfig`).
 
 Install cluster addons, CRDs and DB (RethinkDB):
 

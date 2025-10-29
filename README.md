@@ -30,6 +30,24 @@ GuildNet is a private self-hostable stack that puts human-in-the-loop with agent
 
 ## Quickstart
 
+### Docker-only node (k0s in Docker)
+
+The default path is a self-contained Docker-only stack per device:
+
+- Bring up a node and emit kubeconfig:
+  - `scripts/k0s-node-up.sh`
+- Attach cluster to the Host App:
+  - `scripts/attach-local-k0s.sh`
+- Install addons/CRDs/DB and deploy the operator:
+  - `make deploy-k8s-addons`
+  - `make deploy-operator`
+
+Verification:
+
+- Verify k0s readiness: `make verify-k0s`
+- Verify Kubernetes API and nodes: `make diag-k8s`
+- Verify end-to-end (router, routes, kube API, DB): `make verify-e2e`
+
 ### Headscale
 Start or use Headscale as your Tailnet controller and create a reusable pre-auth key (local helper: `make headscale-up` and `make headscale-bootstrap`).
 
@@ -48,10 +66,9 @@ Verification:
 - Ensure local tailscaled / router is running: `make router-daemon` or check status with `make router-status`
 - Verify routes are approved and visible in Headscale: `make headscale-approve-routes`
 
-### Deploy cluster
+### Deploy cluster (legacy MicroK8s)
 
-
-Create or point to a Kubernetes cluster. For local development we recommend `microk8s` (use `bash ./scripts/microk8s-setup.sh` which writes a kubeconfig to `$(GN_KUBECONFIG)`). After the cluster is ready install addons and RethinkDB with `make deploy-k8s-addons` and deploy the operator with `make deploy-operator`.
+You can still use MicroK8s if preferred: `bash ./scripts/microk8s-setup.sh` (writes kubeconfig to `$(GN_KUBECONFIG)`). After the cluster is ready, install addons and RethinkDB with `make deploy-k8s-addons` and deploy the operator with `make deploy-operator`.
 
 Verification:
 

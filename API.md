@@ -106,6 +106,11 @@ Deterministic cluster IDs and attach-kubeconfig behavior
 - Cluster IDs are deterministic: when a kubeconfig is provided (via POST /bootstrap or attach-kubeconfig), the backend computes a canonical ID from the kubeconfig's normalized server URL and certificate-authority data.
 - POST `/api/deploy/clusters/{id}?action=attach-kubeconfig` may be invoked with any placeholder `{id}`. The backend will compute the deterministic ID and, if no record exists yet, create a cluster record with state `imported` so that UIs/agents can reference the same cluster across devices. The response includes `{ id: <deterministicId>, ok: true }` on success.
 
+Docker-only k0s node note
+-------------------------
+- The helper script `scripts/k0s-node-up.sh` emits a kubeconfig (default `~/.guildnet/kubeconfig`) for the containerized k0s control-plane running on the same device. This kubeconfig can be posted to `/bootstrap` exactly like any other cluster.
+- Initial defaults bind the API to `https://127.0.0.1:16443`. Tailnet-based access can be configured via Tailscale routing/serve; the API surface and bootstrap semantics remain unchanged.
+
 - GET /ui-config
   - UI runtime config placeholder (returns {} in current implementation).
 
