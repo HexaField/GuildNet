@@ -106,11 +106,18 @@ WS_REMOTE_NAME="e2e-codeserver-remote-${TSUFFIX}"
 TIMEOUT_SEC="${TIMEOUT_SEC:-300}"
 SLEEP_SEC="${SLEEP_SEC:-5}"
 
+# Determine expected schedule node names (DNS-1123-ish) for placement
+LOCAL_HOSTNAME=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo "")
+REMOTE_HOSTNAME=$(ssh -o BatchMode=yes "$REMOTE_SSH" -t 'hostname -s 2>/dev/null || hostname 2>/dev/null || echo ""' 2>/dev/null | tr -d '\r')
+# Normalize to lowercase; most clusters use lowercase node names
+LOCAL_SCHEDULE_NODE=$(echo "$LOCAL_HOSTNAME" | tr '[:upper:]' '[:lower:]')
+REMOTE_SCHEDULE_NODE=$(echo "$REMOTE_HOSTNAME" | tr '[:upper:]' '[:lower:]')
+
 post_local_workspace(){
   local name="$1"
   vv "Creating local workspace: ${name}"
   local payload
-  payload=$(jq -nc --arg img "$WS_IMG" --arg name "$name" '{image:$img,name:$name}')
+  payload=$(jq -nc --arg img "$WS_IMG" --arg name "$name" --arg node "$LOCAL_SCHEDULE_NODE" '{image:$img,name:$name,scheduleNode:$node}')
   curl -k -s -X POST "$LOCAL_HOSTAPP_URL/api/cluster/$LOCAL_DET/workspaces" \
     -H 'Content-Type: application/json' \
     -d "$payload" | jq -r '.' || true
@@ -120,7 +127,7 @@ post_remote_workspace(){
   local name="$1"
   vv "Creating remote workspace: ${name}"
   local payload
-  payload=$(jq -nc --arg img "$WS_IMG" --arg name "$name" '{image:$img,name:$name}')
+  payload=$(jq -nc --arg img "$WS_IMG" --arg name "$name" --arg node "$REMOTE_SCHEDULE_NODE" '{image:$img,name:$name,scheduleNode:$node}')
   ssh -o BatchMode=yes "$REMOTE_SSH" -t \
     "curl -k -s -X POST '$REMOTE_HOSTAPP_URL/api/cluster/$LOCAL_DET/workspaces' -H 'Content-Type: application/json' -d '$payload' | jq -r '.'" \
     >/tmp/e2e-remote-create-${name}.json 2>/dev/null || true
@@ -260,8 +267,6 @@ if [ -z "$REMOTE_LOGS_PEER" ]; then echo "FAIL: Remote could not read logs for l
 log "PASS: Distributed cluster verified — both devices spawned code-server, see each other, and can read logs for both."
 
 # Placement checks — verify each workspace is scheduled on the device that launched it
-LOCAL_HOSTNAME=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo "")
-REMOTE_HOSTNAME=$(ssh -o BatchMode=yes "$REMOTE_SSH" -t 'hostname -s 2>/dev/null || hostname 2>/dev/null || echo ""' 2>/dev/null | tr -d '\r')
 vv "Local hostname: $LOCAL_HOSTNAME, Remote hostname: $REMOTE_HOSTNAME"
 
 # Fetch placement info
