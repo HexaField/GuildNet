@@ -385,6 +385,14 @@ func main() {
 		tsSet = settings.Tailscale{LoginServer: cfg.LoginServer, PreauthKey: cfg.AuthKey, Hostname: cfg.Hostname}
 		_ = setMgr.PutTailscale(tsSet)
 	}
+	// Normalize any stored preauth key into canonical tskey-<base64url> form so
+	// the in-process tsnet.Server receives a valid AuthKey (handles hex and
+	// other variants). Persist the normalized form back into settings so
+	// future restarts don't repeat normalization logic.
+	if norm := ts.NormalizeAuthKey(tsSet.PreauthKey); norm != strings.TrimSpace(tsSet.PreauthKey) {
+		tsSet.PreauthKey = norm
+		_ = setMgr.PutTailscale(tsSet)
+	}
 	// Global: migrate defaults on first run
 	var gset settings.Global
 	_ = setMgr.GetGlobal(&gset)

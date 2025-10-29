@@ -17,7 +17,7 @@
 # Environment overrides:
 #   HEADSCALE_STATE_DIR     default: $HOME/.guildnet/headscale
 #   HEADSCALE_SERVER_URL    default: http://127.0.0.1:8081
-#   HEADSCALE_IMAGE         default: ghcr.io/juanfont/headscale:0.22.3
+#   HEADSCALE_IMAGE         default: ghcr.io/juanfont/headscale:0.27.0
 #   HEADSCALE_CONTAINER_NAME default: guildnet-headscale
 #   HEADSCALE_PORT          default: 8081 (host port -> container 8080)
 #
@@ -30,7 +30,7 @@ STATE_DIR=${HEADSCALE_STATE_DIR:-"$HOME/.guildnet/headscale"}
 CONF_DIR="$STATE_DIR/config"
 DATA_DIR="$STATE_DIR/data"
 CONFIG="$CONF_DIR/config.yaml"
-IMAGE=${HEADSCALE_IMAGE:-"ghcr.io/juanfont/headscale:0.22.3"}
+IMAGE=${HEADSCALE_IMAGE:-"ghcr.io/juanfont/headscale:0.27.0"}
 CONTAINER=${HEADSCALE_CONTAINER_NAME:-"guildnet-headscale"}
 
 # Choose host bind address and port (auto-detect LAN IP; auto-bump port if busy when not explicitly set)
@@ -87,23 +87,31 @@ fi
 mkdir -p "$CONF_DIR" "$DATA_DIR"
 
 write_default_config() {
-  cat >"$CONFIG" <<EOF
+  cat >"$CONFIG" <<'EOF'
 server_url: ${SERVER_URL}
 listen_addr: 0.0.0.0:8080
 metrics_listen_addr: 127.0.0.1:9090
-ip_prefixes:
-  - 100.64.0.0/10
-  - fd7a:115c:a1e0::/48
-db_type: sqlite3
-db_path: /var/lib/headscale/db.sqlite
+prefixes:
+  v4: 100.64.0.0/10
+  v6: fd7a:115c:a1e0::/48
+
+allocation: sequential
+
+database:
+  type: sqlite
+  sqlite:
+    path: /var/lib/headscale/db.sqlite
+    write_ahead_log: true
+
 private_key_path: /var/lib/headscale/server_private.key
+
 log:
   level: info
   format: text
-dns_config:
-  override_local_dns: false
+
 dns:
   override_local_dns: false
+
 noise:
   private_key_path: /var/lib/headscale/noise_private.key
 EOF
@@ -151,8 +159,7 @@ up() {
         -p ${BIND_HOST}:${HOST_PORT}:8080 \
         -v "$DATA_DIR:/var/lib/headscale" \
         -v "$CONF_DIR:/etc/headscale:ro" \
-        --entrypoint /bin/sh \
-        "$IMAGE" -c "/bin/headscale serve" >/dev/null
+        "$IMAGE" serve >/dev/null
     fi
   else
     echo "[headscale] Starting container $CONTAINER on ${BIND_HOST}:${HOST_PORT}"
@@ -162,8 +169,7 @@ up() {
         -p ${BIND_HOST}:${HOST_PORT}:8080 \
         -v "$DATA_DIR:/var/lib/headscale" \
         -v "$CONF_DIR:/etc/headscale:ro" \
-        --entrypoint /bin/sh \
-        "$IMAGE" -c "/bin/headscale serve" >/dev/null
+        "$IMAGE" serve >/dev/null
   fi
   # Determine the actual mapped host:port for 8080/tcp
   MAPPED_HOST=$(docker inspect -f '{{ (index (index .NetworkSettings.Ports "8080/tcp") 0).HostIp }}' "$CONTAINER" 2>/dev/null || echo "")

@@ -27,6 +27,13 @@ Goals
 - Run Host App instances as long-lived services with proper TLS and secrets.
 - Provide verification commands and troubleshooting tips.
 
+Headscale/tsnet versions and preauth keys (compatibility)
+--------------------------------------------------------
+- The repository targets Headscale v0.27.0 and Tailscale/tsnet v1.90.x.
+- Preauth keys can be provided to the Host App or operator in either canonical `tskey-...` form or as raw hex bytes. Keys are persisted canonically as `tskey-...` but are resolved to raw hex at runtime before starting tsnet. This matches Headscale expectations and avoids interactive login flows.
+- There is no in-process fallback that deletes `tailscaled.state` or tries multiple encodings. If Headscale logs show "AuthKey not found", ensure the preauth exists and that the value you provided matches the exact key bytes Headscale issued.
+- For local Headscale on the same host, the connector may rewrite the control URL host to `127.0.0.1:<port>` when loopback is listening; this avoids hairpin failures.
+
 Prerequisites
 
 - kubectl configured and authenticated to your target cluster.
@@ -323,6 +330,12 @@ Diagnostics and verification:
 ```bash
 make diag-multi-device
 make verify-multi-device-failover
+
+Tailscale/Headscale quick verification
+--------------------------------------
+- After starting the Host App, tail logs and look for `tsnet[<cluster-id>]:` entries indicating a successful tsnet start and status containing a 100.x IP or Self.DNSName.
+- If Headscale is reachable and the preauth key is valid, the connector should join non-interactively and the device will appear in Headscale with an assigned IP. The Host App also verifies the device via the Headscale admin API and persists machine ID and IPs into the per-cluster DB.
+- If you see `AuthKey not found` in Headscale logs, regenerate a preauth key and update the per-cluster settings (or `~/.guildnet/config.json` for the operator). No fallback restarts occur automatically; fix the configuration and restart the Host App or operator.
 ```
 
 Connecting multiple devices to the same cluster (explicit steps)

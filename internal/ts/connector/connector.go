@@ -22,6 +22,7 @@ import (
 
 	"github.com/your/module/internal/headscale"
 	"github.com/your/module/internal/localdb"
+	ts "github.com/your/module/internal/ts"
 
 	"tailscale.com/tsnet"
 )
@@ -188,10 +189,26 @@ func (c *Connector) Start(ctx context.Context) error {
 		// per-server AuthKey and in-process isolation for production.
 		log.Printf("connector: starting tsnet cluster=%s auth=%s stateDir=%s", c.cfg.ClusterID, maskAuthKey(c.cfg.ClientAuthKey), c.cfg.StateDir)
 
+		// Resolve the effective auth key we will pass to tsnet. Prefer a
+		// raw-hex representation when possible since some Headscale setups
+		// accept the raw hex form. Use the centralized resolver in the
+		// internal/ts package so behavior is consistent across callers.
+		var authToUse string
+		if strings.TrimSpace(c.cfg.ClientAuthKey) != "" {
+			raw, fmtLabel := ts.ResolveAuthKeyToRaw(c.cfg.ClientAuthKey)
+			if raw != "" {
+				authToUse = raw
+				log.Printf("connector: resolved client auth key format=%s cluster=%s", fmtLabel, c.cfg.ClusterID)
+			} else {
+				authToUse = strings.TrimSpace(c.cfg.ClientAuthKey)
+				log.Printf("connector: could not resolve client auth key to raw hex; passing as-is format=%s cluster=%s", fmtLabel, c.cfg.ClusterID)
+			}
+		}
+
 		s := &tsnet.Server{
 			Dir:        c.cfg.StateDir,
 			Hostname:   c.cfg.Hostname,
-			AuthKey:    strings.TrimSpace(c.cfg.ClientAuthKey),
+			AuthKey:    authToUse,
 			ControlURL: strings.TrimSpace(c.cfg.LoginServer),
 			// Provide a cluster-prefixed logger so tsnet/tailscaled logs surface in
 			// the hostapp journal with cluster context for easier debugging.
@@ -264,7 +281,9 @@ func (c *Connector) Start(ctx context.Context) error {
 			}
 		}
 		if !haveIPorFQDN {
-			log.Printf("connector: no Tailscale IP or FQDN after start for cluster=%s; continuing without restart fallback", c.cfg.ClusterID)
+			// No fallback mode: leave tsnet running and surface health via Headscale
+			// checks elsewhere. This avoids fragile state manipulation.
+			log.Printf("connector: no Tailscale IP or FQDN after start for cluster=%s; no fallback enabled", c.cfg.ClusterID)
 		} else {
 			// Authoritative verification: query the remote Headscale admin API
 			// (use the configured loginServer as the headscale endpoint) and

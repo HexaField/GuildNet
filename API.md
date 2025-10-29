@@ -15,6 +15,18 @@ Note: the runtime behavior is implemented in `internal/api/router.go`, `internal
 
 Note: a targeted, safe set of patch updates to a few direct modules were applied on 2025-10-19 and validated. Major module bumps (that require Go 1.24+) were intentionally avoided.
 
+Tailscale/Headscale authentication and tsnet connectors
+------------------------------------------------------
+- Per-cluster embedded tsnet connectors are used for Tailnet connectivity. Each cluster can provide its own Headscale/Tailscale login server and preauth key.
+- Preauth key handling is deterministic:
+  - Keys are stored canonically as `tskey-<base64url-no-padding>` when persisted.
+  - At runtime, the connector resolves the provided value to the raw-hex form Headscale expects and passes that to tsnet. This removes ambiguity across encodings and ensures non-interactive login.
+  - If a raw-hex value is provided directly, it is used as-is.
+- Non-interactive login only. Interactive login URLs are not used by design.
+- No restart/fallback logic: the connector does not delete `tailscaled.state` or attempt opaque restarts. Health is surfaced via status and Headscale lookups.
+- The connector normalizes the configured login server and may rewrite to `127.0.0.1:<port>` when it detects the target host is bound on the local machine and loopback is listening on the same port; this avoids hairpin surprises for local Headscale.
+- Device IPs and Headscale machine IDs are verified against Headscale and persisted into the per-cluster DB.
+
 
 ## Host App server API endpoints
 
@@ -231,6 +243,12 @@ Per-cluster settings are defined in `internal/settings/settings.go` (type `Clust
 - WorkspaceLBEnabled: default to expose workspaces as LoadBalancer type (when true)
 - OrgID: optional org scoping for multi-tenant configurations
 - TSLoginServer / TSClientAuthKey / TSRoutes / TSStatePath / HeadscaleNS: per-cluster tailscale/headscale related settings for tsnet connectors
+
+Notes on tsnet connector settings
+- TSLoginServer: Headscale/Tailscale control URL (http[s]://host:port). The connector will probe `/key?v=1` with short timeouts before start and rewrite to loopback when safe and helpful.
+- TSClientAuthKey: Preauth key. Accepted inputs: `tskey-...` or raw hex. Persisted canonically as `tskey-...`. Runtime is resolved to raw hex for compatibility with Headscale v0.27.0.
+- TSStatePath: Per-cluster state directory; defaults under `~/.guildnet/tsnet/cluster-<id>` with secure permissions.
+- Device IPs (100.x) and FQDNs are read from the local tsnet status and verified against Headscale; verified values are persisted under the per-cluster DB collection `devices`.
 
 Notes:
 - `PutCluster` will store `TSClientAuthKey` in the `credentials` bucket to avoid echoing it back in GET responses.

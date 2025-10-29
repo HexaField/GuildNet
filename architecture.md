@@ -67,6 +67,16 @@ For operator-driven federation the operator requires a couple of runtime artifac
 
 These two items are required for the operator to drive cross-device behavior: tsnet provides tailnet connectivity and the TLS certs allow the operator to serve secure endpoints and validate HostApp connections during verification. The verifier script `scripts/verify-federation-e2e.sh` will check that both devices see at least one common cluster and will deploy a minimal test workload to ensure both clusters can run the same image.
 
+tsnet connectors and Headscale auth (implementation details)
+-----------------------------------------------------------
+- The Host App embeds per-cluster tsnet connectors. Each connector is configured with a login server URL and a preauth key.
+- Auth key handling is centralized and deterministic:
+  - Persisted keys are normalized to the canonical `tskey-<base64url>` form for storage.
+  - On startup, the connector resolves the configured key to the raw-hex bytes Headscale expects and passes that to tsnet. This ensures non-interactive login without relying on environment variables or interactive flows.
+  - If a raw-hex key is provided directly, it is used as-is.
+- No fallback restart logic is used in production: the connector does not remove `tailscaled.state` or force restarts. If login fails, health is surfaced and Headscale remains the source of truth for device identity. Operational tooling should remediate by fixing configuration or preauths.
+- The connector probes the login server (`/key?v=1`) with short timeouts before start and rewrites to `127.0.0.1:<port>` when it detects the target is local and loopback is listening; this avoids hairpin routing surprises during local Headscale deployments.
+
 
 Connecting multiple devices (concept)
 
