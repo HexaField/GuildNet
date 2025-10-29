@@ -294,34 +294,43 @@ vv "Local sees servers: $LOCAL_SERVERS"
 echo "$LOCAL_SERVERS" | grep -q "^$WS_LOCAL_NAME$" || { echo "FAIL: Local does not list its own workspace $WS_LOCAL_NAME" >&2; exit 23; }
 echo "$LOCAL_SERVERS" | grep -q "^$WS_REMOTE_NAME$" || { echo "FAIL: Local does not list remote workspace $WS_REMOTE_NAME" >&2; exit 24; }
 
-# Visibility checks from remote perspective
-REMOTE_SERVERS=$(list_servers_remote)
-vv "Remote sees servers: $REMOTE_SERVERS"
-echo "$REMOTE_SERVERS" | grep -q "^$WS_LOCAL_NAME$" || { echo "FAIL: Remote does not list local workspace $WS_LOCAL_NAME" >&2; exit 25; }
-if ! echo "$REMOTE_SERVERS" | grep -q "^$WS_REMOTE_NAME$"; then
-  if [ "$REMOTE_CREATED_LOCALLY" = "1" ]; then
-    log "WARN: Remote did not list its own workspace; proceeding (fallback creation via local)."
-  else
-    echo "FAIL: Remote does not list its own workspace $WS_REMOTE_NAME" >&2; exit 26
+# Visibility checks from remote perspective (skip in single-node mode)
+if [ "$SINGLE_NODE" = "1" ]; then
+  log "Skipping remote perspective visibility checks (single-node mode)."
+else
+  REMOTE_SERVERS=$(list_servers_remote)
+  vv "Remote sees servers: $REMOTE_SERVERS"
+  echo "$REMOTE_SERVERS" | grep -q "^$WS_LOCAL_NAME$" || { echo "FAIL: Remote does not list local workspace $WS_LOCAL_NAME" >&2; exit 25; }
+  if ! echo "$REMOTE_SERVERS" | grep -q "^$WS_REMOTE_NAME$"; then
+    if [ "$REMOTE_CREATED_LOCALLY" = "1" ]; then
+      log "WARN: Remote did not list its own workspace; proceeding (fallback creation via local)."
+    else
+      echo "FAIL: Remote does not list its own workspace $WS_REMOTE_NAME" >&2; exit 26
+    fi
   fi
 fi
 
 # Logs checks – app should be running now; fetch logs
 LOCAL_LOGS_SELF=$(fetch_logs_local "$WS_LOCAL_NAME")
 LOCAL_LOGS_PEER=$(fetch_logs_local "$WS_REMOTE_NAME")
-REMOTE_LOGS_SELF=$(fetch_logs_remote "$WS_REMOTE_NAME")
-REMOTE_LOGS_PEER=$(fetch_logs_remote "$WS_LOCAL_NAME")
+REMOTE_LOGS_SELF=""; REMOTE_LOGS_PEER=""
+if [ "$SINGLE_NODE" != "1" ]; then
+  REMOTE_LOGS_SELF=$(fetch_logs_remote "$WS_REMOTE_NAME")
+  REMOTE_LOGS_PEER=$(fetch_logs_remote "$WS_LOCAL_NAME")
+fi
 
 if [ -z "$LOCAL_LOGS_SELF" ]; then echo "FAIL: Local could not read logs for its own workspace $WS_LOCAL_NAME" >&2; exit 27; fi
 if [ -z "$LOCAL_LOGS_PEER" ]; then echo "FAIL: Local could not read logs for remote workspace $WS_REMOTE_NAME" >&2; exit 28; fi
-if [ -z "$REMOTE_LOGS_SELF" ]; then
-  if [ "$REMOTE_CREATED_LOCALLY" = "1" ]; then
-    log "WARN: Remote could not read logs for its own workspace (fallback case); continuing."
-  else
-    echo "FAIL: Remote could not read logs for its own workspace $WS_REMOTE_NAME" >&2; exit 29
+if [ "$SINGLE_NODE" != "1" ]; then
+  if [ -z "$REMOTE_LOGS_SELF" ]; then
+    if [ "$REMOTE_CREATED_LOCALLY" = "1" ]; then
+      log "WARN: Remote could not read logs for its own workspace (fallback case); continuing."
+    else
+      echo "FAIL: Remote could not read logs for its own workspace $WS_REMOTE_NAME" >&2; exit 29
+    fi
   fi
+  if [ -z "$REMOTE_LOGS_PEER" ]; then echo "FAIL: Remote could not read logs for local workspace $WS_LOCAL_NAME" >&2; exit 30; fi
 fi
-if [ -z "$REMOTE_LOGS_PEER" ]; then echo "FAIL: Remote could not read logs for local workspace $WS_LOCAL_NAME" >&2; exit 30; fi
 
 log "PASS: Distributed cluster verified — both devices spawned code-server, see each other, and can read logs for both."
 
