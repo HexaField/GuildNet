@@ -48,6 +48,23 @@ Authorization model: GET requests are open. Mutating requests require either a c
       - image_pull_secret, org_id
   - Response: JSON { id: <id> } on success when kubeconfig provided. (Clusters now expose a deterministic, canonical `id` field.)
 
+  - Example (attach kubeconfig emitted by `scripts/k0s-node-up.sh` and then set cluster defaults):
+
+    1) POST `/bootstrap` with body `{"cluster":{"kubeconfig":"<yaml>"}}` — response: `{ "id": "<deterministicId>" }`
+    2) PUT `/api/settings/cluster/<deterministicId>` with a subset of fields, for example:
+
+    ```json
+    {
+      "api_proxy_url": "http://127.0.0.1:8001",
+      "api_proxy_force_http": true,
+      "image_pull_secret": "regcred",
+      "use_port_forward": false,
+      "prefer_pod_proxy": false
+    }
+    ```
+
+    The helper `scripts/attach-local-k0s.sh` automates this flow when invoked with `SET_DEFAULTS=1` and reads settings overrides from environment variables.
+
 Multi-device automation: Use `make multi-device-host` on Device A and `make multi-device-joiner` on Device B to bootstrap quickly. The joiner will call this `/bootstrap` endpoint with its generated `guildnet.config`.
 
   Multi-device note: After successful bootstrap, the Host App mirrors its published service mappings into a shared ConfigMap in the cluster (`guildnet-system/published-<id>`). Other devices reading the same cluster will observe and resync state from this registry.
@@ -109,7 +126,7 @@ Deterministic cluster IDs and attach-kubeconfig behavior
 Docker-only k0s node note
 -------------------------
 - The helper script `scripts/k0s-node-up.sh` emits a kubeconfig (default `~/.guildnet/kubeconfig`) for the containerized k0s control-plane running on the same device. This kubeconfig can be posted to `/bootstrap` exactly like any other cluster.
-- Initial defaults bind the API to `https://127.0.0.1:16443`. Tailnet-based access can be configured via Tailscale routing/serve; the API surface and bootstrap semantics remain unchanged.
+- Initial defaults bind the API to `https://127.0.0.1:16443` (port auto-increments if busy). Tailnet-based access can be configured via Tailscale routing/serve (`TS_SERVE_KUBEAPI=1`) and the API cert may include the tailnet IP in SANs when `TS_ADD_SANS=1` is provided. The API surface and bootstrap semantics remain unchanged.
 
 - GET /ui-config
   - UI runtime config placeholder (returns {} in current implementation).
