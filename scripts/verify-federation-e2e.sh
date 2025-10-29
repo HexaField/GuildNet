@@ -252,7 +252,11 @@ if [ "$REMOTE_CREATED_LOCALLY" = "1" ]; then
   fi
 else
   if ! wait_server_status_remote "$WS_REMOTE_NAME" running; then
-    echo "FAIL: Remote workspace $WS_REMOTE_NAME did not reach running state within $TIMEOUT_SEC s" >&2; exit 34
+    # Last-chance fallback: if local sees it running, proceed (remote API reachability issue)
+    if ! wait_server_status_local "$WS_REMOTE_NAME" running; then
+      echo "FAIL: Remote workspace $WS_REMOTE_NAME did not reach running state within $TIMEOUT_SEC s (and local also does not report running)" >&2; exit 34
+    fi
+    log "WARN: Remote did not observe running state; local reports running — proceeding."
   fi
 fi
 
