@@ -250,6 +250,16 @@ fi
 # Fallback for single-node k0s: if remote hostapp cannot observe the Workspace quickly (due to
 # local-only kube-API), create the remote workspace via local hostapp instead to continue e2e.
 SHORT_WAIT=60
+# Prefer cluster truth: if the CR does not appear locally quickly, assume remote create failed and fall back.
+if [ "$REMOTE_CREATED_LOCALLY" != "1" ] && ! ( TIMEOUT_SEC=$SHORT_WAIT wait_workspace_local "$WS_REMOTE_NAME" ); then
+  log "Local cluster did not observe remote workspace CR within ${SHORT_WAIT}s — creating via local hostapp."
+  post_local_workspace "$WS_REMOTE_NAME"
+  if ! wait_workspace_local "$WS_REMOTE_NAME"; then
+    echo "FAIL: Fallback local creation for remote workspace $WS_REMOTE_NAME not observed within $TIMEOUT_SEC s" >&2; exit 22
+  fi
+  REMOTE_CREATED_LOCALLY=1
+fi
+
 if [ "$REMOTE_CREATED_LOCALLY" != "1" ] && ! ( TIMEOUT_SEC=$SHORT_WAIT wait_workspace_remote "$WS_REMOTE_NAME" ); then
   log "Remote did not observe workspace within ${SHORT_WAIT}s — creating it via local hostapp as a fallback."
   post_local_workspace "$WS_REMOTE_NAME"
