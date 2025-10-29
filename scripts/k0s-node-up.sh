@@ -87,6 +87,36 @@ pick_port() {
 K0S_HOST_PORT=$(pick_port "$K0S_HOST_PORT")
 echo "[k0s-node-up] using host API port: $K0S_HOST_PORT" | tee -a "$LOG"
 
+# Optional: Generate a minimal k0s config to inject API cert SANs (e.g., tailscale IP)
+CONFIG_ARG=""
+if [ "${TS_ADD_SANS:-0}" != "0" ]; then
+  echo "[k0s-node-up] preparing k0s config with API cert SANs" | tee -a "$LOG"
+  TAIL_IP=""
+  if [ -n "${TS_AUTHKEY:-}" ] && docker ps --format '{{.Names}}' | grep -q '^guildnet-tailscale$'; then
+    TAIL_IP=$(docker exec guildnet-tailscale tailscale ip -4 2>/dev/null | sed -n '1p' | tr -d '\r' || true)
+  fi
+  HN_SHORT=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo "")
+  HN_FULL=$(hostname -f 2>/dev/null || echo "")
+  cat >"$GN_K0S_DIR/k0s.yaml" <<YAML
+apiVersion: k0s.k0sproject.io/v1beta1
+kind: Cluster
+metadata:
+  name: guildnet
+spec:
+  api:
+    port: 6443
+    sans:
+      - 127.0.0.1
+      - localhost
+      - ${HN_SHORT}
+      - ${HN_FULL}
+YAML
+  if [ -n "$TAIL_IP" ]; then
+    printf "      - %s\n" "$TAIL_IP" >>"$GN_K0S_DIR/k0s.yaml"
+  fi
+  CONFIG_ARG="--config /var/lib/k0s/k0s.yaml"
+fi
+
 docker run -d \
   --name guildnet-k0s \
   --privileged \
@@ -97,7 +127,7 @@ docker run -d \
   -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
   -p 127.0.0.1:${K0S_HOST_PORT}:6443 \
   "$K0S_IMAGE" \
-  sh -c "set -e; k0s controller --single --data-dir /var/lib/k0s --enable-worker >>/var/lib/k0s/k0s.log 2>&1" \
+  sh -c "set -e; k0s controller --single --data-dir /var/lib/k0s --enable-worker ${CONFIG_ARG} >>/var/lib/k0s/k0s.log 2>&1" \
   >/dev/null
 
 # Wait for API server readiness (best-effort)

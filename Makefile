@@ -282,7 +282,7 @@ headscale-approve-routes: ## Approve tailscale routes for the router in Headscal
 export KUBECONFIG := $(GN_KUBECONFIG)
 
 # ---------- Provision / Addons / Deploy / Verify ----------
-.PHONY: deploy-k8s-addons deploy-operator deploy-hostapp verify-e2e diag-router diag-k8s diag-db verify-k0s verify-operator ts-serve-kubeapi smoke-workspace smoke-image-pipeline
+.PHONY: deploy-k8s-addons deploy-operator deploy-hostapp verify-e2e diag-router diag-k8s diag-db verify-k0s verify-operator ts-serve-kubeapi smoke-workspace smoke-image-pipeline ensure-operator-setup
 
 deploy-k8s-addons: ## Install MetalLB (pool from .env), CRDs, imagePullSecret, DB
 	bash ./scripts/deploy-metallb.sh
@@ -330,6 +330,9 @@ smoke-workspace: ## Apply a tiny Workspace CR from template (idempotent)
 
 smoke-image-pipeline: ## Build in DinD -> import into k0s -> deploy Workspace
 	bash ./scripts/image-pipeline-smoke.sh
+
+ensure-operator-setup: ## Ensure operator-config/certs and patch operator Deployment on current cluster
+	bash ./scripts/k8s/ensure-operator-setup.sh
 
 .PHONY: diag-multi-device
 diag-multi-device: ## Summarize multi-device status (operator, CRDs, router, health)

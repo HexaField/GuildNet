@@ -60,6 +60,16 @@ TS_AUTHKEY=tskey-... TS_LOGIN_SERVER=http://<headscale>:8081 TS_SERVE_KUBEAPI=1 
 ```
 This will start the `guildnet-tailscale` container, advertise Pod/Service CIDRs (`$K0S_POD_CIDR,$K0S_SVC_CIDR`), and run `tailscale serve tcp` to forward the local kube-API port to the same tailnet port.
 
+TLS SANs for remote kubectl
+---------------------------
+When accessing the kube-API over tailnet by IP, your client will verify the server certificate against that IP. You can instruct `k0s-node-up.sh` to include the tailscale IP in the API certificate SANs by setting:
+
+```bash
+TS_ADD_SANS=1 TS_AUTHKEY=tskey-... TS_LOGIN_SERVER=http://<headscale>:8081 scripts/k0s-node-up.sh
+```
+
+This generates a minimal k0s config (`~/.guildnet/k0s/k0s.yaml`) with api.sans including `127.0.0.1`, `localhost`, your hostnames, and the detected tailscale IPv4. The controller is launched with `--config` to use these SANs. Combine with `TS_SERVE_KUBEAPI=1` if you want the port served over tailnet automatically.
+
 
 IMPORTANT NOTE: Local code generation (controller-gen)
 
