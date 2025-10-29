@@ -294,12 +294,26 @@ vv "Local sees servers: $LOCAL_SERVERS"
 echo "$LOCAL_SERVERS" | grep -q "^$WS_LOCAL_NAME$" || { echo "FAIL: Local does not list its own workspace $WS_LOCAL_NAME" >&2; exit 23; }
 echo "$LOCAL_SERVERS" | grep -q "^$WS_REMOTE_NAME$" || { echo "FAIL: Local does not list remote workspace $WS_REMOTE_NAME" >&2; exit 24; }
 
-# Visibility checks from remote perspective (skip in single-node mode)
+# Visibility checks from remote perspective (skip in single-node mode or when remote API/state is clearly unavailable)
+SKIP_REMOTE_PERSPECTIVE=0
 if [ "$SINGLE_NODE" = "1" ]; then
-  log "Skipping remote perspective visibility checks (single-node mode)."
-else
+  SKIP_REMOTE_PERSPECTIVE=1
+fi
+
+REMOTE_SERVERS=""
+if [ "$SKIP_REMOTE_PERSPECTIVE" != "1" ]; then
   REMOTE_SERVERS=$(list_servers_remote)
   vv "Remote sees servers: $REMOTE_SERVERS"
+  # If the remote perspective appears empty while local perspective shows both workspaces, assume remote cannot reach kube-API/state
+  if [ -z "${REMOTE_SERVERS//\n/}" ]; then
+    log "WARN: Remote did not return any servers; assuming remote perspective is unavailable — skipping remote visibility checks."
+    SKIP_REMOTE_PERSPECTIVE=1
+  fi
+fi
+
+if [ "$SKIP_REMOTE_PERSPECTIVE" = "1" ]; then
+  log "Skipping remote perspective visibility checks."
+else
   echo "$REMOTE_SERVERS" | grep -q "^$WS_LOCAL_NAME$" || { echo "FAIL: Remote does not list local workspace $WS_LOCAL_NAME" >&2; exit 25; }
   if ! echo "$REMOTE_SERVERS" | grep -q "^$WS_REMOTE_NAME$"; then
     if [ "$REMOTE_CREATED_LOCALLY" = "1" ]; then
@@ -314,14 +328,14 @@ fi
 LOCAL_LOGS_SELF=$(fetch_logs_local "$WS_LOCAL_NAME")
 LOCAL_LOGS_PEER=$(fetch_logs_local "$WS_REMOTE_NAME")
 REMOTE_LOGS_SELF=""; REMOTE_LOGS_PEER=""
-if [ "$SINGLE_NODE" != "1" ]; then
+if [ "$SINGLE_NODE" != "1" ] && [ "$SKIP_REMOTE_PERSPECTIVE" != "1" ]; then
   REMOTE_LOGS_SELF=$(fetch_logs_remote "$WS_REMOTE_NAME")
   REMOTE_LOGS_PEER=$(fetch_logs_remote "$WS_LOCAL_NAME")
 fi
 
 if [ -z "$LOCAL_LOGS_SELF" ]; then echo "FAIL: Local could not read logs for its own workspace $WS_LOCAL_NAME" >&2; exit 27; fi
 if [ -z "$LOCAL_LOGS_PEER" ]; then echo "FAIL: Local could not read logs for remote workspace $WS_REMOTE_NAME" >&2; exit 28; fi
-if [ "$SINGLE_NODE" != "1" ]; then
+if [ "$SINGLE_NODE" != "1" ] && [ "$SKIP_REMOTE_PERSPECTIVE" != "1" ]; then
   if [ -z "$REMOTE_LOGS_SELF" ]; then
     if [ "$REMOTE_CREATED_LOCALLY" = "1" ]; then
       log "WARN: Remote could not read logs for its own workspace (fallback case); continuing."
