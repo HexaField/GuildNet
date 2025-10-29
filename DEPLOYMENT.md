@@ -53,6 +53,13 @@ To expose the kube-API privately over the tailnet, configure Tailscale "serve tc
 make ts-serve-kubeapi
 ```
 
+Alternatively, you can have `scripts/k0s-node-up.sh` configure this automatically by setting:
+
+```bash
+TS_AUTHKEY=tskey-... TS_LOGIN_SERVER=http://<headscale>:8081 TS_SERVE_KUBEAPI=1 scripts/k0s-node-up.sh
+```
+This will start the `guildnet-tailscale` container, advertise Pod/Service CIDRs (`$K0S_POD_CIDR,$K0S_SVC_CIDR`), and run `tailscale serve tcp` to forward the local kube-API port to the same tailnet port.
+
 
 IMPORTANT NOTE: Local code generation (controller-gen)
 

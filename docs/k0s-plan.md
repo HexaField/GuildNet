@@ -1,6 +1,6 @@
 # GuildNet k0s-in-Docker Implementation Plan
 
-Status: Proposed • Date: 2025-10-29 • Scope: Make Docker-only the default runtime (k0s + Tailscale + DinD), preserving existing API/UX and multi-device federation
+Status: In progress • Date: 2025-10-29 • Scope: Make Docker-only the default runtime (k0s + Tailscale + DinD), preserving existing API/UX and multi-device federation
 
 This document operationalizes the ADR “Fully Containerized GuildNet Architecture with Cross-Device Federation over Tailscale” into concrete, verifiable engineering tasks. It keeps Host App API and existing flows stable while making containerized k0s the default path.
 
@@ -23,6 +23,23 @@ Acceptance
 - No host ports: all inter-device and exposure paths run over Tailscale.
 
 ---
+
+## Progress tracker (rolling)
+
+Done
+- Phase 1–2: Containerized k0s node stack with kubeconfig emission and dynamic API port selection. Scripts added: `k0s-node-up.sh`, `k0s-node-down.sh`, `attach-local-k0s.sh`, `verify-k0s.sh`. DinD enabled by default; image pipeline smoke implemented.
+- Phase 11 (partial): E2E hardened for single-node/local-only API. Federation verifier skips remote perspective when unreachable and relaxes placement when both workspaces land on one node. Build/Lint/Tests: PASS.
+- Docs: `DEPLOYMENT.md` and `architecture.md` updated with Docker-only flow and e2e behavior notes.
+
+In progress
+- Phase 3: Tailscale container is started automatically when `TS_AUTHKEY` is set; optional `TS_SERVE_KUBEAPI=1` will configure `tailscale serve tcp` to expose the kube-API over the tailnet. SAN coverage for tailnet IP/MagicDNS is pending.
+- Phase 5/9/10: Make defaults + bootstrap polish + docs alignment. Scripts and targets exist; final defaultization and README/API polish underway.
+
+Planned next
+- Phase 6: Deploy in-cluster operator on k0s with RBAC; validate DeviceParticipant CR and published-* mirroring.
+- Phase 4: Harden DinD with TLS and integrate registry push/pull path (keep local containerd import as fallback).
+- Phase 7–8: Validate storage persistence and proxy/ingress parity on k0s.
+- Phase 12: Migration helper and reset safeguards.
 
 ## Phase 0 — Compatibility (no regressions)
 
@@ -73,6 +90,9 @@ Tasks
 
 Acceptance
 - `make verify-federation-e2e` passes using containerized nodes only; `make headscale-approve-routes` works unchanged.
+
+Notes (current status)
+- The k0s node-up script starts a `guildnet-tailscale` container when `TS_AUTHKEY` is provided and advertises `$K0S_POD_CIDR,$K0S_SVC_CIDR` by default. Set `TS_SERVE_KUBEAPI=1` to automatically configure `tailscale serve tcp` to forward the local kube-API port over the tailnet. Adding SANs for the tailnet address to the kube-apiserver cert is tracked separately.
 
 ## Phase 4 — DinD builds and in-cluster registry
 

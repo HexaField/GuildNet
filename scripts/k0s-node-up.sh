@@ -129,6 +129,13 @@ else
 fi
 rm -f "$TMP_KC" || true
 
+# 3b) Optionally expose kube-API over the tailnet using tailscale 'serve tcp'
+if [ -n "${TS_AUTHKEY:-}" ] && [ "${TS_SERVE_KUBEAPI:-0}" != "0" ]; then
+  echo "[k0s-node-up] configuring tailscale serve tcp for kube-API" | tee -a "$LOG"
+  PORT_LOCAL="$K0S_HOST_PORT" PORT_TAIL="${TS_SERVE_PORT:-$K0S_HOST_PORT}" \
+    "$ROOT/scripts/ts-serve-kubeapi.sh" 2>&1 | tee -a "$LOG" || true
+fi
+
 # 4) Docker-in-Docker (for image builds)
 echo "[k0s-node-up] starting DinD container" | tee -a "$LOG"
 docker rm -f guildnet-dind >/dev/null 2>&1 || true
