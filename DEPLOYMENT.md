@@ -196,7 +196,13 @@ After the script runs, monitor the operator pod logs and ensure tsnet transition
 The `scripts/verify-federation-e2e.sh` performs cross-host checks:
 
 - Validates there is at least one common cluster id exposed by both HostApp instances.
-- Deploys a small test deployment (`verify-sample`) to each cluster and verifies the same image is running on both.
+- Spawns code-server workspaces from both devices and verifies both are running and discoverable.
+
+E2E behavior notes (k0s-in-Docker, federated single- or multi-device):
+
+- When the kube-API is bound to localhost inside a k0s container, the remote HostApp may be unable to query cluster state directly. The e2e detects this and will skip “remote perspective” visibility/log checks when the remote server list is empty, treating the local cluster view as source of truth.
+- In true single-node clusters (<2 nodes), the e2e always skips remote-perspective checks.
+- Placement checks are strict when there are 2+ schedulable nodes and scheduling is deterministic. If both workspaces land on the same node (e.g., due to missing labels/taints or scheduler constraints), the e2e will warn and proceed instead of failing, since the primary goal is cross-device visibility and runtime health.
 
 RBAC: DeviceParticipant CRD
 

@@ -74,6 +74,10 @@ Containerized node runtime (k0s in Docker)
 - Inter-device networking is expected to use the tailnet; initial binding defaults to local-only for the API (127.0.0.1:16443) and can be exposed privately via Tailscale routing/serve in follow-ups.
 - Local image pipeline for single-node clusters: for fast inner-loop development without a registry, images can be built inside the DinD container and imported directly into the k0s node's containerd (`ctr -n k8s.io images import`). When the image tag is non-latest (e.g., `:local`), the default Kubernetes `imagePullPolicy: IfNotPresent` ensures the locally imported image is used without external pulls. See `scripts/image-pipeline-smoke.sh` and `make smoke-image-pipeline`.
 
+E2E verification behavior with local-only API
+- When a device runs k0s with the kube-API bound to 127.0.0.1, other devices' HostApp instances cannot reach the API directly. The e2e verifier (`scripts/verify-federation-e2e.sh`) treats the local cluster state as authoritative and will skip remote-perspective visibility/log checks if the remote HostApp returns an empty server list. In genuine single-node clusters (<2 nodes), remote-perspective checks are always skipped.
+- Placement relies on the operator honoring the `guildnet.io/schedule-node` hint by setting a nodeSelector for `kubernetes.io/hostname`. If node labels/hostnames do not align or the scheduler cannot satisfy constraints, both workspaces may land on the same node; the e2e will warn and proceed in that case to prioritize end-to-end functionality over strict placement in constrained environments.
+
 tsnet connectors and Headscale auth (implementation details)
 -----------------------------------------------------------
 - The Host App embeds per-cluster tsnet connectors. Each connector is configured with a login server URL and a preauth key.
