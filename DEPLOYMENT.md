@@ -338,6 +338,31 @@ Tailscale/Headscale quick verification
 - If you see `AuthKey not found` in Headscale logs, regenerate a preauth key and update the per-cluster settings (or `~/.guildnet/config.json` for the operator). No fallback restarts occur automatically; fix the configuration and restart the Host App or operator.
 ```
 
+Multi-device E2E verification (scripted)
+---------------------------------------
+Use the included script to verify that two devices reference the same deterministic cluster ID, can each spawn a code-server workspace, can see both servers, and can read logs from both. The script also validates placement (each device’s workspace runs on its own node).
+
+Prerequisites:
+- Host App running on both devices at https://127.0.0.1:8090 (self-signed TLS is OK).
+- SSH access to the remote device without interactive prompts (e.g., key auth).
+- curl and jq installed on both devices.
+
+Run from Device A:
+
+```bash
+# Replace with your remote user and host
+REMOTE_SSH=field@192.168.1.52 \
+VERBOSE=1 \
+scripts/verify-federation-e2e.sh
+```
+
+What it does:
+- Compares cluster IDs from both Host Apps and, if missing on the remote, attaches the local kubeconfig via the supported API.
+- Spawns a code-server workspace from each device with scheduleNode set to the launcher’s hostname for deterministic placement.
+- Waits for both to become running; verifies both devices list both servers; fetches logs for both workspaces from both devices.
+- Fails fast with actionable messages if any step cannot be verified.
+
+
 Connecting multiple devices to the same cluster (explicit steps)
 
 This section shows the manual sequence to attach multiple Host App instances (devices) to the same Kubernetes cluster and to share published services. The `make multi-device-*` targets automate this, but doing the steps manually helps when debugging or customizing the flow.
