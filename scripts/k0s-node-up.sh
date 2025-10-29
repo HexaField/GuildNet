@@ -169,15 +169,32 @@ fi
 # 4) Docker-in-Docker (for image builds)
 echo "[k0s-node-up] starting DinD container" | tee -a "$LOG"
 docker rm -f guildnet-dind >/dev/null 2>&1 || true
-# TLS disabled by default for simplicity; set DOCKER_TLS_CERTDIR to enable later
-DockerHostEnv="-e DOCKER_TLS_CERTDIR="
+TLS_ARGS="-e DOCKER_TLS_CERTDIR="
+if [ "${DIND_TLS:-0}" != "0" ]; then
+  mkdir -p "$GN_K0S_DIR/dind-certs"
+  TLS_ARGS="-e DOCKER_TLS_CERTDIR=/certs -v $GN_K0S_DIR/dind-certs:/certs"
+fi
 docker run -d \
   --name guildnet-dind \
   --privileged \
   -v "$GN_K0S_DIR/dind:/var/lib/docker" \
-  $DockerHostEnv \
+  $TLS_ARGS \
   "$DIND_IMAGE" \
   >/dev/null
+
+# Emit a helper env file for connecting to DinD from the host
+DINDF="$GN_STATE_DIR/dind-env.sh"
+{
+  echo "# Source this file to point docker client to the DinD daemon"
+  echo "export DOCKER_HOST=tcp://127.0.0.1:2375"
+  if [ "${DIND_TLS:-0}" != "0" ]; then
+    echo "export DOCKER_HOST=tcp://127.0.0.1:2376"
+    echo "export DOCKER_CERT_PATH=$GN_K0S_DIR/dind-certs/client"
+    echo "export DOCKER_TLS_VERIFY=1"
+  fi
+} > "$DINDF"
+chmod 600 "$DINDF"
+echo "[k0s-node-up] wrote DinD env helper: $DINDF" | tee -a "$LOG"
 
 echo "[k0s-node-up] done. kubectl context: $GN_KUBECONFIG" | tee -a "$LOG"
 if [ "$READY" -eq 1 ]; then

@@ -99,7 +99,7 @@ setup-all: ## One-command: Headscale up -> LAN sync -> ensure Kubernetes (microk
 	ok=1; kubectl --request-timeout=3s get --raw=/readyz >/dev/null 2>&1 || ok=0; \
 	if [ $$ok -eq 0 ]; then \
 		if [ -x "./scripts/k0s-node-up.sh" ]; then \
-			bash ./scripts/k0s-node-up.sh || true; \
+			TS_SERVE_KUBEAPI=$${TS_SERVE_KUBEAPI:-0} TS_ADD_SANS=$${TS_ADD_SANS:-0} bash ./scripts/k0s-node-up.sh || true; \
 			kubectl --request-timeout=5s get --raw=/readyz >/dev/null 2>&1 || ok=0; \
 		fi; \
 		if [ $$ok -eq 0 ] && [ -x "./scripts/microk8s-setup.sh" ]; then \
@@ -110,6 +110,8 @@ setup-all: ## One-command: Headscale up -> LAN sync -> ensure Kubernetes (microk
 	CLUSTER=$$CL $(MAKE) router-ensure || true; \
 	$(MAKE) deploy-k8s-addons || true; \
 	$(MAKE) deploy-operator || true; \
+	SET_DEFAULTS=1 $(SHELL) ./scripts/attach-local-k0s.sh || true; \
+	$(MAKE) ensure-operator-setup || true; \
 	$(MAKE) deploy-hostapp || true; \
 	$(MAKE) verify-e2e || true
 
@@ -285,6 +287,7 @@ export KUBECONFIG := $(GN_KUBECONFIG)
 .PHONY: deploy-k8s-addons deploy-operator deploy-hostapp verify-e2e diag-router diag-k8s diag-db verify-k0s verify-operator ts-serve-kubeapi smoke-workspace smoke-image-pipeline ensure-operator-setup
 
 deploy-k8s-addons: ## Install MetalLB (pool from .env), CRDs, imagePullSecret, DB
+	bash ./scripts/install-local-path-provisioner.sh || true
 	bash ./scripts/deploy-metallb.sh
 	$(MAKE) crd-apply
 	bash ./scripts/k8s-setup-registry-secret.sh || true

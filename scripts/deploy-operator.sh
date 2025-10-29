@@ -72,7 +72,7 @@ rules:
     resources: ["ingresses"]
     verbs: ["get","list","watch","create","update","patch","delete"]
   - apiGroups: ["guildnet.io"]
-    resources: ["workspaces","workspaces/status"]
+    resources: ["workspaces","workspaces/status","deviceparticipants","deviceparticipants/status"]
     verbs: ["get","list","watch","create","update","patch","delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -124,8 +124,8 @@ spec:
       - name: ${IMG_PULL_SECRET}
       containers:
       - name: operator
-  image: ${IMAGE}
-  imagePullPolicy: ${IMAGE_PULL_POLICY}
+        image: ${IMAGE}
+        imagePullPolicy: ${IMAGE_PULL_POLICY}
         command: ["/usr/local/bin/hostapp"]
         args: ["operator"]
         env:

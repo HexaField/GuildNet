@@ -70,6 +70,23 @@ TS_ADD_SANS=1 TS_AUTHKEY=tskey-... TS_LOGIN_SERVER=http://<headscale>:8081 scrip
 
 This generates a minimal k0s config (`~/.guildnet/k0s/k0s.yaml`) with api.sans including `127.0.0.1`, `localhost`, your hostnames, and the detected tailscale IPv4. The controller is launched with `--config` to use these SANs. Combine with `TS_SERVE_KUBEAPI=1` if you want the port served over tailnet automatically.
 
+DinD TLS and registry push (optional)
+-------------------------------------
+By default the DinD daemon listens without TLS on 2375, intended for local development within the same host. To enable TLS and a standard 2376 endpoint, set:
+
+```bash
+DIND_TLS=1 scripts/k0s-node-up.sh
+```
+
+This mounts a cert directory at `~/.guildnet/k0s/dind-certs` and points `DOCKER_TLS_CERTDIR` there. A helper env file is written at `~/.guildnet/dind-env.sh`; source it to configure your Docker client to talk to DinD over TLS:
+
+```bash
+source ~/.guildnet/dind-env.sh
+docker version
+```
+
+For pushing to an in-cluster registry, ensure `make deploy-k8s-addons` created an image pull secret (or configure `K8S_IMAGE_PULL_SECRET`), tag your images with the registry host (LoadBalancer IP/DNS), and push from the DinD client. The “image pipeline smoke” avoids a registry by importing directly into the k0s containerd and remains available as a fast path.
+
 
 IMPORTANT NOTE: Local code generation (controller-gen)
 
