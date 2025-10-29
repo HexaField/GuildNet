@@ -10,7 +10,10 @@ import {
   type ColumnDef
 } from '../lib/api'
 
-async function fetchTables(clusterId: string, dbId: string): Promise<TableDef[]> {
+async function fetchTables(
+  clusterId: string,
+  dbId: string
+): Promise<TableDef[]> {
   return listClusterTables(clusterId, dbId)
 }
 

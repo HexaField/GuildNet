@@ -34,7 +34,12 @@ async function fetchTable(
 export default function TableSchema() {
   const params = useParams()
   const [meta, { refetch }] = createResource(
-    () => [params.clusterId as string, params.dbId as string, params.table as string] as [string, string, string],
+    () =>
+      [
+        params.clusterId as string,
+        params.dbId as string,
+        params.table as string
+      ] as [string, string, string],
     ([c, d, t]) => fetchTable(c, d, t)
   )
   const [editing, setEditing] = createSignal<ColumnDef[]>([])

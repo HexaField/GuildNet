@@ -2,6 +2,8 @@ GuildNet Architecture (complete, code-driven)
 
 This file now reflects the current codebase behavior and the features implemented across the Host App, embedded operator, proxying, and database management. The Host App is intended to run on every device in a fleet; each instance acts as a local portal and can join and manage multiple Kubernetes clusters by persisting per-cluster kubeconfigs and running per-cluster clients.
 
+Dependency note: on 2025-10-19 a small set of patch-level dependency updates were applied and validated. Larger upgrades that require Go 1.24+ were deferred to preserve the current Go 1.23 toolchain.
+
 ### Component Overview (distributed)
 
 ```mermaid
@@ -51,10 +53,81 @@ flowchart LR
   class K8s k8s
 ```
 
+Note: see ADR and implementation plan for multi-device federated clusters:
+- ADR: `docs/adr/0001-multi-device-cluster.md`
+- Implementation plan: `docs/implementation/0001-multi-device-cluster-implementation.md`
+
+Multi-device operator notes
+---------------------------
+
+For operator-driven federation the operator requires a couple of runtime artifacts to operate non-interactively in multi-device tests:
+
+- A valid `~/.guildnet/config.json` containing `login_server` and `auth_key` so tsnet can login to the headscale/tailscale server without interactive prompts. In-cluster operator deployments can mount this as a ConfigMap (we use `operator-config` in tests).
+- TLS certificate and private key available under the operator's state path (e.g. `/root/.guildnet/state/certs/server.crt` and `/root/.guildnet/state/certs/server.key`). For development the repository `certs/` directory can be mounted into the pod as a ConfigMap (we use `operator-certs` in tests).
+
+These two items are required for the operator to drive cross-device behavior: tsnet provides tailnet connectivity and the TLS certs allow the operator to serve secure endpoints and validate HostApp connections during verification. The verifier script `scripts/verify-federation-e2e.sh` will check that both devices see at least one common cluster and will deploy a minimal test workload to ensure both clusters can run the same image.
+
+tsnet connectors and Headscale auth (implementation details)
+-----------------------------------------------------------
+- The Host App embeds per-cluster tsnet connectors. Each connector is configured with a login server URL and a preauth key.
+- Auth key handling is centralized and deterministic:
+  - Persisted keys are normalized to the canonical `tskey-<base64url>` form for storage.
+  - On startup, the connector resolves the configured key to the raw-hex bytes Headscale expects and passes that to tsnet. This ensures non-interactive login without relying on environment variables or interactive flows.
+  - If a raw-hex key is provided directly, it is used as-is.
+- No fallback restart logic is used in production: the connector does not remove `tailscaled.state` or force restarts. If login fails, health is surfaced and Headscale remains the source of truth for device identity. Operational tooling should remediate by fixing configuration or preauths.
+- The connector probes the login server (`/key?v=1`) with short timeouts before start and rewrites to `127.0.0.1:<port>` when it detects the target is local and loopback is listening; this avoids hairpin routing surprises during local Headscale deployments.
+
+
+Connecting multiple devices (concept)
+
+Overview
+- The `Registry` maintains per-cluster `Instance` objects (kubeconfig, k8s client, dynamic client, local DB). Multiple Host App instances coordinate via the cluster control plane and share published-service mappings for cross-device access.
+
+Mirror & resync mechanism (short)
+- When a Host App publishes a service, it mirrors the mapping into `guildnet-system/published-<id>` in the cluster. Other devices read that ConfigMap and resync local listeners/proxies so published services are visible across devices.
+
+Bootstrap & coordination (short)
+- Devices join by submitting a `guildnet.config` (or kubeconfig) to an existing Host App via `POST /bootstrap`. The receiver persists the kubeconfig and runs a short pre-warm probe. Leader election (controller-runtime) ensures only one reconciler actively changes cluster-scoped resources at a time.
+
+Deterministic cluster identity
+------------------------------
+- Cluster identity is derived deterministically from kubeconfig content (normalized API server URL and certificate-authority material). This ensures all devices that attach the same kubeconfig compute the same canonical cluster ID and therefore operate on the same logical cluster record.
+- The attach path `POST /api/deploy/clusters/{id}?action=attach-kubeconfig` accepts any placeholder ID. The server computes the canonical ID and creates a cluster record with state `imported` if missing, enabling late attachment of secondary devices without re-running full bootstrap.
+
+For full, step-by-step how-to (commands, examples, and troubleshooting), see `DEPLOYMENT.md` → "Connecting multiple devices to the same cluster". Keep `architecture.md` focused on the conceptual behavior and integration points.
+
+Device ownership of capabilities
+--------------------------------
+In the multi-device design, individual Host App devices are the authoritative source for their local capabilities (CPU, memory, storage, VRAM, tailnet IPs). The cluster remains the source-of-truth for any data that must be identical or replicated across devices (for example, published service mappings mirrored into a ConfigMap). Devices report capabilities via a heartbeat (`POST /v1/sites/heartbeat`) which the Host App persists per-cluster. The placement planner and UI prefer those device-reported capabilities when present.
+
+In-cluster DeviceParticipant SOT and name sanitization
+-----------------------------------------------------
+- When credentials/RBAC allow, Host App upserts a `DeviceParticipant` CR in the `guildnet-system` namespace to represent device participation in-cluster. This CRD is the canonical source-of-truth for which devices participate in a cluster.
+- Device identifiers used as Kubernetes resource names are sanitized to valid RFC 1123 DNS subdomain names (lowercase, [a-z0-9-], start/end alphanumeric, max 253 chars) to avoid resource creation errors when hostnames include uppercase or unsupported characters.
+
+
 High level summary
 
 - Per-cluster kubeconfigs: the Host App stores kubeconfigs in local state and looks them up under the DB key `credentials:cl:{id}:kubeconfig` when creating per-cluster `Instance` clients. For interactive dev flows the code now prefers `~/.guildnet/kubeconfig` as the default kubeconfig before `~/.kube/config`.
 - `POST /bootstrap` accepts a join payload (`guildnet.config` file or JSON with `cluster.kubeconfig`), persists a cluster record and kubeconfig, then performs a bounded pre-warm (10s) which attempts a light Kubernetes API call and a short `EnsureRDB`. On pre-warm failure bootstrap rolls back persisted state and returns an error.
+
+Developer teardown helper
+-------------------------
+
+For local development there is a guarded Makefile helper that performs a best-effort full teardown of local GuildNet artifacts (Headscale container, Tailscale router, Host App process, temporary cluster records, and local GN state). It is destructive to local state (removes `~/.guildnet` and the `GN_KUBECONFIG` file by default). Use only for disposable test environments:
+
+```bash
+make reset MAKE_RESET_CONFIRM=1
+```
+
+Multi-device bootstrap note
+
+For a simplified multi-device flow (Device A host + Device B joiner), see the multi-device helpers:
+- Make targets: `make multi-device-host`, `make multi-device-joiner`
+- Script: `scripts/multi-device-setup.sh`
+
+These orchestrate Headscale/tailscale, microk8s, CRDs/addons, operator, Host App startup, and `/bootstrap` attach in one step per device.
+ - Multi-device resilience: the embedded/in-cluster operator uses controller-runtime leader election so only one leader reconciles at a time across devices. Published service mappings are mirrored into an in-cluster ConfigMap (`guildnet-system/published-<id>`) which allows devices to resync published endpoints consistently after restarts.
 - The Registry builds and caches `Instance` objects. Each `Instance` encapsulates:
   - per-cluster SQLite (`internal/localdb`)
   - `k8s.Client` and rest.Config (`internal/k8s`)
@@ -127,6 +200,16 @@ Dev convenience: the router can detect a local `kubectl proxy` and rewrite clust
 - Per-cluster operations
   - GET/PUT `/api/settings/cluster/{id}` — cluster settings
   - GET `/api/cluster/{id}/servers` — list workspaces
+    - Enriches each record with the machine identity when available by:
+      - Listing pods with label `guildnet.io/workspace=<name>` to determine the node hosting the workspace.
+      - Cross-referencing `DeviceParticipant` CRs in `guildnet-system` to attach `machineName` and `tailnetIPs`.
+    - When DeviceParticipant data is missing, only the `node` field is returned.
+  - POST `/api/cluster/{id}/workspaces`
+    - The Host App injects a metadata label `guildnet.io/schedule-node` set to the launching device's hostname.
+    - The operator reads this label and sets a nodeSelector for `kubernetes.io/hostname` so the workspace is scheduled on that device's node.
+    - This requires that each device is a node in the same Kubernetes cluster and node names match the device hostnames (or that your nodes are labeled accordingly).
+  - DELETE `/api/cluster/{id}/workspaces/{name}`
+    - Deletes a single Workspace CR. This endpoint powers the UI "Shutdown" action available from the Servers list and Server detail page.
   - Proxy: `/api/cluster/{id}/proxy/server/{name}/...` — proxy to workspace servers (sets `X-Forwarded-Prefix`)
 
 - Database API (per cluster)
@@ -134,6 +217,11 @@ Dev convenience: the router can detect a local `kubectl proxy` and rewrite clust
   - /tables and /rows endpoints for table and row operations
   - Import/Export, permissions, audit endpoints
   - SSE changefeeds: `/sse/cluster/{id}/db/{dbId}/tables/{table}/changes`
+
+Multi-device Sites API
+----------------------
+- GET `/api/v1/sites` — aggregated per-device records. The server sets a canonical `clusterId` per record.
+- For the device hosting the current Host App instance, the server marks the record with `self: true` and omits `lastSeen` (null). This allows the UI to hide the local device from “remote sites” listings without ambiguous online/offline status.
 
 ### Wiring, lifecycle and implementation notes
 
@@ -159,6 +247,12 @@ Dev convenience: the router can detect a local `kubectl proxy` and rewrite clust
 - Local kubectl proxy: the router can prefer a local `kubectl proxy` at `127.0.0.1:8001` when available. Running `kubectl proxy --kubeconfig=~/.guildnet/kubeconfig --address=127.0.0.1 --port=8001` reduces TLS/host mismatch issues in dev.
 - Calico IPAM: a prior debugging session discovered orphaned Calico IPAMBlock CRs that exhausted per-host allocation and prevented PodSandbox creation. We used conservative cleanup scripts (examples left under `tmp/` during investigation) that back up `IPAMBlock` CRs and delete orphaned ones, and restarted `calico-kube-controllers` to re-sync. This is a developer-level mitigation for stuck clusters; production clusters should be monitored for IPAM saturation.
 - Verifier: `scripts/verify-workspace.sh` is a small end-to-end smoke test that creates `verify-code-server-e2e` and probes the Host App proxy; it records probe outputs into `/tmp`.
+
+Recent fixes (2025-10-21):
+- The proxy reconciler was explicitly named `proxy-reconciler` to avoid controller-runtime duplicate-name collisions when multiple controllers are registered. This fixed an in-cluster operator startup failure observed during local testing.
+- Missing GuildNet CRDs (federatedclusters, federatedservices, sitestatuses, etc.) were applied from `config/crd/bases/` to the test cluster to ensure all reconcilers operate correctly.
+
+Note: The verifier `scripts/verify-e2e.sh` was recently updated to be more robust across Headscale CLI versions and to follow redirects when probing HostApp proxy endpoints.
 
 ### Developer & deployment workflow
 

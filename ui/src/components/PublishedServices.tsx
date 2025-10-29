@@ -1,6 +1,10 @@
 import { For, createResource, createSignal } from 'solid-js'
 import Card from './Card'
-import { listPublishedServices, deletePublishedService, PublishedService } from '../lib/api'
+import {
+  listPublishedServices,
+  deletePublishedService,
+  PublishedService
+} from '../lib/api'
 import { pushToast } from './Toaster'
 
 export default function PublishedServices(props: { clusterId: string }) {
@@ -27,15 +31,24 @@ export default function PublishedServices(props: { clusterId: string }) {
   return (
     <Card title="Published Services">
       <div class="space-y-2">
-        <For each={list() ?? []} fallback={<div class="text-xs text-neutral-500">No published services.</div>}>
+        <For
+          each={list() ?? []}
+          fallback={
+            <div class="text-xs text-neutral-500">No published services.</div>
+          }
+        >
           {(p) => (
             <div class="flex items-center justify-between gap-4">
               <div class="text-sm">
                 <div class="font-medium">{p.service}</div>
-                <div class="text-xs text-neutral-500">{p.addr} • added {new Date(p.added_at).toLocaleString()}</div>
+                <div class="text-xs text-neutral-500">
+                  {p.addr} • added {new Date(p.added_at).toLocaleString()}
+                </div>
               </div>
               <div>
-                <button class="btn" disabled={busy()} onClick={() => revoke(p)}>Revoke</button>
+                <button class="btn" disabled={busy()} onClick={() => revoke(p)}>
+                  Revoke
+                </button>
               </div>
             </div>
           )}

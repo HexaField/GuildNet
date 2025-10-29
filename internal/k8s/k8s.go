@@ -23,7 +23,7 @@ import (
 )
 
 type Client struct {
-	K    *kubernetes.Clientset
+	K    kubernetes.Interface
 	Rest *rest.Config
 }
 
@@ -40,25 +40,12 @@ func kubeconfigDefault() string {
 }
 
 func New(ctx context.Context) (*Client, error) {
-	var cfg *rest.Config
-	var err error
-	// Try in-cluster first, then fallback to kubeconfig on disk
-	cfg, err = rest.InClusterConfig()
-	if err != nil {
-		kc := kubeconfigDefault()
-		if kc == "" {
-			return nil, fmt.Errorf("no in-cluster config and no kubeconfig")
-		}
-		cfg, err = clientcmd.BuildConfigFromFlags("", kc)
-		if err != nil {
-			return nil, err
-		}
-	}
-	cs, err := kubernetes.NewForConfig(cfg)
-	if err != nil {
-		return nil, err
-	}
-	return &Client{K: cs, Rest: cfg}, nil
+	// Single-cluster creation is intentionally removed. This codebase supports
+	// multi-device (federated) operation only. Callers should obtain per-cluster
+	// kubeconfigs from the Registry and use NewFromKubeconfig, or provide an
+	// explicit control-plane kubeconfig via GN_CONTROL_PLANE_KUBECONFIG if an
+	// embedded operator/controller-runtime manager is required.
+	return nil, fmt.Errorf("k8s.New() is unsupported: single-cluster mode removed; use NewFromKubeconfig or per-cluster Registry")
 }
 
 // NewFromKubeconfig builds a client from a kubeconfig string, applying optional per-cluster overrides.

@@ -1,3 +1,11 @@
+FROM golang:1.22-alpine AS build
+WORKDIR /src
+COPY . /src
+RUN cd internal/agent/collector && go build -o /bin/agent
+
+FROM alpine:3.18
+COPY --from=build /bin/agent /bin/agent
+ENTRYPOINT ["/bin/agent"]
 # Multi-stage build for a lightweight agent image running code-server behind Caddy
 
 ########## Builder: fetch code-server and Caddy ##########

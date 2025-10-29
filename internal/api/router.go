@@ -29,16 +29,49 @@ import (
 	// New settings
 	"github.com/your/module/internal/settings"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	intstr "k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/utils/pointer"
 )
+
+// dns1123Name converts a string to a DNS-1123 compliant name for resource names.
+func dns1123Name(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	var b strings.Builder
+	prevDash := false
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+			prevDash = false
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+			prevDash = false
+		case r == '-' || r == '_' || r == ' ':
+			if !prevDash && b.Len() > 0 {
+				b.WriteByte('-')
+				prevDash = true
+			}
+		}
+	}
+	res := strings.Trim(b.String(), "-")
+	for strings.Contains(res, "--") {
+		res = strings.ReplaceAll(res, "--", "-")
+	}
+	if res == "" {
+		res = "item"
+	}
+	return res
+}
 
 // publishedListener holds metadata for an on-demand published listener.
 type publishedListener struct {
@@ -54,6 +87,15 @@ var (
 	publishedMap   = map[string]*publishedListener{}
 	publishedMapMu sync.Mutex
 )
+
+// clusterPublishedConfigMapName returns the namespaced name where published mappings are mirrored.
+// We use a single ConfigMap per cluster under guildnet-system namespace with key "published.json".
+func clusterPublishedConfigMapName(clusterID string) (namespace, name string) {
+	ns := "guildnet-system"
+	// keep name deterministic per cluster id
+	name = fmt.Sprintf("published-%s", dns1123Name(clusterID))
+	return ns, name
+}
 
 // Deps are runtime dependencies for the orchestration API.
 type Deps struct {
@@ -148,15 +190,23 @@ func Router(deps Deps) *http.ServeMux {
 		if body.Tailscale != nil {
 			_ = setMgr.PutTailscale(*body.Tailscale)
 		}
-		// If kubeconfig provided, create a cluster record with generated ID and persist optional settings
+		// If kubeconfig provided, compute deterministic id from kubeconfig and upsert cluster record.
 		if body.Cluster != nil && strings.TrimSpace(body.Cluster.Kubeconfig) != "" && deps.DB != nil {
-			id := uuid.NewString()
+			// Compute deterministic id from kubeconfig to ensure a single source-of-truth per control-plane.
+			detID, derr := cluster.DeterministicIDFromKubeconfig(body.Cluster.Kubeconfig)
+			id := detID
+			if derr != nil || strings.TrimSpace(id) == "" {
+				// fallback to a uuid if deterministic computation failed for unexpected reasons
+				id = uuid.NewString()
+			}
 			name := body.Cluster.Name
 			if strings.TrimSpace(name) == "" {
 				name = id
 			}
 			rec := map[string]any{"id": id, "name": name, "state": "imported"}
+			// Upsert cluster record by deterministic id
 			_ = deps.DB.Put("clusters", id, rec)
+			// Store kubeconfig under deterministic id key
 			_ = deps.DB.Put("credentials", fmt.Sprintf("cl:%s:kubeconfig", id), map[string]any{"value": body.Cluster.Kubeconfig})
 			// Attempt to pre-warm per-cluster clients via registry (if available).
 			// If pre-warm fails, remove persisted records and return an error to the caller.
@@ -217,7 +267,7 @@ func Router(deps Deps) *http.ServeMux {
 				OrgID:              body.Cluster.OrgID,
 			}
 			_ = setMgr.PutCluster(id, cs)
-			_ = json.NewEncoder(w).Encode(map[string]any{"clusterId": id})
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": id})
 			return
 		}
 		httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -721,6 +771,20 @@ func Router(deps Deps) *http.ServeMux {
 			var items []map[string]any
 			if deps.DB != nil {
 				_ = deps.DB.List("clusters", &items)
+				// For each cluster, prefer the human-friendly name from per-cluster settings
+				for _, it := range items {
+					// try to read per-cluster settings
+					if idv, ok := it["id"]; ok {
+						id := fmt.Sprint(idv)
+						var cs settings.Cluster
+						if err := setMgr.GetCluster(id, &cs); err == nil {
+							if strings.TrimSpace(cs.Name) != "" {
+								// prefer settings name over stored record name
+								it["name"] = cs.Name
+							}
+						}
+					}
+				}
 			}
 			_ = json.NewEncoder(w).Encode(items)
 			return
@@ -801,6 +865,26 @@ func Router(deps Deps) *http.ServeMux {
 					httpx.JSONError(w, http.StatusBadRequest, "invalid kubeconfig", "bad_kubeconfig", err.Error())
 					return
 				}
+				// Compute deterministic cluster id from kubeconfig so the same cluster
+				// yields the same id on every device.
+				detID, err := cluster.DeterministicIDFromKubeconfig(body.Kubeconfig)
+				if err == nil && detID != "" {
+					id = detID
+				}
+				// Ensure a cluster record exists for this deterministic id so that UIs/agents
+				// can reference the same cluster across devices even when bootstrap wasn't used.
+				if deps.DB != nil {
+					var rec map[string]any
+					if derr := deps.DB.Get("clusters", id, &rec); derr != nil || len(rec) == 0 {
+						rec = map[string]any{
+							"id":        id,
+							"name":      id,
+							"state":     "imported",
+							"createdAt": time.Now().UTC().Format(time.RFC3339),
+						}
+						_ = deps.DB.Put("clusters", id, rec)
+					}
+				}
 				enc := body.Kubeconfig
 				encrypted := false
 				if deps.Secrets != nil {
@@ -832,7 +916,7 @@ func Router(deps Deps) *http.ServeMux {
 						}
 					}
 				}
-				_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+				_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "id": id})
 				return
 			}
 
@@ -903,7 +987,10 @@ func Router(deps Deps) *http.ServeMux {
 				if cs.CertManagerIssuer != "" {
 					clusterRec["cert_manager_issuer"] = cs.CertManagerIssuer
 				}
+				// Expose canonical cluster id and include detailed cluster object for compatibility
+				clusterRec["id"] = id
 				out["cluster"] = clusterRec
+				out["clusterId"] = id
 
 				// Tailscale hints
 				var ts settings.Tailscale
@@ -1041,6 +1128,44 @@ func Router(deps Deps) *http.ServeMux {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
+
+		// Quick overview endpoint: /api/cluster/{id}/overview
+		if len(parts) >= 2 && parts[1] == "overview" {
+			if r.Method != http.MethodGet {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			out := map[string]any{"clusterId": clusterID}
+			// cluster record from host DB if present
+			if deps.DB != nil {
+				var crec map[string]any
+				if err := deps.DB.Get("clusters", clusterID, &crec); err == nil && len(crec) > 0 {
+					out["record"] = crec
+				}
+			}
+			// devices from per-cluster DB when Instance available
+			if deps.Registry != nil {
+				if inst, err := deps.Registry.Get(r.Context(), clusterID); err == nil && inst != nil && inst.DB != nil {
+					var devices []map[string]any
+					if err := inst.DB.List("devices", &devices); err == nil {
+						out["sites"] = devices
+					}
+					// federated services via dynamic client when available
+					if inst.Dyn != nil {
+						gvr := schema.GroupVersionResource{Group: "guildnet.io", Version: "v1alpha1", Resource: "federatedservices"}
+						if ulist, err := inst.Dyn.Resource(gvr).Namespace(metav1.NamespaceAll).List(r.Context(), metav1.ListOptions{}); err == nil {
+							outFS := []map[string]any{}
+							for _, it := range ulist.Items {
+								outFS = append(outFS, map[string]any{"namespace": it.GetNamespace(), "name": it.GetName()})
+							}
+							out["federatedServices"] = outFS
+						}
+					}
+				}
+			}
+			_ = json.NewEncoder(w).Encode(out)
+			return
+		}
 		// Quick status endpoint for UI: /api/cluster/{id}/status
 		if len(parts) >= 2 && parts[1] == "status" && r.Method == http.MethodGet {
 			st, err := clusterLocalStatus(r.Context(), deps, clusterID)
@@ -1054,7 +1179,7 @@ func Router(deps Deps) *http.ServeMux {
 		// Optionally resolve via per-cluster registry
 		var (
 			cfg         *rest.Config
-			cli         *kubernetes.Clientset
+			cli         kubernetes.Interface
 			dyn         dynamic.Interface
 			cs          settings.Cluster
 			setMgrLocal settings.Manager
@@ -1404,17 +1529,54 @@ func Router(deps Deps) *http.ServeMux {
 				httpx.JSON(w, http.StatusOK, []any{})
 				return
 			}
+			// Build a quick lookup of device participants to enrich with machine identity.
+			// Key by lowercased device name/id for loose matching against node names.
+			deviceMap := map[string]struct {
+				name string
+				ips  []string
+			}{}
+			if dyn != nil {
+				if ulist, err := dyn.Resource(schema.GroupVersionResource{Group: "guildnet.io", Version: "v1alpha1", Resource: "deviceparticipants"}).Namespace("guildnet-system").List(r.Context(), metav1.ListOptions{}); err == nil {
+					for _, it := range ulist.Items {
+						m := it.Object
+						nameKey := strings.ToLower(strings.TrimSpace(it.GetName()))
+						// spec.name is the human hostname when provided
+						if sp, ok := m["spec"].(map[string]any); ok {
+							if v, ok2 := sp["name"]; ok2 {
+								if s := strings.ToLower(strings.TrimSpace(fmt.Sprint(v))); s != "" {
+									nameKey = s
+								}
+							}
+							ips := []string{}
+							if v, ok2 := sp["tailnetIPs"]; ok2 {
+								if arr, ok3 := v.([]any); ok3 {
+									for _, a := range arr {
+										ips = append(ips, strings.TrimSpace(fmt.Sprint(a)))
+									}
+								}
+							}
+							deviceMap[nameKey] = struct {
+								name string
+								ips  []string
+							}{name: strings.TrimSpace(fmt.Sprint(sp["name"])), ips: ips}
+						}
+					}
+				}
+			}
 			// map to Server model (local, keep fields minimal)
 			type Port struct {
 				Name string `json:"name,omitempty"`
 				Port int    `json:"port"`
 			}
 			type Server struct {
-				ID     string `json:"id"`
-				Name   string `json:"name"`
-				Image  string `json:"image"`
-				Status string `json:"status"`
-				Ports  []Port `json:"ports"`
+				ID          string   `json:"id"`
+				Name        string   `json:"name"`
+				Image       string   `json:"image"`
+				Status      string   `json:"status"`
+				Ports       []Port   `json:"ports"`
+				Node        string   `json:"node,omitempty"`
+				MachineName string   `json:"machineName,omitempty"`
+				TailnetIPs  []string `json:"tailnetIPs,omitempty"`
 			}
 			out := []Server{}
 			for _, item := range lst.Items {
@@ -1451,7 +1613,30 @@ func Router(deps Deps) *http.ServeMux {
 						}
 					}
 				}
-				out = append(out, Server{ID: name, Name: name, Image: image, Status: st, Ports: ports})
+				// Attempt to determine the node/pod location for this workspace
+				nodeName := ""
+				if cli != nil {
+					if pods, err := cli.CoreV1().Pods(defaultNS).List(r.Context(), metav1.ListOptions{LabelSelector: fmt.Sprintf("guildnet.io/workspace=%s", name)}); err == nil {
+						for _, p := range pods.Items {
+							if strings.TrimSpace(p.Spec.NodeName) != "" {
+								nodeName = p.Spec.NodeName
+								break
+							}
+						}
+					}
+				}
+				machineName := ""
+				ips := []string{}
+				if nodeName != "" {
+					if rec, ok := deviceMap[strings.ToLower(nodeName)]; ok {
+						machineName = rec.name
+						ips = rec.ips
+					} else {
+						// Fallback: use node name when no DeviceParticipant matches
+						machineName = nodeName
+					}
+				}
+				out = append(out, Server{ID: name, Name: name, Image: image, Status: st, Ports: ports, Node: nodeName, MachineName: machineName, TailnetIPs: ips})
 			}
 			httpx.JSON(w, http.StatusOK, out)
 			return
@@ -1493,10 +1678,54 @@ func Router(deps Deps) *http.ServeMux {
 				if name == "" {
 					name = fmt.Sprintf("ws-%s", uuid.NewString()[:8])
 				}
+				// Determine the schedule target (defaults to this host's hostname) and allow override via payload.
+				hn, _ := os.Hostname()
+				schedule := strings.TrimSpace(hn)
+				// Optional explicit override: top-level field `scheduleNode` in the request body.
+				if v, ok := spec["scheduleNode"]; ok && v != nil {
+					if s, ok2 := v.(string); ok2 && strings.TrimSpace(s) != "" {
+						schedule = strings.TrimSpace(s)
+					} else {
+						// Accept non-string types too (coerce to string)
+						sv := strings.TrimSpace(fmt.Sprint(v))
+						if sv != "" {
+							schedule = sv
+						}
+					}
+				}
+				// Also allow specifying the scheduling hint via labels (array or map) using the canonical key.
+				if lv, ok := spec["labels"]; ok && lv != nil {
+					// labels may arrive as []{name,value} or map[string]string
+					switch lt := lv.(type) {
+					case []any:
+						for _, it := range lt {
+							if m, okm := it.(map[string]any); okm {
+								k := strings.TrimSpace(fmt.Sprint(m["name"]))
+								if strings.EqualFold(k, "guildnet.io/schedule-node") {
+									sv := strings.TrimSpace(fmt.Sprint(m["value"]))
+									if sv != "" {
+										schedule = sv
+									}
+								}
+							}
+						}
+					case map[string]any:
+						if v2, ok2 := lt["guildnet.io/schedule-node"]; ok2 {
+							sv := strings.TrimSpace(fmt.Sprint(v2))
+							if sv != "" {
+								schedule = sv
+							}
+						}
+					}
+				}
+				// Normalize schedule value to a DNS-1123 compliant value so it matches typical Kubernetes node names.
+				if schedule != "" {
+					schedule = dns1123Name(schedule)
+				}
 				obj := map[string]any{
 					"apiVersion": "guildnet.io/v1alpha1",
 					"kind":       "Workspace",
-					"metadata":   map[string]any{"name": name},
+					"metadata":   map[string]any{"name": name, "labels": map[string]any{"guildnet.io/schedule-node": schedule}},
 					"spec": map[string]any{
 						"image":     spec["image"],
 						"env":       spec["env"],
@@ -1519,7 +1748,156 @@ func Router(deps Deps) *http.ServeMux {
 					httpx.JSONError(w, http.StatusInternalServerError, "workspace create failed", "create_failed", details)
 					return
 				}
-				httpx.JSON(w, http.StatusAccepted, map[string]any{"id": name, "status": "pending"})
+				// Synchronous flow: wait briefly for the operator; if it doesn't reconcile, attempt fallback and return final status
+				resp := map[string]any{"id": name, "status": "pending"}
+				log.Printf("workspace create: cluster=%s name=%s image=%v specEnv=%v", clusterID, name, obj["spec"].(map[string]any)["image"], obj["spec"].(map[string]any)["env"])
+
+				waitUntil := time.Now().Add(8 * time.Second)
+				log.Printf("workspace create: waiting up to 8s for operator reconcile cluster=%s name=%s", clusterID, name)
+				reconciled := false
+				for time.Now().Before(waitUntil) {
+					pods, err := cli.CoreV1().Pods(defaultNS).List(context.Background(), metav1.ListOptions{LabelSelector: fmt.Sprintf("guildnet.io/workspace=%s", name)})
+					if err == nil && len(pods.Items) > 0 {
+						log.Printf("workspace create: operator reconciled cluster=%s name=%s pods=%d", clusterID, name, len(pods.Items))
+						reconciled = true
+						break
+					}
+					time.Sleep(1 * time.Second)
+				}
+
+				if reconciled {
+					// try to include status/proxyTarget if operator set it
+					if dyn != nil {
+						if wsu, err := dyn.Resource(gvr).Namespace(defaultNS).Get(context.Background(), name, metav1.GetOptions{}); err == nil {
+							if st, ok := wsu.Object["status"].(map[string]any); ok {
+								if phase, ok2 := st["phase"].(string); ok2 {
+									resp["status"] = phase
+								}
+								if pt, ok3 := st["proxyTarget"].(string); ok3 {
+									resp["proxyTarget"] = pt
+								}
+							}
+						}
+					}
+					httpx.JSON(w, http.StatusOK, resp)
+					return
+				}
+
+				// operator did not reconcile; perform fallback creation
+				log.Printf("workspace create: operator did not reconcile in time; creating fallback resources cluster=%s name=%s", clusterID, name)
+				specMap := obj["spec"].(map[string]any)
+				image, _ := specMap["image"].(string)
+				rawPorts, _ := specMap["ports"].([]any)
+				ports := []int32{}
+				for _, rp := range rawPorts {
+					if pm, ok := rp.(map[string]any); ok {
+						if pvf, ok := pm["containerPort"].(float64); ok {
+							ports = append(ports, int32(pvf))
+						}
+						if pv, ok := pm["containerPort"].(int64); ok {
+							ports = append(ports, int32(pv))
+						}
+					}
+				}
+				envVars := []corev1.EnvVar{}
+				if rawEnv, ok := specMap["env"].([]any); ok {
+					for _, e := range rawEnv {
+						if em, ok := e.(map[string]any); ok {
+							nameS, _ := em["name"].(string)
+							valS, _ := em["value"].(string)
+							if nameS != "" {
+								envVars = append(envVars, corev1.EnvVar{Name: nameS, Value: valS})
+							}
+						}
+					}
+				}
+				dep := &appsv1.Deployment{
+					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNS, Labels: map[string]string{"guildnet.io/workspace": name}},
+					Spec:       appsv1.DeploymentSpec{Replicas: pointer.Int32Ptr(1), Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"guildnet.io/workspace": name}}, Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"guildnet.io/workspace": name}}, Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: name, Image: image, Env: envVars}}}}},
+				}
+				// Honor the scheduling hint in fallback mode as well: if a schedule target
+				// was computed, set a nodeSelector so the scheduler places the pod on the
+				// intended node (kubernetes.io/hostname).
+				if strings.TrimSpace(schedule) != "" {
+					if dep.Spec.Template.Spec.NodeSelector == nil {
+						dep.Spec.Template.Spec.NodeSelector = map[string]string{}
+					}
+					dep.Spec.Template.Spec.NodeSelector["kubernetes.io/hostname"] = schedule
+				}
+				if len(ports) > 0 {
+					for i := range dep.Spec.Template.Spec.Containers {
+						for _, p := range ports {
+							dep.Spec.Template.Spec.Containers[i].Ports = append(dep.Spec.Template.Spec.Containers[i].Ports, corev1.ContainerPort{ContainerPort: p})
+						}
+					}
+				}
+				svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNS, Labels: map[string]string{"guildnet.io/workspace": name}}, Spec: corev1.ServiceSpec{Selector: map[string]string{"guildnet.io/workspace": name}}}
+				if len(ports) > 0 {
+					for _, p := range ports {
+						svc.Spec.Ports = append(svc.Spec.Ports, corev1.ServicePort{Port: p, TargetPort: intstr.FromInt(int(p))})
+					}
+				} else {
+					svc.Spec.Ports = []corev1.ServicePort{{Port: 8080, TargetPort: intstr.FromInt(8080)}}
+				}
+
+				depCreated := false
+				svcCreated := false
+				var createErrs []string
+
+				d, derr := cli.AppsV1().Deployments(defaultNS).Create(context.Background(), dep, metav1.CreateOptions{})
+				if derr != nil {
+					log.Printf("workspace fallback: deployment create failed cluster=%s name=%s err=%v", clusterID, name, derr)
+					createErrs = append(createErrs, fmt.Sprintf("deployment:%v", derr))
+				} else {
+					depCreated = true
+					log.Printf("workspace fallback: deployment created cluster=%s name=%s uid=%s", clusterID, name, d.GetUID())
+				}
+
+				s, serr := cli.CoreV1().Services(defaultNS).Create(context.Background(), svc, metav1.CreateOptions{})
+				if serr != nil {
+					log.Printf("workspace fallback: service create failed cluster=%s name=%s err=%v", clusterID, name, serr)
+					createErrs = append(createErrs, fmt.Sprintf("service:%v", serr))
+				} else {
+					svcCreated = true
+					log.Printf("workspace fallback: service created cluster=%s name=%s uid=%s clusterIP=%s", clusterID, name, s.GetUID(), s.Spec.ClusterIP)
+				}
+
+				// Update Workspace status so callers waiting on status see Running or Failed
+				if dyn != nil {
+					wsu, err := dyn.Resource(gvr).Namespace(defaultNS).Get(context.Background(), name, metav1.GetOptions{})
+					if err == nil {
+						status := map[string]any{}
+						if depCreated && svcCreated {
+							status["phase"] = "Running"
+							status["readyReplicas"] = int64(1)
+							if len(ports) > 0 {
+								status["proxyTarget"] = fmt.Sprintf("%s:%d", name, ports[0])
+								resp["proxyTarget"] = fmt.Sprintf("%s:%d", name, ports[0])
+							}
+						} else {
+							status["phase"] = "Failed"
+							status["readyReplicas"] = int64(0)
+							if len(createErrs) > 0 {
+								status["error"] = strings.Join(createErrs, ", ")
+								resp["error"] = strings.Join(createErrs, ", ")
+							}
+						}
+						_ = unstructured.SetNestedField(wsu.Object, status, "status")
+						if _, uerr := dyn.Resource(gvr).Namespace(defaultNS).UpdateStatus(context.Background(), wsu, metav1.UpdateOptions{}); uerr != nil {
+							log.Printf("workspace fallback: failed to update workspace status cluster=%s name=%s err=%v", clusterID, name, uerr)
+						}
+					} else {
+						log.Printf("workspace fallback: failed to get workspace for status update cluster=%s name=%s err=%v", clusterID, name, err)
+					}
+				}
+
+				if depCreated && svcCreated {
+					resp["status"] = "Running"
+					httpx.JSON(w, http.StatusOK, resp)
+					return
+				}
+				resp["status"] = "Failed"
+				httpx.JSONError(w, http.StatusInternalServerError, "workspace create failed (fallback)", "create_failed", resp)
 				return
 			}
 			if len(parts) == 3 && r.Method == http.MethodGet {
@@ -1738,6 +2116,10 @@ func Router(deps Deps) *http.ServeMux {
 		w.WriteHeader(http.StatusNotFound)
 	})
 
+	// Register federation API endpoints (sites and federatedservices)
+	RegisterFederationAPIs(mux, deps)
+	// Register CRUD endpoints under /api/v1 for federated services
+	registerFederationCRUD(mux, deps)
 	return mux
 }
 

@@ -71,6 +71,9 @@ fi
 HOSTAPP_STARTED=0
 HOSTAPP_PID_FILE="/tmp/verify-hostapp-${RAND:-noid}.pid"
 
+# Default HostApp URL (can be overridden by env HOSTAPP_URL)
+HOSTAPP_URL=${HOSTAPP_URL:-https://127.0.0.1:8090}
+
 
 
 echolog "Disposable cluster creation disabled; using existing kubeconfig or microk8s setup"
@@ -137,7 +140,7 @@ EOF
         exit 4
       fi
     fi
-  fi
+    
 fi
 
 # Export KUBECONFIG for subsequent kubectl calls and perform a quick preflight check
@@ -208,6 +211,9 @@ attach_kubeconfig_to_hostapp() {
 }
 
 attach_kubeconfig_to_hostapp || echolog "attach_kubeconfig_to_hostapp returned non-zero"
+
+# Ensure HOSTAPP_URL has a default before later HostApp calls (avoid unbound var under -u)
+HOSTAPP_URL=${HOSTAPP_URL:-https://127.0.0.1:8090}
 
 echolog "Step: preflight checks for target Kubernetes cluster"
 if ! bash "$ROOT/scripts/verify-cluster-preflight.sh" 2>&1 | tee -a "$LOGFILE"; then

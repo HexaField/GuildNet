@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: guildnet-agent
+  namespace: guildnet-system
+spec:
+  selector:
+    matchLabels:
+      app: guildnet-agent
+  template:
+    metadata:
+      labels:
+        app: guildnet-agent
+    spec:
+      containers:
+        - name: agent
+          image: {{ .Image }}
+          env:
+            - name: GN_HOSTAPP_URL
+              value: "{{ .HostAppURL }}"
+            - name: GN_SITE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          resources:
+            limits:
+              cpu: "100m"
+              memory: "64Mi"
+            requests:
+              cpu: "50m"
+              memory: "32Mi"

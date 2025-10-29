@@ -24,6 +24,49 @@ PROVIDER ?= lan
 	# Local disposable cluster helper removed; use microk8s or set KUBECONFIG
 	deploy-k8s-addons deploy-operator deploy-hostapp verify-e2e \
 	diag-router diag-k8s diag-db headscale-approve-routes
+multi-device-host: ## One-command bootstrap of Device A (Headscale+cluster+operator+Host App)
+	bash ./scripts/multi-device-setup.sh host
+
+multi-device-joiner: ## One-command bootstrap of Device B and attach to Host App (set HOSTAPP_URL)
+	bash ./scripts/multi-device-setup.sh joiner
+
+
+.PHONY: gen
+gen:
+	@echo "Running controller-gen to generate deepcopies and CRDs locally..."
+	# Ensure controller-gen is available (install v0.12.0 if missing)
+	@if ! command -v controller-gen >/dev/null 2>&1; then \
+		if command -v go >/dev/null 2>&1; then \
+			echo "controller-gen not found; installing sigs.k8s.io/controller-tools/cmd/controller-gen@v0.15.0"; \
+			go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.15.0; \
+			echo "installed controller-gen to $(go env GOPATH)/bin (ensure \"$(go env GOPATH)/bin\" is on your PATH)"; \
+		else \
+			echo "go is not available in PATH; please install Go (>=1.19) and controller-gen@v0.15.0"; exit 2; \
+		fi; \
+	fi; \
+	# Run controller-gen to generate deepcopies and CRDs (expects controller-gen on PATH)
+	controller-gen object:headerFile=./hack/boilerplate.go.txt paths=./api/...
+	controller-gen crd:crdVersions=v1 paths=./api/... output:crd:dir=./config/crd/bases
+
+.PHONY: verify-federation-e2e
+verify-federation-e2e:
+	@echo "Running multi-cluster federation end-to-end verification"
+	@./scripts/verify-federation-e2e.sh
+
+.PHONY: gen-check
+gen-check: gen
+	@echo "Checking for uncommitted generated changes..."
+	@git diff --exit-code -- config/crd || (echo "Generated files differ; run 'make gen' and commit results" && exit 1)
+
+.PHONY: test-unit
+test-unit:
+	@echo "Running unit tests"
+	go test ./... -run Test -v
+
+.PHONY: test-integration
+test-integration:
+	@echo "Running integration tests (fast, package-level)"
+	go test ./tests -v || true
 
 
 all: build ## Build backend and UI
@@ -93,7 +136,7 @@ operator-build-load: operator-image-load ## Convenience target to build and load
 	@echo "operator image build+load complete"
 
 build-ui: ## Build UI (Vite)
-	cd ui && npm ci && npm run build
+	cd ui && npm run build
 
 # ---------- Run ----------
 run: build stop-hostapp ## Build all (backend+UI), stop any existing hostapp, then run backend (serve)
@@ -120,6 +163,30 @@ tidy: ## go mod tidy
 
 clean: ## Remove build artifacts
 	rm -rf bin ui/dist
+
+.PHONY: reset
+reset: ## Full reset: stop hostapp, headscale, tailscale, delete test clusters, and remove local project configs (DANGEROUS)
+	@echo "This target will perform a full teardown of local GuildNet artifacts:\n  - stop hostapp process\n  - stop all managed workloads via API\n  - delete test/dev clusters via Host App API\n  - stop and remove local Headscale container\n  - bring down local Tailscale router\n  - remove local user config state (default: $(HOME)/.guildnet)\n  - remove GN_KUBECONFIG file (default: $(GN_KUBECONFIG))\n";
+	@if [ "$(MAKE_RESET_CONFIRM)" != "1" ] && [ "$(CONFIRM)" != "--yes" ]; then \
+		echo "To run this target, re-run with MAKE_RESET_CONFIRM=1 or CONFIRM=--yes (e.g., make reset MAKE_RESET_CONFIRM=1)"; exit 2; \
+	fi
+	@echo "[reset] Stopping hostapp (best-effort)";
+	LISTEN_LOCAL=$(LISTEN_LOCAL) bash ./scripts/stop-hostapp.sh || true
+	@echo "[reset] Requesting stop-all via admin API (best-effort)";
+	@curl -sk -X POST https://127.0.0.1:8090/api/admin/stop-all >/dev/null 2>&1 || true
+	@echo "[reset] Deleting test-like clusters via Host App API (best-effort)";
+	@bash ./scripts/shutdown-test-clusters.sh --yes || true
+	@echo "[reset] Stopping Headscale (if running)";
+	@$(MAKE) headscale-down || true
+	@echo "[reset] Bringing down Tailscale router (if configured)";
+	@$(MAKE) router-down || true
+	@echo "[reset] Running cleanup script to remove local state under ~/.guildnet (if present)";
+	@bash ./scripts/cleanup.sh --all || true
+	@echo "[reset] Removing local GN_KUBECONFIG file: $(GN_KUBECONFIG) (if present)";
+	@if [ -f "$(GN_KUBECONFIG)" ]; then rm -f "$(GN_KUBECONFIG)" && echo "  removed $(GN_KUBECONFIG)"; else echo "  not found: $(GN_KUBECONFIG)"; fi
+	@echo "[reset] Removing temporary headscale/router cluster files in tmp/ (if present)";
+	@rm -f tmp/cluster-*-headscale.json tmp/cluster-*-kubeconfig || true
+	@echo "[reset] Completed. Some resources (e.g., cluster objects on remote K8s, remote Tailscale state) may remain and require manual cleanup.";
 
 # ---------- Utilities ----------
 health: ## Check backend health endpoint
@@ -247,6 +314,14 @@ diag-k8s: ## Show kube API status and nodes
 
 diag-db: ## Print DB service details
 	bash ./scripts/rethinkdb-setup.sh || true
+
+.PHONY: diag-multi-device
+diag-multi-device: ## Summarize multi-device status (operator, CRDs, router, health)
+	bash ./scripts/diag-multi-device.sh
+
+.PHONY: verify-multi-device-failover
+verify-multi-device-failover: ## Simulate Host App restart and check resync
+	bash ./scripts/verify-multi-device-failover.sh
 
 # ---------- Network & Proxy ----------
 router-ensure-novalidate: ## Deploy Tailscale router without server-side schema validation (bootstrap when API unreachable)

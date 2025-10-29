@@ -13,6 +13,20 @@ Note: the runtime behavior is implemented in `internal/api/router.go`, `internal
 - Host App configuration options (global and runtime)
 - Examples and notes
 
+Note: a targeted, safe set of patch updates to a few direct modules were applied on 2025-10-19 and validated. Major module bumps (that require Go 1.24+) were intentionally avoided.
+
+Tailscale/Headscale authentication and tsnet connectors
+------------------------------------------------------
+- Per-cluster embedded tsnet connectors are used for Tailnet connectivity. Each cluster can provide its own Headscale/Tailscale login server and preauth key.
+- Preauth key handling is deterministic:
+  - Keys are stored canonically as `tskey-<base64url-no-padding>` when persisted.
+  - At runtime, the connector resolves the provided value to the raw-hex form Headscale expects and passes that to tsnet. This removes ambiguity across encodings and ensures non-interactive login.
+  - If a raw-hex value is provided directly, it is used as-is.
+- Non-interactive login only. Interactive login URLs are not used by design.
+- No restart/fallback logic: the connector does not delete `tailscaled.state` or attempt opaque restarts. Health is surfaced via status and Headscale lookups.
+- The connector normalizes the configured login server and may rewrite to `127.0.0.1:<port>` when it detects the target host is bound on the local machine and loopback is listening on the same port; this avoids hairpin surprises for local Headscale.
+- Device IPs and Headscale machine IDs are verified against Headscale and persisted into the per-cluster DB.
+
 
 ## Host App server API endpoints
 
@@ -32,7 +46,11 @@ Authorization model: GET requests are open. Mutating requests require either a c
       - ingress_domain, ingress_class_name, workspace_tls_secret
       - cert_manager_issuer, ingress_auth_url, ingress_auth_signin
       - image_pull_secret, org_id
-  - Response: JSON { clusterId: <id> } on success when kubeconfig provided.
+  - Response: JSON { id: <id> } on success when kubeconfig provided. (Clusters now expose a deterministic, canonical `id` field.)
+
+Multi-device automation: Use `make multi-device-host` on Device A and `make multi-device-joiner` on Device B to bootstrap quickly. The joiner will call this `/bootstrap` endpoint with its generated `guildnet.config`.
+
+  Multi-device note: After successful bootstrap, the Host App mirrors its published service mappings into a shared ConfigMap in the cluster (`guildnet-system/published-<id>`). Other devices reading the same cluster will observe and resync state from this registry.
 
 - GET/PUT /settings/tailscale
   - Get or update global tailscale/tsnet settings. Payload uses `settings.Tailscale`.
@@ -83,6 +101,11 @@ Authorization model: GET requests are open. Mutating requests require either a c
     - kubeconfig: returns the persisted kubeconfig as YAML
     - other actions delegated as `cluster.<action>` jobs
 
+Deterministic cluster IDs and attach-kubeconfig behavior
+-------------------------------------------------------
+- Cluster IDs are deterministic: when a kubeconfig is provided (via POST /bootstrap or attach-kubeconfig), the backend computes a canonical ID from the kubeconfig's normalized server URL and certificate-authority data.
+- POST `/api/deploy/clusters/{id}?action=attach-kubeconfig` may be invoked with any placeholder `{id}`. The backend will compute the deterministic ID and, if no record exists yet, create a cluster record with state `imported` so that UIs/agents can reference the same cluster across devices. The response includes `{ id: <deterministicId>, ok: true }` on success.
+
 - GET /ui-config
   - UI runtime config placeholder (returns {} in current implementation).
 
@@ -97,6 +120,28 @@ Authorization model: GET requests are open. Mutating requests require either a c
     - This endpoint performs service discovery (Service -> Pod selection) and supports port-forward fallback, tsnet publishing, and streamable websocket proxying.
   - GET /api/cluster/{id}/servers
     - List Workspaces (maps `Workspace` CRs to a simplified Server model: id, name, image, status, ports).
+    - Now includes machine identity for each server when available.
+- POST /api/cluster/{id}/workspaces
+  - Creates a Workspace CR. On create, the Host App injects a metadata label `guildnet.io/schedule-node=<launcher-hostname>` to guide placement.
+  - The in-cluster operator honors this hint by setting `podSpec.nodeSelector["kubernetes.io/hostname"]` to the provided value, ensuring the pod is scheduled on the target node.
+  - If the target node does not exist in the cluster, normal Kubernetes scheduling applies and placement may differ.
+  - Optional scheduling override from client:
+    - Provide `scheduleNode: "<node-name>"` in the POST body to explicitly target a device (node). This will override the default launcher hostname.
+    - Alternatively, include a label `guildnet.io/schedule-node` in `labels` (array of `{name,value}` or map) and it will be used as the scheduling hint.
+
+    - Response shape (array):
+      - id: string — workspace name
+      - name: string — workspace name
+      - image: string
+      - status: 'pending' | 'running' | 'failed' | 'stopped'
+      - ports: [{ name?: string, port: number }]
+      - node?: string — Kubernetes node name hosting the pod
+      - machineName?: string — device name (usually the hostname) derived from DeviceParticipant
+      - tailnetIPs?: string[] — tailnet IPs/FQDNs for the hosting device
+    - Implementation details:
+      - The API lists Workspace CRs and, for each, resolves the node via the associated pod(s).
+      - It cross-references DeviceParticipant CRs (guildnet-system namespace) to map node -> device name and tailnet IPs.
+      - When DeviceParticipant data is unavailable, node is still returned and machine fields are omitted.
   - POST /api/cluster/{id}/workspaces
     - Create a Workspace CR in target cluster (body: workspace spec with image, env, ports, args, resources, labels). Returns { id, status } accepted if creation succeeded.
   - GET /api/cluster/{id}/workspaces/{name}
@@ -104,7 +149,7 @@ Authorization model: GET requests are open. Mutating requests require either a c
   - GET /api/cluster/{id}/workspaces/{name}/logs
     - Aggregate pod logs for the workspace (returns list of log lines with timestamps).
   - DELETE /api/cluster/{id}/workspaces/{name}
-    - Delete workspace CR (auth required for mutating)
+    - Delete workspace CR (auth required for mutating). Used by the UI "Shutdown" action on the Servers list and Server detail pages.
   - GET /api/cluster/{id}/workspaces/{name}/logs/stream
     - SSE / Event-stream of pod logs (text/event-stream)
   - GET /api/cluster/{id}/health
@@ -165,6 +210,18 @@ These components are referenced in code and deployment manifests and are expecte
 - Headscale (optional)
   - Headscale can be orchestrated via Host App jobs to provide a private tailnet for cluster access. Headscale endpoints and preauth keys are stored in local DB and optionally used to configure tsnet connectors.
 
+Local teardown helper (Makefile)
+-------------------------------
+
+For convenience during development there is a guarded Makefile target that performs a best-effort full teardown of local GuildNet artifacts (Headscale container, Tailscale router, Host App process, temporary cluster records, and local GN state):
+
+```bash
+# Requires explicit confirmation to run
+make reset MAKE_RESET_CONFIRM=1
+```
+
+This is intended for local/dev workflows and is destructive to local state (it removes `~/.guildnet` and the `GN_KUBECONFIG` file by default). Use with care.
+
 
 ## Cluster configuration options (per-cluster settings)
 
@@ -187,6 +244,12 @@ Per-cluster settings are defined in `internal/settings/settings.go` (type `Clust
 - OrgID: optional org scoping for multi-tenant configurations
 - TSLoginServer / TSClientAuthKey / TSRoutes / TSStatePath / HeadscaleNS: per-cluster tailscale/headscale related settings for tsnet connectors
 
+Notes on tsnet connector settings
+- TSLoginServer: Headscale/Tailscale control URL (http[s]://host:port). The connector will probe `/key?v=1` with short timeouts before start and rewrite to loopback when safe and helpful.
+- TSClientAuthKey: Preauth key. Accepted inputs: `tskey-...` or raw hex. Persisted canonically as `tskey-...`. Runtime is resolved to raw hex for compatibility with Headscale v0.27.0.
+- TSStatePath: Per-cluster state directory; defaults under `~/.guildnet/tsnet/cluster-<id>` with secure permissions.
+- Device IPs (100.x) and FQDNs are read from the local tsnet status and verified against Headscale; verified values are persisted under the per-cluster DB collection `devices`.
+
 Notes:
 - `PutCluster` will store `TSClientAuthKey` in the `credentials` bucket to avoid echoing it back in GET responses.
 - `PutCluster` writes a `guildnet-cluster-settings` ConfigMap into the cluster namespace `guildnet-system` when Host App has cluster clients, enabling the in-cluster operator to read runtime flags.
@@ -196,6 +259,16 @@ Notes:
 
 Host App configuration lives in two areas:
 - `pkg/config.Config` (persistent config file under `~/.guildnet/config.json`)
+
+Operator requirements (multi-device)
+----------------------------------
+
+The operator (workspace-operator) expects the following at runtime when deployed in multi-device/operator mode:
+
+- A valid `~/.guildnet/config.json` mounted or present inside the operator container that contains `login_server` and `auth_key` so tsnet can perform a non-interactive tailscale/headscale login.
+- TLS cert and key available under `/root/.guildnet/state/certs/server.crt` and `/root/.guildnet/state/certs/server.key` (the deployment can mount the repository `certs/` directory as a ConfigMap at that path during tests).
+
+When running the operator in Kubernetes, set `GN_CONTROL_PLANE_KUBECONFIG` to point at a mounted kubeconfig file if the operator must act on a control-plane other than the local cluster.
 - Environment variables and runtime settings in `cmd/hostapp/main.go` and `internal/settings`.
 
 ### Persistent config (`pkg/config.Config` fields)
@@ -215,6 +288,8 @@ The config file path: `~/.guildnet/config.json` (created by tools like the init 
 - GN_EMBED_OPERATOR — when set to `1` (or truthy), Host App will start an embedded operator in-process. Do NOT set in production; in-cluster operator is recommended.
 - GN_USE_GUILDNET_KUBECONFIG — opt-in for dev: when set, scripts like `scripts/run-hostapp.sh` will prefer `~/.guildnet/kubeconfig` as the source for `KUBECONFIG`.
 - KUBE_PROXY_ADDR — explicit host:port or URL for a local kubectl proxy (e.g. http://127.0.0.1:8001). When set, the Host App will allow enabling a per-cluster APIProxyURL fallback and will detect local proxy availability.
+ - GN_CONTROL_PLANE_KUBECONFIG — when set in the operator Deployment or Host App environment, the operator will load the control-plane kubeconfig from the specified file path inside the process/container (for example `/etc/guildnet/kubeconfig`). This is used when the operator must act on a remote control plane; it is preferred over the standard `KUBECONFIG` location when present.
+ - WORKSPACE_NGINX_UNPRIVILEGED_IMAGE — optional environment variable to override the operator's preferred unprivileged nginx image used when a Workspace image appears to be an `nginx` variant. Default: `nginxinc/nginx-unprivileged:1.25`.
 - LISTEN_LOCAL (or environment used to override `pkg/config.Config.ListenLocal`) — override the HTTP listener address
 - Local cluster image/load variables — used by Makefile to build and load images for local clusters (prefer microk8s imports). See Makefile targets rather than environment-driven behavior for production.
 
@@ -229,16 +304,64 @@ The config file path: `~/.guildnet/config.json` (created by tools like the init 
 
 - `settings.Cluster` — per-cluster runtime settings (see section above). `PutCluster` writes runtime configmap into cluster and persists to DB.
 
+Heartbeat poster configuration
+------------------------------
+Devices that run the Host App poster may need to send their heartbeat to a Host App instance running on a different local port (for example when a system-installed hostapp is already running). Use the `GN_HEARTBEAT_URL` environment variable to override the poster target URL. Example:
+
+```bash
+export GN_HEARTBEAT_URL="https://127.0.0.1:18090/api/v1/sites/heartbeat"
+export GN_HEARTBEAT_INTERVAL=5s
+
+Streaming presence events
+------------------------
+
+The server exposes a Server-Sent Events (SSE) endpoint to stream realtime presence changefeed events:
+
+- GET /v1/sites/stream
+
+Optional query parameters:
+- `clusterId` (preferred) or `cluster`: limit the stream to a single cluster id (normalized). If omitted the server will stream from all clusters that expose presence feeds.
+
+Each SSE `data` event is a JSON object and includes a canonical `clusterId` field. For backward compatibility the server also sets `cluster`:
+
+{
+  "clusterId": "<cluster-id>",
+  "event": { /* changefeed event payload */ }
+}
+
+The changefeed event payload follows the `ChangefeedEvent` DTO used elsewhere in the HTTP API and can contain `insert`, `update`, `delete` types with `before`/`after` row data.
+./bin/hostapp serve
+```
+
+When `GN_HEARTBEAT_URL` is unset the poster defaults to `https://127.0.0.1:8090/api/v1/sites/heartbeat`.
+
+Note: Heartbeat payloads accepted by the Host App must include the canonical `clusterId` field. Example: `{"clusterId":"<id>", "id":"device-name", ...}`. The server persists device rows with `clusterId` and cluster-level records use the canonical `id` field.
+
+Sites listing (multi-device UI)
+--------------------------------
+- GET `/api/v1/sites` returns per-device records aggregated across clusters. Fields include `id`, `name`, `clusterId`, `tailnetIPs`, resource hints, and `lastSeen`.
+- Records corresponding to the local Host App device are marked with `self: true` and intentionally set `lastSeen: null` so UIs can hide or de-emphasize the local device when listing “remote” sites.
+
 
 ## Examples and notes
 
-- Attach a cluster kubeconfig via API (curl example):
 
 ```bash
 curl -X POST "https://<host>:8090/api/deploy/clusters/<id>?action=attach-kubeconfig" \
   -H 'Content-Type: application/json' \
   -d '{"kubeconfig": "<base64-or-raw-kubeconfig-content>"}'
 ```
+
+## Notes
+
+The repository includes `scripts/verify-e2e.sh` (used by `make verify-e2e`) which has been updated to be compatible with multiple Headscale CLI versions and to follow redirects when probing HostApp proxy endpoints.
+
+
+## Multi-device federation (ADR)
+
+This repository contains an architecture decision and an implementation plan for multi-device federated clusters (cross-device service balancing).
+- ADR: `docs/adr/0001-multi-device-cluster.md`
+- Implementation plan: `docs/implementation/0001-multi-device-cluster-implementation.md`
 
 - Create a workspace (simple job route delegates to Workspace CR creation):
 
@@ -255,6 +378,31 @@ curl -k -X POST "https://127.0.0.1:8090/api/cluster/<clusterID>/workspaces" -H '
   - TLS certificates and `GUILDNET_MASTER_KEY` are required for secure production runs.
 
 
+Connecting multiple devices
+
+For step-by-step instructions and examples for attaching multiple devices to the same cluster (join artifact, bootstrap flow, troubleshooting and sample commands) see the authoritative guide in `DEPLOYMENT.md` — the "Connecting multiple devices to the same cluster" section. API.md keeps the API reference concise; DEPLOYMENT.md is the how-to.
+
+Device capabilities
+-------------------
+Devices are considered the authoritative source for local capabilities (CPU, memory, storage, VRAM, tailnet IPs). The Host App exposes a small heartbeat endpoint (`POST /v1/sites/heartbeat`) that devices use to report these values. The server persists the payload in the per-cluster localdb under collection `devices` and the UI/placement logic will prefer these values when making placement decisions.
+
+> Note: the federation endpoints are mounted under `/api`, so the effective path for heartbeats is `POST /api/v1/sites/heartbeat`.
+
+RBAC note: DeviceParticipant CRD
+
+The Host App may create/update `DeviceParticipant` custom resources in the `guildnet-system` namespace as an in-cluster source-of-truth for device presence. Operators should grant the Host App a namespaced Role (or a ClusterRole for cluster-wide deployments) with verbs `get,list,watch,create,update,patch` on `deviceparticipants` and `get,update,patch` on `deviceparticipants/status`. Device IDs used as Kubernetes resource names are sanitized to valid RFC 1123 DNS names (lowercase, alnum and '-', start/end alnum, max 253 chars).
+
+Sample Role and ClusterRole YAML are available under `config/rbac/`.
+
+
 ---
 
 This file was generated from code inspections of `internal/api/router.go`, `internal/settings/settings.go` and `pkg/config/config.go`, and the repository's `DEPLOYMENT.md` and `architecture.md`. If you want changes to the format or additional details (example payloads per endpoint, HTTP response shapes, or OpenAPI generation), I can add them.
+
+Recent operational changes (2025-10-21):
+- The operator image was rebuilt and loaded into local clusters as `guildnet/hostapp:local` during testing.
+- Several GuildNet CRDs (federatedclusters, federatedservices, sitestatuses, workspaces, capabilities) were applied to the test cluster to ensure all reconcilers can operate.
+- A controller naming collision was fixed by explicitly naming the proxy reconciler (`proxy-reconciler`) to avoid duplicate controller registration when multiple controllers are registered.
+- The Host App implements a synchronous fallback for Workspace creation: if the in-cluster operator does not reconcile a newly-created Workspace within a bounded timeout, Host App will create a Deployment and Service and update the Workspace.status so the UI and end-to-end tests remain functional.
+
+See `internal/controller/proxy/controller.go` for the controller naming change and `internal/api/router.go` for the Workspace create/fallback implementation.

@@ -174,6 +174,22 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		Volumes:        []corev1.Volume{{Name: "nginx-cache", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}},
 		Tolerations:    []corev1.Toleration{{Key: "node-role.kubernetes.io/control-plane", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule}},
 	}
+	// If the Workspace metadata has a scheduling hint, prefer scheduling to that specific node.
+	// Accept both label and annotation forms; normalize to lower-case DNS-1123 which matches typical node names.
+	schedule := ""
+	if ws.Labels != nil {
+		schedule = strings.TrimSpace(ws.Labels["guildnet.io/schedule-node"])
+	}
+	if schedule == "" && ws.Annotations != nil {
+		schedule = strings.TrimSpace(ws.Annotations["guildnet.io/schedule-node"])
+	}
+	if schedule != "" {
+		schedule = strings.ToLower(schedule)
+		if podSpec.NodeSelector == nil {
+			podSpec.NodeSelector = map[string]string{}
+		}
+		podSpec.NodeSelector["kubernetes.io/hostname"] = schedule
+	}
 	if strings.Contains(imgLower, "nginx") {
 		// Use non-root pod-level securityContext for the unprivileged nginx
 		// image so the container runs as uid/gid 101 and can use the
@@ -200,10 +216,15 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// If the original image looked like nginx, prefer the unprivileged
 	// nginx image so the pod can run without granting additional
 	// capabilities. If the user already provided a custom image that
-	// contains "unprivileged" we leave it alone.
+	// contains "unprivileged" we leave it alone. Make the preferred
+	// unprivileged image configurable via WORKSPACE_NGINX_UNPRIVILEGED_IMAGE.
 	if strings.Contains(imgLower, "nginx") {
+		preferred := os.Getenv("WORKSPACE_NGINX_UNPRIVILEGED_IMAGE")
+		if strings.TrimSpace(preferred) == "" {
+			preferred = "nginxinc/nginx-unprivileged:1.25"
+		}
 		if !strings.Contains(strings.ToLower(ws.Spec.Image), "unprivileged") {
-			workspaceContainer.Image = "nginxinc/nginx-unprivileged:1.25"
+			workspaceContainer.Image = preferred
 		}
 		// Ensure the container-level securityContext does not force running
 		// as root; the pod-level PodSecurityContext above will enforce uid/gid.

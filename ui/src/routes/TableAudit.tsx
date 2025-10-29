@@ -7,7 +7,11 @@ type Audit = { id: string; action: string; ts: string; diff?: any }
 
 async function fetchAudit(clusterId: string, db: string): Promise<Audit[]> {
   try {
-    const r = await fetch(apiUrl(`/api/cluster/${encodeURIComponent(clusterId)}/db/${encodeURIComponent(db)}/audit`))
+    const r = await fetch(
+      apiUrl(
+        `/api/cluster/${encodeURIComponent(clusterId)}/db/${encodeURIComponent(db)}/audit`
+      )
+    )
     if (!r.ok) return []
     return await r.json()
   } catch {
@@ -17,7 +21,10 @@ async function fetchAudit(clusterId: string, db: string): Promise<Audit[]> {
 
 export default function TableAudit() {
   const params = useParams()
-  const [events] = createResource(() => [params.clusterId!, params.dbId!] as [string, string], ([c, d]) => fetchAudit(c, d))
+  const [events] = createResource(
+    () => [params.clusterId!, params.dbId!] as [string, string],
+    ([c, d]) => fetchAudit(c, d)
+  )
   const [q, setQ] = createSignal('')
   const [action, setAction] = createSignal('')
   const filtered = createMemo(() => {

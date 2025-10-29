@@ -1,5 +1,7 @@
 package v1alpha1
 
+//go:generate controller-gen crd:trivialVersions=true paths=./... output:crd:artifacts:config=config/crd
+
 import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -322,6 +324,9 @@ var SchemeBuilder = runtime.NewSchemeBuilder(func(s *runtime.Scheme) error {
 	s.AddKnownTypes(GroupVersion,
 		&Workspace{}, &WorkspaceList{},
 		&Capability{}, &CapabilityList{},
+		&FederatedCluster{}, &FederatedClusterList{},
+		&FederatedService{}, &FederatedServiceList{},
+		&SiteStatus{}, &SiteStatusList{},
 	)
 	metav1.AddToGroupVersion(s, GroupVersion)
 	return nil

@@ -16,17 +16,19 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
-	"k8s.io/apimachinery/pkg/runtime"
+	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	crlog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
+	proxycontroller "github.com/your/module/internal/controller/proxy"
 	"github.com/your/module/internal/httpx"
 	"github.com/your/module/internal/k8s"
 	"github.com/your/module/internal/metrics"
@@ -55,9 +57,45 @@ import (
 	// New imports
 	"github.com/your/module/internal/api"
 	"github.com/your/module/internal/cluster"
+
+	hostapppkg "github.com/your/module/internal/hostapp"
+	hostappapi "github.com/your/module/internal/hostapp/api"
+
 	"github.com/your/module/internal/localdb"
 	"github.com/your/module/internal/secrets"
+
+	federation "github.com/your/module/internal/controller/federation"
 )
+
+// readMemMB attempts to read total memory in MB on Linux via /proc/meminfo.
+func readMemMB() int64 {
+	// best-effort only; return 0 when unknown
+	if data, err := os.ReadFile("/proc/meminfo"); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.HasPrefix(line, "MemTotal:") {
+				fields := strings.Fields(line)
+				if len(fields) >= 2 {
+					// value in kB
+					if v, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
+						return v / 1024
+					}
+				}
+			}
+		}
+	}
+	return 0
+}
+
+// readStorageMB returns available storage on the given path in MB (best-effort).
+func readStorageMB(path string) int64 {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err == nil {
+		// available blocks * block size
+		avail := int64(stat.Bavail) * int64(stat.Bsize)
+		return avail / (1024 * 1024)
+	}
+	return 0
+}
 
 // kubeconfigResolver implements cluster.Resolver backed by localdb credentials.
 type kubeconfigResolver struct {
@@ -89,8 +127,8 @@ func (r kubeconfigResolver) KubeconfigYAML(clusterID string) (string, error) {
 }
 
 // startOperator boots a controller-runtime manager that reconciles Workspace CRDs.
-func startOperator(ctx context.Context, restCfg *rest.Config) error {
-	scheme := runtime.NewScheme()
+func startOperator(ctx context.Context, restCfg *rest.Config, reg *cluster.Registry) error {
+	scheme := k8sruntime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
 	_ = apiv1alpha1.AddToScheme(scheme)
 	// configure controller-runtime logger (dev mode)
@@ -99,6 +137,15 @@ func startOperator(ctx context.Context, restCfg *rest.Config) error {
 	// Disable metrics and health probe servers to avoid port conflicts in embedded mode.
 	opts.Metrics.BindAddress = "0"
 	opts.HealthProbeBindAddress = "0"
+	// Enable leader election so multiple operators (devices) safely coordinate.
+	// Use a stable ID and prefer the guildnet-system namespace when available.
+	leNS := os.Getenv("K8S_NAMESPACE")
+	if strings.TrimSpace(leNS) == "" {
+		leNS = "guildnet-system"
+	}
+	opts.LeaderElection = true
+	opts.LeaderElectionID = "guildnet-operator-lock"
+	opts.LeaderElectionNamespace = leNS
 	mgr, err := ctrl.NewManager(restCfg, opts)
 	if err != nil {
 		return fmt.Errorf("manager create: %w", err)
@@ -106,6 +153,19 @@ func startOperator(ctx context.Context, restCfg *rest.Config) error {
 	r := &operator.WorkspaceReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}
 	if err := r.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setup reconciler: %w", err)
+	}
+
+	// register federation FederatedService reconciler
+	if err := (&federation.FederatedServiceReconciler{Client: mgr.GetClient(), Registry: reg}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("setup federated service reconciler: %w", err)
+	}
+	// register FederatedCluster reconciler (membership tracking)
+	if err := (&federation.FederatedClusterReconciler{Client: mgr.GetClient()}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("setup federated cluster reconciler: %w", err)
+	}
+	// register proxy controller
+	if err := (&proxycontroller.ProxyReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("setup proxy reconciler: %w", err)
 	}
 	go func() {
 		if err := mgr.Start(ctx); err != nil {
@@ -162,6 +222,29 @@ func dns1123Name(s string) string {
 	return res
 }
 
+// mirrorPublishedToConfigMap writes the host's published services list into a shared ConfigMap so
+// other devices can observe and resync. Non-fatal; best-effort.
+func mirrorPublishedToConfigMap(ctx context.Context, k *k8s.Client, clusterID string, list []localdb.PublishedService) error {
+	if k == nil || k.K == nil {
+		return nil
+	}
+	ns := "guildnet-system"
+	name := fmt.Sprintf("published-%s", dns1123Name(clusterID))
+	b, _ := json.MarshalIndent(list, "", "  ")
+	cm, err := k.K.CoreV1().ConfigMaps(ns).Get(ctx, name, metav1.GetOptions{})
+	if err == nil && cm != nil {
+		if cm.Data == nil {
+			cm.Data = map[string]string{}
+		}
+		cm.Data["published.json"] = string(b)
+		_, _ = k.K.CoreV1().ConfigMaps(ns).Update(ctx, cm, metav1.UpdateOptions{})
+		return nil
+	}
+	// create
+	_, _ = k.K.CoreV1().ConfigMaps(ns).Create(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: map[string]string{"app": "published-registry"}}, Data: map[string]string{"published.json": string(b)}}, metav1.CreateOptions{})
+	return nil
+}
+
 // deriveAgentHost attempts to pick a stable host base from job spec image or name.
 func deriveAgentHost(spec model.JobSpec) string {
 	base := strings.TrimSpace(spec.Name)
@@ -198,6 +281,51 @@ func main() {
 		}
 	}
 
+	// helper: load kubeconfig YAML either from an env var that contains
+	// the raw kubeconfig or from a path. Prefer GN_CONTROL_PLANE_KUBECONFIG,
+	// then KUBECONFIG, then ~/.guildnet/kubeconfig. Returns empty string
+	// when none found.
+	loadKubeYAML := func() string {
+		// try explicit env var first
+		tryEnv := func(v string) string {
+			v = strings.TrimSpace(v)
+			if v == "" {
+				return ""
+			}
+			// if it looks like a path and the file exists, read it
+			if strings.HasPrefix(v, "/") || strings.HasPrefix(v, "./") || strings.HasPrefix(v, "~") {
+				// expand ~
+				if strings.HasPrefix(v, "~") {
+					if h, err := os.UserHomeDir(); err == nil {
+						v = filepath.Join(h, strings.TrimPrefix(v, "~"))
+					}
+				}
+				if b, err := os.ReadFile(v); err == nil {
+					return string(b)
+				}
+			}
+			// otherwise treat env var as raw kubeconfig content
+			// sanity check: if it contains 'apiVersion' or 'clusters' assume it's kube YAML
+			if strings.Contains(v, "apiVersion:") || strings.Contains(v, "clusters:") || strings.Contains(v, "contexts:") {
+				return v
+			}
+			return ""
+		}
+		if s := tryEnv(os.Getenv("GN_CONTROL_PLANE_KUBECONFIG")); s != "" {
+			return s
+		}
+		if s := tryEnv(os.Getenv("KUBECONFIG")); s != "" {
+			return s
+		}
+		if h, err := os.UserHomeDir(); err == nil {
+			p := filepath.Join(h, ".guildnet", "kubeconfig")
+			if b, err := os.ReadFile(p); err == nil {
+				return string(b)
+			}
+		}
+		return ""
+	}
+
 	switch cmd {
 	case "init":
 		if err := config.RunInitWizard(os.Stdin, os.Stdout); err != nil {
@@ -205,24 +333,12 @@ func main() {
 		}
 		fmt.Println("config written to", config.ConfigPath())
 		return
-	case "operator":
-		// Run only the operator manager (no tsnet or HTTP server)
-		// Terminate on INT/TERM/HUP/QUIT to match typical terminal behavior (close window, Ctrl+C)
-		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
-		defer stop()
-		kcli, err := k8s.New(ctx)
-		if err != nil || kcli == nil || kcli.Rest == nil {
-			log.Fatalf("k8s config: %v", err)
-		}
-		if err := startOperator(ctx, kcli.Rest); err != nil {
-			log.Fatalf("operator start: %v", err)
-		}
-		<-ctx.Done()
-		return
 	case "serve":
 		// continue
 	default:
-		log.Fatalf("unknown command: %s (use 'init', 'serve', or 'operator')", cmd)
+		// Unknown commands fall back to serve for compatibility.
+		log.Printf("warning: unknown command '%s', defaulting to serve", cmd)
+		cmd = "serve"
 	}
 
 	cfg, err := config.Load()
@@ -267,6 +383,14 @@ func main() {
 	if strings.TrimSpace(tsSet.LoginServer) == "" {
 		// Fallback to config.json on first run to seed settings
 		tsSet = settings.Tailscale{LoginServer: cfg.LoginServer, PreauthKey: cfg.AuthKey, Hostname: cfg.Hostname}
+		_ = setMgr.PutTailscale(tsSet)
+	}
+	// Normalize any stored preauth key into canonical tskey-<base64url> form so
+	// the in-process tsnet.Server receives a valid AuthKey (handles hex and
+	// other variants). Persist the normalized form back into settings so
+	// future restarts don't repeat normalization logic.
+	if norm := ts.NormalizeAuthKey(tsSet.PreauthKey); norm != strings.TrimSpace(tsSet.PreauthKey) {
+		tsSet.PreauthKey = norm
 		_ = setMgr.PutTailscale(tsSet)
 	}
 	// Global: migrate defaults on first run
@@ -359,7 +483,14 @@ func main() {
 	}()
 
 	// Per-cluster registry (always on in prototype)
-	reg := cluster.NewRegistry(cluster.Options{StateDir: stateDir, Resolver: kubeconfigResolver{DB: ldb, Sec: sec}})
+	reg := cluster.NewRegistry(cluster.Options{StateDir: stateDir, Resolver: kubeconfigResolver{DB: ldb, Sec: sec}, GlobalDB: ldb})
+
+	// In-memory hostapp site registry (discovery/federation PoC)
+	hReg := hostapppkg.NewRegistry()
+	joinH, leaveH, hbH := hostappapi.NewSiteHandlers(hReg)
+	mux.HandleFunc("/api/site/join", joinH)
+	mux.HandleFunc("/api/site/leave", leaveH)
+	mux.HandleFunc("/api/site/heartbeat", hbH)
 
 	// New orchestration API wired with dependencies and settings change hook
 	deps := api.Deps{DB: ldb, Secrets: sec, Runner: nil, Registry: reg, OnSettingsChanged: func(kind string) {
@@ -384,6 +515,29 @@ func main() {
 	go func() {
 		if err := api.RestorePublishedMappings(context.Background(), deps); err != nil {
 			log.Printf("api: restore published mappings failed: %v", err)
+		}
+		// Multi-device startup resync (PoC): mirror published services to in-cluster ConfigMap so other devices converge
+		// and trigger a light CRD list to warm caches. Non-fatal on errors.
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if deps.Registry != nil {
+			for _, s := range deps.Registry.List() {
+				inst, err := deps.Registry.Get(ctx, s.ID)
+				if err != nil || inst == nil || inst.K8s == nil {
+					continue
+				}
+				// Read persisted published services and write into a ConfigMap
+				var list []localdb.PublishedService
+				if err := deps.DB.ListPublished(&list); err == nil {
+					if len(list) > 0 {
+						_ = mirrorPublishedToConfigMap(ctx, inst.K8s, s.ID, list)
+					}
+				}
+				// Warm-up: attempt a CRD discovery call via dynamic client (FederatedService)
+				if inst.Dyn != nil {
+					_, _ = inst.Dyn.Resource(schema.GroupVersionResource{Group: "guildnet.io", Version: "v1alpha1", Resource: "federatedservices"}).Namespace("").List(ctx, metav1.ListOptions{Limit: 1})
+				}
+			}
 		}
 	}()
 
@@ -471,12 +625,21 @@ func main() {
 		}{Snapshot: metrics.Export()})
 	})
 
-	// Kubernetes client (use existing Kubernetes; no separate local dev mode)
-	kcli, err := k8s.New(ctx)
-	if err != nil {
-		// Be tolerant in dev/first run: continue without k8s features
-		log.Printf("k8s client unavailable: %v (continuing without Kubernetes features)", err)
-		kcli = nil
+	// Kubernetes client: we no longer support implicit single-cluster mode.
+	// If a control-plane kubeconfig is provided (path or raw content), use it;
+	// otherwise, rely on the per-cluster Registry for actuation and leave k8s nil.
+	var kcli *k8s.Client
+	kubeYAML := loadKubeYAML()
+	if strings.TrimSpace(kubeYAML) != "" {
+		if kcClient, err := k8s.NewFromKubeconfig(ctx, kubeYAML, struct {
+			APIProxyURL string
+			ForceHTTP   bool
+			Dial        func(ctx context.Context, network, addr string) (net.Conn, error)
+		}{}); err == nil {
+			kcli = kcClient
+		} else {
+			log.Printf("control plane k8s client init failed: %v (continuing without control-plane client)", err)
+		}
 	}
 	var dyn dynamic.Interface
 	// Optional: local port-forward manager for pods (fallback when API server service/pod proxy is unreliable)
@@ -505,7 +668,7 @@ func main() {
 	if kcli != nil && kcli.Rest != nil {
 		if strings.TrimSpace(os.Getenv("GN_EMBED_OPERATOR")) == "1" {
 			go func() {
-				if err := startOperator(ctx, kcli.Rest); err != nil {
+				if err := startOperator(ctx, kcli.Rest, reg); err != nil {
 					log.Printf("operator start failed: %v", err)
 				}
 			}()
@@ -565,6 +728,138 @@ func main() {
 			}
 		}
 	}()
+
+	// Heartbeat poster: always-on poster that posts device capabilities periodically
+	// to the local Host App API (fixed to https://127.0.0.1:8090/v1/sites/heartbeat).
+	go func() {
+		interval := 30 * time.Second
+		if v := strings.TrimSpace(os.Getenv("GN_HEARTBEAT_INTERVAL")); v != "" {
+			if d, err := time.ParseDuration(v); err == nil {
+				interval = d
+			}
+		}
+		for _, a := range os.Args[1:] {
+			if strings.HasPrefix(a, "--heartbeat-interval=") {
+				if d, err := time.ParseDuration(strings.TrimPrefix(a, "--heartbeat-interval=")); err == nil {
+					interval = d
+				}
+			}
+		}
+		client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
+		// device id fallback
+		deviceID := cfg.Hostname
+		if hn, err := os.Hostname(); err == nil && hn != "" {
+			deviceID = hn
+		}
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(interval):
+				// build payload
+				payload := map[string]any{"id": deviceID, "name": deviceID}
+				// Try to obtain tailscale/tsnet info with a few retries; tsnet may be still starting.
+				var info *ts.InfoResult
+				var ierr error
+				for i := 0; i < 3; i++ {
+					info, ierr = ts.Info(context.Background(), tsServer)
+					if ierr == nil && info != nil && (info.IP != "" || info.FQDN != "") {
+						break
+					}
+					// small backoff
+					time.Sleep(250 * time.Millisecond)
+				}
+				if ierr != nil {
+					log.Printf("ts.Info() failed while building heartbeat: %v", ierr)
+				}
+				if info != nil {
+					ips := []string{}
+					if info.IP != "" {
+						ips = append(ips, info.IP)
+					}
+					if info.FQDN != "" {
+						ips = append(ips, info.FQDN)
+					}
+					// If ts.Info returned nothing, attempt a best-effort fallback by
+					// reading the host 'tailscale0' interface address. This helps in
+					// cases where the embedded tsnet.LocalClient hasn't populated
+					// status yet but the kernel interface exists.
+					if len(ips) == 0 {
+						if ifi, err := net.InterfaceByName("tailscale0"); err == nil && ifi != nil {
+							ifaddrs, _ := ifi.Addrs()
+							for _, a := range ifaddrs {
+								if ipnet, ok := a.(*net.IPNet); ok {
+									if ip := ipnet.IP; ip != nil && ip.To4() != nil {
+										ips = append(ips, ip.String())
+										break
+									}
+								}
+							}
+						}
+					}
+					if len(ips) > 0 {
+						payload["tailnetIPs"] = ips
+					} else {
+						log.Printf("heartbeat: ts.Info() returned no IP/FQDN; posting without tailnetIPs")
+					}
+				} else {
+					// ts.Info() returned nil; try fallback to tailscale0 interface
+					ips := []string{}
+					if ifi, err := net.InterfaceByName("tailscale0"); err == nil && ifi != nil {
+						ifaddrs, _ := ifi.Addrs()
+						for _, a := range ifaddrs {
+							if ipnet, ok := a.(*net.IPNet); ok {
+								if ip := ipnet.IP; ip != nil && ip.To4() != nil {
+									ips = append(ips, ip.String())
+									break
+								}
+							}
+						}
+					}
+					if len(ips) > 0 {
+						payload["tailnetIPs"] = ips
+					} else {
+						log.Printf("heartbeat: ts.Info() returned nil info; posting without tailnetIPs")
+					}
+				}
+				payload["cpuMilli"] = int64(runtime.NumCPU() * 1000)
+				if mb := readMemMB(); mb > 0 {
+					payload["memoryMB"] = mb
+				}
+				if sm := readStorageMB("/"); sm > 0 {
+					payload["storageMB"] = sm
+				}
+				payload["vramMB"] = 0
+				// list persisted clusters and post
+				var clusters []map[string]any
+				if err := ldb.List("clusters", &clusters); err == nil {
+					// allow overriding the heartbeat target via GN_HEARTBEAT_URL
+					hbURL := strings.TrimSpace(os.Getenv("GN_HEARTBEAT_URL"))
+					if hbURL == "" {
+						hbURL = "https://127.0.0.1:8090/api/v1/sites/heartbeat"
+					}
+					for _, c := range clusters {
+						cid := fmt.Sprint(c["id"])
+						if cid == "" {
+							continue
+						}
+						// set canonical `clusterId` only
+						payload["clusterId"] = cid
+						b, _ := json.Marshal(payload)
+						req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, hbURL, strings.NewReader(string(b)))
+						req.Header.Set("Content-Type", "application/json")
+						if resp, err := client.Do(req); err != nil {
+							log.Printf("heartbeat post cluster=%s err=%v", cid, err)
+						} else {
+							io.Copy(io.Discard, resp.Body)
+							resp.Body.Close()
+						}
+					}
+				}
+			}
+		}
+	}()
+	log.Printf("heartbeat poster enabled (always-on)")
 
 	// Smoke: resolve and attempt a tsnet dial to given id:port
 	mux.HandleFunc("/api/v1/smoke-dial", func(w http.ResponseWriter, r *http.Request) {

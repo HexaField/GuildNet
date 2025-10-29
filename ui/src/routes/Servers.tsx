@@ -12,7 +12,7 @@ import StatusPill from '../components/StatusPill'
 import Card from '../components/Card'
 import Input from '../components/Input'
 import { A, useParams } from '@solidjs/router'
-import { listClusterServers } from '../lib/api'
+import { deleteClusterWorkspace, listClusterServers } from '../lib/api'
 import { timeAgo } from '../lib/format'
 import type { Server } from '../lib/types'
 
@@ -62,7 +62,23 @@ export default function Servers() {
         <td class="py-2 pr-4">
           <StatusPill status={srv.status} />
         </td>
-        <td class="py-2 pr-4">{srv.node ?? '-'}</td>
+        <td class="py-2 pr-4">
+          <div>{srv.node ?? '-'}</div>
+          <Show
+            when={
+              srv.machineName || (srv.tailnetIPs && srv.tailnetIPs.length > 0)
+            }
+          >
+            <div class="text-xs text-neutral-500">
+              <Show when={srv.machineName}>
+                <span>{srv.machineName}</span>
+              </Show>
+              <Show when={srv.tailnetIPs && srv.tailnetIPs.length > 0}>
+                <span> ({(srv.tailnetIPs || []).join(', ')})</span>
+              </Show>
+            </div>
+          </Show>
+        </td>
         <td class="py-2 pr-4">{timeAgo(srv.created_at)}</td>
         <td class="py-2 pr-4">
           {(srv.ports ?? []).map((p) => `${p.name ?? ''}:${p.port}`).join(', ')}
@@ -74,6 +90,23 @@ export default function Servers() {
           >
             Inspect
           </A>
+          <button
+            class="inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium border ml-2 bg-red-50 dark:bg-neutral-800 hover:bg-red-100 dark:hover:bg-neutral-700 text-red-700"
+            onClick={async () => {
+              const ok = window.confirm(
+                `Shut down server “${srv.name}”? This deletes the workspace.`
+              )
+              if (!ok) return
+              const done = await deleteClusterWorkspace(clusterId(), srv.name)
+              if (!done) {
+                window.alert('Failed to shut down server.')
+                return
+              }
+              refetch()
+            }}
+          >
+            Shutdown
+          </button>
         </td>
       </tr>
     ))

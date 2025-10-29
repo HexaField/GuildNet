@@ -64,7 +64,9 @@ export class WSManager extends Emitter {
     this.state = this.retries > 0 ? 'reconnecting' : 'connecting'
     this.emit('state', this.state, this.retries)
     try {
-      try { console.info('[SSE] connecting', this.resolveUrl()) } catch {}
+      try {
+        console.info('[SSE] connecting', this.resolveUrl())
+      } catch {}
       this.es = new EventSource(this.resolveUrl())
     } catch (e) {
       this.fail(e instanceof Error ? e.message : String(e))
@@ -79,7 +81,9 @@ export class WSManager extends Emitter {
     }
     if (this.es)
       this.es.onopen = () => {
-        try { console.info('[SSE] open', this.resolveUrl()) } catch {}
+        try {
+          console.info('[SSE] open', this.resolveUrl())
+        } catch {}
         markOpenOnce()
       }
     if (this.es)
@@ -95,18 +99,54 @@ export class WSManager extends Emitter {
     if (this.es)
       this.es.onerror = async (ev) => {
         try {
-          console.error('[SSE] error event', { readyState: (this.es as EventSource).readyState, ev })
+          console.error('[SSE] error event', {
+            readyState: (this.es as EventSource).readyState,
+            ev
+          })
         } catch {}
         if (!this.didProbe) {
           this.didProbe = true
           try {
-            const res = await fetch(this.resolveUrl(), { method: 'GET', headers: { Accept: 'application/json' } })
+            const res = await fetch(this.resolveUrl(), {
+              method: 'GET',
+              headers: { Accept: 'application/json' }
+            })
             const ct = res.headers.get('content-type') || ''
             let body: any = undefined
-            if (ct.includes('application/json')) { try { body = await res.json() } catch {} } else { try { body = await res.text() } catch {} }
-            this.emit('error', { status: res.status, statusText: res.statusText, body })
+            if (ct.includes('application/json')) {
+              try {
+                body = await res.json()
+              } catch {}
+            } else {
+              try {
+                body = await res.text()
+              } catch {}
+            }
+            this.emit('error', {
+              status: res.status,
+              statusText: res.statusText,
+              body
+            })
+
+            // Special-case: server indicates there are no subscriptions.
+            // In that case treat the stream as permanently unavailable and
+            // do not attempt exponential backoff reconnects. This avoids
+            // hot-loop reconnecting when `/v1/sites/stream` returns a
+            // structured { code: 'no_subs' } body or 404.
+            const noSubs =
+              res.status === 404 || (body && body.code === 'no_subs')
+            if (noSubs) {
+              // Close without scheduling retries.
+              this.cleanup()
+              this.state = 'closed'
+              this.emit('state', this.state, this.retries, 'no_subs')
+              return
+            }
           } catch (e) {
-            this.emit('error', { probeFailed: true, message: e instanceof Error ? e.message : String(e) })
+            this.emit('error', {
+              probeFailed: true,
+              message: e instanceof Error ? e.message : String(e)
+            })
           }
         }
         this.fail('sse error')
@@ -157,7 +197,9 @@ export class WSManager extends Emitter {
       this.es.onopen = null as any
       this.es.onmessage = null as any
       this.es.onerror = null as any
-      try { this.es.close?.() } catch {}
+      try {
+        this.es.close?.()
+      } catch {}
     }
     this.es = undefined
   }
@@ -174,6 +216,13 @@ export function openLogsStream(params: {
     tail: String(params.tail ?? 200)
   })
   const url = apiUrl(`/sse/logs?${qs.toString()}`)
+  const ws = new WSManager(url)
+  return ws
+}
+
+export function openSitesStream(cluster?: string) {
+  const qs = cluster ? `?cluster=${encodeURIComponent(cluster)}` : ''
+  const url = apiUrl(`/v1/sites/stream${qs}`)
   const ws = new WSManager(url)
   return ws
 }

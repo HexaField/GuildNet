@@ -6,6 +6,8 @@ export type Server = {
   image: string
   status: 'pending' | 'running' | 'failed' | 'stopped'
   node?: string
+  machineName?: string
+  tailnetIPs?: string[]
   created_at?: string
   updated_at?: string
   url?: string
@@ -50,4 +52,24 @@ export type DeployImage = {
   label: string
   image: string
   description?: string
+}
+
+export type SiteRecord = {
+  clusterId?: string
+  id: string
+  name?: string
+  state?: string
+  tailnetIPs?: string[]
+  supportsCluster?: boolean
+  cpuMilli?: number
+  memoryMB?: number
+  storageMB?: number
+  vramMB?: number
+  lastSeen?: string
+}
+
+export type MDSummary = {
+  clusterId: string
+  namespace: string
+  name: string
 }

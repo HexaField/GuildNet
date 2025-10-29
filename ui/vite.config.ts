@@ -23,12 +23,12 @@ export default defineConfig({
       '^/(api|sse|proxy|ws)': {
         target: 'https://127.0.0.1:8090',
         changeOrigin: true,
-        secure: false,
+        secure: false
       },
       '^/$': {
         target: 'https://127.0.0.1:8090',
         changeOrigin: true,
-        secure: false,
+        secure: false
       }
     }
   },

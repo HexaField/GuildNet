@@ -1,6 +1,7 @@
 package api
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/your/module/internal/localdb"
@@ -31,8 +32,10 @@ func TestEnsureProxyFallbackOnTimeout(t *testing.T) {
 		t.Fatalf("get cluster: %v", err)
 	}
 	if changed {
-		if cs.APIProxyURL != "http://127.0.0.1:8001" {
-			t.Fatalf("proxy enabled but APIProxyURL not set as expected; got=%q", cs.APIProxyURL)
+		// Some test runs may discover a local proxy on an ephemeral port; accept
+		// any localhost proxy URL but verify it's pointing at 127.0.0.1 with HTTP.
+		if !strings.HasPrefix(cs.APIProxyURL, "http://127.0.0.1:") {
+			t.Fatalf("proxy enabled but APIProxyURL not set to localhost proxy; got=%q", cs.APIProxyURL)
 		}
 		if !cs.APIProxyForceHTTP {
 			t.Fatalf("proxy enabled but APIProxyForceHTTP not true")

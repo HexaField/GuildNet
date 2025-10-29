@@ -6,6 +6,12 @@ import type {
   Server
 } from './types'
 import { apiUrl } from './config'
+import {
+  SiteListSchema,
+  MDSummaryListSchema,
+  FederatedServiceInputSchema,
+  PerSiteStatusSchema
+} from './schemas'
 
 async function handle<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -45,12 +51,17 @@ export type ColumnDef = {
 }
 
 // Cluster-scoped database APIs
-export async function listClusterDatabases(clusterId: string): Promise<DatabaseInstance[]> {
+export async function listClusterDatabases(
+  clusterId: string
+): Promise<DatabaseInstance[]> {
   try {
-    const res = await fetch(apiUrl(`/api/cluster/${encodeURIComponent(clusterId)}/db`))
+    const res = await fetch(
+      apiUrl(`/api/cluster/${encodeURIComponent(clusterId)}/db`)
+    )
     if (!res.ok) return []
     return await res.json()
-  } catch {
+  } catch (e) {
+    console.error(e)
     return []
   }
 }
@@ -60,11 +71,14 @@ export async function createClusterDatabase(
   payload: { id: string; name?: string; description?: string }
 ): Promise<DatabaseInstance | null> {
   try {
-    const res = await fetch(apiUrl(`/api/cluster/${encodeURIComponent(clusterId)}/db`), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    })
+    const res = await fetch(
+      apiUrl(`/api/cluster/${encodeURIComponent(clusterId)}/db`),
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }
+    )
     if (!res.ok) return null
     return await res.json()
   } catch {
@@ -72,19 +86,39 @@ export async function createClusterDatabase(
   }
 }
 
-export async function deleteClusterDatabase(clusterId: string, dbId: string): Promise<boolean> {
+export async function deleteClusterDatabase(
+  clusterId: string,
+  dbId: string
+): Promise<boolean> {
   try {
-    const res = await fetch(apiUrl(`/api/cluster/${encodeURIComponent(clusterId)}/db/${encodeURIComponent(dbId)}`), { method: 'DELETE' })
+    const res = await fetch(
+      apiUrl(
+        `/api/cluster/${encodeURIComponent(clusterId)}/db/${encodeURIComponent(dbId)}`
+      ),
+      { method: 'DELETE' }
+    )
     return res.ok
-  } catch { return false }
+  } catch {
+    return false
+  }
 }
 
-export async function listClusterTables(clusterId: string, dbId: string): Promise<TableDef[]> {
+export async function listClusterTables(
+  clusterId: string,
+  dbId: string
+): Promise<TableDef[]> {
   try {
-    const res = await fetch(apiUrl(`/api/cluster/${encodeURIComponent(clusterId)}/db/${encodeURIComponent(dbId)}/tables`))
+    const res = await fetch(
+      apiUrl(
+        `/api/cluster/${encodeURIComponent(clusterId)}/db/${encodeURIComponent(dbId)}/tables`
+      )
+    )
     if (!res.ok) return []
     return await res.json()
-  } catch { return [] }
+  } catch (e) {
+    console.error(e)
+    return []
+  }
 }
 
 export async function createClusterTable(
@@ -93,12 +127,21 @@ export async function createClusterTable(
   payload: { name: string; primary_key?: string; schema: ColumnDef[] }
 ): Promise<TableDef | null> {
   try {
-    const res = await fetch(apiUrl(`/api/cluster/${encodeURIComponent(clusterId)}/db/${encodeURIComponent(dbId)}/tables`), {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
-    })
+    const res = await fetch(
+      apiUrl(
+        `/api/cluster/${encodeURIComponent(clusterId)}/db/${encodeURIComponent(dbId)}/tables`
+      ),
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }
+    )
     if (!res.ok) return null
     return await res.json()
-  } catch { return null }
+  } catch {
+    return null
+  }
 }
 
 export async function getServer(
@@ -136,7 +179,8 @@ export async function getLogs(
       { signal }
     )
     return await handle<LogLine[]>(res)
-  } catch {
+  } catch (e) {
+    console.error(e)
     return []
   }
 }
@@ -178,37 +222,69 @@ export async function listImages(signal?: AbortSignal): Promise<DeployImage[]> {
   try {
     const res = await fetch(apiUrl('/api/images'), { signal })
     return await handle<DeployImage[]>(res)
-  } catch {
+  } catch (e) {
+    console.error(e)
     return []
   }
 }
 
+// id may be present when records refer to a specific runtime instance
+// Client-side cluster record: use id as the canonical identifier (required)
 export type ClusterRecord = { id: string; name?: string; state?: string }
 
 export async function listClusters(): Promise<ClusterRecord[]> {
   try {
     const res = await fetch(apiUrl('/api/deploy/clusters'))
     if (!res.ok) return []
-    return (await res.json()) as ClusterRecord[]
-  } catch {
+    const raw = (await res.json()) as any[]
+    // Server emits deterministic cluster `id`. Use `id` as canonical field.
+    return raw.map((r) => ({
+      id: r.id as string,
+      name: r.name,
+      state: r.state
+    }))
+  } catch (e) {
+    console.error(e)
     return []
   }
 }
 
-export async function getClusterRecord(id: string): Promise<ClusterRecord | null> {
+export async function getClusterRecord(
+  id: string
+): Promise<ClusterRecord | null> {
   try {
-    const res = await fetch(apiUrl(`/api/deploy/clusters/${encodeURIComponent(id)}`))
+    const res = await fetch(
+      apiUrl(`/api/deploy/clusters/${encodeURIComponent(id)}`)
+    )
     if (!res.ok) return null
-    return (await res.json()) as ClusterRecord
-  } catch { return null }
+    const r = await res.json()
+    return { id: r.id as string, name: r.name, state: r.state }
+  } catch {
+    return null
+  }
+}
+
+export async function getClusterOverview(id: string): Promise<any | null> {
+  try {
+    const res = await fetch(
+      apiUrl(`/api/cluster/${encodeURIComponent(id)}/overview`)
+    )
+    if (!res.ok) return null
+    return await res.json()
+  } catch {
+    return null
+  }
 }
 
 export async function listClusterServers(clusterId: string): Promise<Server[]> {
   try {
-    const res = await fetch(apiUrl(`/api/cluster/${encodeURIComponent(clusterId)}/servers`))
+    const res = await fetch(
+      apiUrl(`/api/cluster/${encodeURIComponent(clusterId)}/servers`)
+    )
     if (!res.ok) return []
     return (await res.json()) as Server[]
-  } catch {
+  } catch (e) {
+    console.error(e)
     return []
   }
 }
@@ -242,7 +318,9 @@ export async function clusterHealth(
 ): Promise<'ok' | 'error' | 'unknown'> {
   try {
     const res = await fetch(
-      apiUrl(`/api/deploy/clusters/${encodeURIComponent(clusterId)}?action=health`),
+      apiUrl(
+        `/api/deploy/clusters/${encodeURIComponent(clusterId)}?action=health`
+      ),
       { method: 'POST' }
     )
     if (!res.ok) return 'unknown'
@@ -275,7 +353,9 @@ export async function attachClusterKubeconfig(
 ): Promise<boolean> {
   try {
     const res = await fetch(
-      apiUrl(`/api/deploy/clusters/${encodeURIComponent(id)}?action=attach-kubeconfig`),
+      apiUrl(
+        `/api/deploy/clusters/${encodeURIComponent(id)}?action=attach-kubeconfig`
+      ),
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -291,7 +371,9 @@ export async function attachClusterKubeconfig(
 export async function getClusterKubeconfig(id: string): Promise<string | null> {
   try {
     const res = await fetch(
-      apiUrl(`/api/deploy/clusters/${encodeURIComponent(id)}?action=kubeconfig`),
+      apiUrl(
+        `/api/deploy/clusters/${encodeURIComponent(id)}?action=kubeconfig`
+      ),
       { method: 'POST' }
     )
     if (!res.ok) return null
@@ -303,7 +385,12 @@ export async function getClusterKubeconfig(id: string): Promise<string | null> {
 
 export async function getClusterJoinConfig(id: string): Promise<string | null> {
   try {
-    const res = await fetch(apiUrl(`/api/deploy/clusters/${encodeURIComponent(id)}?action=join-config`), { method: 'POST' })
+    const res = await fetch(
+      apiUrl(
+        `/api/deploy/clusters/${encodeURIComponent(id)}?action=join-config`
+      ),
+      { method: 'POST' }
+    )
     if (!res.ok) return null
     return await res.text()
   } catch {
@@ -313,9 +400,159 @@ export async function getClusterJoinConfig(id: string): Promise<string | null> {
 
 export async function deleteClusterRecord(id: string): Promise<boolean> {
   try {
-    const res = await fetch(apiUrl(`/api/deploy/clusters/${encodeURIComponent(id)}`), {
-      method: 'DELETE'
-    })
+    const res = await fetch(
+      apiUrl(`/api/deploy/clusters/${encodeURIComponent(id)}`),
+      {
+        method: 'DELETE'
+      }
+    )
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+// Sites & FederatedService APIs
+export type SiteRecord = {
+  clusterId?: string
+  id: string
+  name?: string
+  state?: string
+  self?: boolean
+  tailnetIPs?: string[]
+  supportsCluster?: boolean
+  cpuMilli?: number
+  memoryMB?: number
+  storageMB?: number
+  vramMB?: number
+  lastSeen?: string
+}
+
+export async function listSites(): Promise<SiteRecord[]> {
+  try {
+    const res = await fetch(apiUrl('/api/v1/sites'))
+    if (!res.ok) return []
+    const data = await res.json()
+    // Normalize server-side 'cluster' -> client-side 'clusterId' so UI
+    // can rely on a single canonical field during migration.
+    try {
+      const normalized = (data || []).map((s: any) => ({
+        ...s,
+        clusterId: s.clusterId ?? s.cluster
+      }))
+      return SiteListSchema.parse(normalized) as SiteRecord[]
+    } catch (e) {
+      console.error(e)
+      return []
+    }
+  } catch (e) {
+    console.error(e)
+    return []
+  }
+}
+
+export type MDSummary = { id: string; namespace: string; name: string }
+
+export async function listFederatedServices(): Promise<MDSummary[]> {
+  try {
+    const res = await fetch(apiUrl('/api/v1/federatedservices'))
+    if (!res.ok) return []
+    const data = await res.json()
+    try {
+      return MDSummaryListSchema.parse(data) as MDSummary[]
+    } catch {
+      return []
+    }
+  } catch (e) {
+    console.error(e)
+    return []
+  }
+}
+
+export async function getPerSiteStatus(
+  ns: string,
+  name: string
+): Promise<any | null> {
+  try {
+    const url = apiUrl(
+      `/api/v1/federatedservices/per-site?ns=${encodeURIComponent(ns)}&name=${encodeURIComponent(name)}`
+    )
+    const res = await fetch(url)
+    if (!res.ok) return null
+    const data = await res.json()
+    try {
+      return PerSiteStatusSchema.parse(data)
+    } catch {
+      return data
+    }
+  } catch {
+    return null
+  }
+}
+
+export async function createFederatedService(
+  clusterId: string,
+  obj: any
+): Promise<boolean> {
+  try {
+    // validate input minimally
+    try {
+      FederatedServiceInputSchema.parse(obj)
+    } catch {
+      return false
+    }
+    const res = await fetch(
+      apiUrl(
+        `/api/v1/federatedservices/cluster?clusterId=${encodeURIComponent(clusterId)}`
+      ),
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(obj)
+      }
+    )
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+export async function updateFederatedService(
+  clusterId: string,
+  obj: any
+): Promise<boolean> {
+  try {
+    try {
+      FederatedServiceInputSchema.parse(obj)
+    } catch {
+      return false
+    }
+    const res = await fetch(
+      apiUrl(
+        `/api/v1/federatedservices/cluster?clusterId=${encodeURIComponent(clusterId)}`
+      ),
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(obj)
+      }
+    )
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+export async function deleteFederatedService(
+  clusterId: string,
+  ns: string,
+  name: string
+): Promise<boolean> {
+  try {
+    const url = apiUrl(
+      `/api/v1/federatedservices/cluster?clusterId=${encodeURIComponent(clusterId)}&ns=${encodeURIComponent(ns)}&name=${encodeURIComponent(name)}`
+    )
+    const res = await fetch(url, { method: 'DELETE' })
     return res.ok
   } catch {
     return false
@@ -349,7 +586,13 @@ export async function postClusterAction<T = any>(
 }
 
 export async function getHealthSummary(): Promise<{
-  clusters: Array<{ id: string; name?: string; status: 'ok' | 'error' | 'unknown' | string; code?: string; error?: string }>
+  clusters: Array<{
+    id: string
+    name?: string
+    status: 'ok' | 'error' | 'unknown' | string
+    code?: string
+    error?: string
+  }>
   headscale: any[]
 }> {
   try {
@@ -367,7 +610,9 @@ export async function getClusterWorkspace(
 ): Promise<any | null> {
   try {
     const res = await fetch(
-      apiUrl(`/api/cluster/${encodeURIComponent(clusterId)}/workspaces/${encodeURIComponent(name)}`)
+      apiUrl(
+        `/api/cluster/${encodeURIComponent(clusterId)}/workspaces/${encodeURIComponent(name)}`
+      )
     )
     if (!res.ok) return null
     return await res.json()
@@ -383,31 +628,70 @@ export async function getClusterWorkspaceLogs(
 ): Promise<Array<{ t: string; msg: string }>> {
   try {
     const res = await fetch(
-      apiUrl(`/api/cluster/${encodeURIComponent(clusterId)}/workspaces/${encodeURIComponent(name)}/logs?limit=${encodeURIComponent(String(limit))}`)
+      apiUrl(
+        `/api/cluster/${encodeURIComponent(clusterId)}/workspaces/${encodeURIComponent(name)}/logs?limit=${encodeURIComponent(String(limit))}`
+      )
     )
     if (!res.ok) return []
     return (await res.json()) as Array<{ t: string; msg: string }>
-  } catch {
+  } catch (e) {
+    console.error(e)
     return []
   }
 }
 
 // Published services APIs
-export type PublishedService = { cluster_id: string; service: string; addr: string; added_at: string }
+export type PublishedService = {
+  cluster_id: string
+  service: string
+  addr: string
+  added_at: string
+}
 
-export async function listPublishedServices(clusterId: string): Promise<PublishedService[]> {
+export async function listPublishedServices(
+  clusterId: string
+): Promise<PublishedService[]> {
   try {
-    const res = await fetch(apiUrl(`/api/cluster/${encodeURIComponent(clusterId)}/published-services`))
+    const res = await fetch(
+      apiUrl(`/api/cluster/${encodeURIComponent(clusterId)}/published-services`)
+    )
     if (!res.ok) return []
     return (await res.json()) as PublishedService[]
-  } catch {
+  } catch (e) {
+    console.error(e)
     return []
   }
 }
 
-export async function deletePublishedService(clusterId: string, service: string): Promise<boolean> {
+// Cluster-scoped: delete a workspace (Shutdown)
+export async function deleteClusterWorkspace(
+  clusterId: string,
+  name: string
+): Promise<boolean> {
   try {
-    const res = await fetch(apiUrl(`/api/cluster/${encodeURIComponent(clusterId)}/published-services/${encodeURIComponent(service)}`), { method: 'DELETE' })
+    const res = await fetch(
+      apiUrl(
+        `/api/cluster/${encodeURIComponent(clusterId)}/workspaces/${encodeURIComponent(name)}`
+      ),
+      { method: 'DELETE' }
+    )
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+export async function deletePublishedService(
+  clusterId: string,
+  service: string
+): Promise<boolean> {
+  try {
+    const res = await fetch(
+      apiUrl(
+        `/api/cluster/${encodeURIComponent(clusterId)}/published-services/${encodeURIComponent(service)}`
+      ),
+      { method: 'DELETE' }
+    )
     return res.ok
   } catch {
     return false

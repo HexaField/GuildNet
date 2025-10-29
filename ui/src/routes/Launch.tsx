@@ -2,7 +2,13 @@ import { createEffect, createSignal, For, Show } from 'solid-js'
 import { z } from 'zod'
 import Card from '../components/Card'
 import Input from '../components/Input'
-import { getImageDefaults, listImages, createClusterWorkspace } from '../lib/api'
+import {
+  getImageDefaults,
+  listImages,
+  createClusterWorkspace,
+  listSites,
+  type SiteRecord
+} from '../lib/api'
 import { K8S_DNS_SUFFIX, K8S_NS } from '../lib/config'
 import { pushToast } from '../components/Toaster'
 import { useNavigate, useParams } from '@solidjs/router'
@@ -52,6 +58,9 @@ export default function Launch() {
   const [busy, setBusy] = createSignal(false)
   const [errors, setErrors] = createSignal<string[]>([])
   const [showAdvanced, setShowAdvanced] = createSignal(false)
+  // Device selector
+  const [sites, setSites] = createSignal<SiteRecord[]>([])
+  const [targetDevice, setTargetDevice] = createSignal<string>('__current__')
 
   // Load presets from backend on mount
   createEffect(async () => {
@@ -63,6 +72,15 @@ export default function Launch() {
         description: i.description
       }))
     )
+  })
+
+  // Load sites for device selector (filter to this cluster)
+  createEffect(async () => {
+    const all = await listSites().catch(() => [])
+    const filtered = (all || []).filter(
+      (s) => (s.clusterId || '') === clusterId()
+    )
+    setSites(filtered)
   })
 
   // Prefill defaults by querying backend for the selected image
@@ -130,6 +148,10 @@ export default function Launch() {
       resources: { cpu: cpu() || undefined, memory: memory() || undefined },
       expose: ports()
     } as any
+    // Optional: schedule on a specific device
+    if (targetDevice() && targetDevice() !== '__current__') {
+      spec.scheduleNode = targetDevice()
+    }
     const parsed = schema.safeParse({
       image: spec.image,
       name: spec.name,
@@ -154,15 +176,28 @@ export default function Launch() {
       const res = await createClusterWorkspace(clusterId(), {
         image: spec.image,
         name: spec.name,
-        env: Object.entries(spec.env || {}).map(([name, value]) => ({ name, value })),
-        ports: (spec.expose || []).map((p: any) => ({ name: p.name, containerPort: p.port })),
+        env: Object.entries(spec.env || {}).map(([name, value]) => ({
+          name,
+          value
+        })),
+        ports: (spec.expose || []).map((p: any) => ({
+          name: p.name,
+          containerPort: p.port
+        })),
         args: spec.args,
         resources: spec.resources,
-        labels: Object.entries(spec.labels || {}).map(([name, value]) => ({ name, value }))
+        labels: Object.entries(spec.labels || {}).map(([name, value]) => ({
+          name,
+          value
+        })),
+        // Pass scheduleNode when a target device is selected; backend will honor it
+        ...(spec.scheduleNode ? { scheduleNode: spec.scheduleNode } : {})
       })
       if (res) {
         pushToast({ type: 'success', message: `Workspace ${res.id} creating` })
-        navigate(`/c/${encodeURIComponent(clusterId())}/servers/${encodeURIComponent(res.id)}`)
+        navigate(
+          `/c/${encodeURIComponent(clusterId())}/servers/${encodeURIComponent(res.id)}`
+        )
       }
     } catch (e) {
       pushToast({ type: 'error', message: (e as Error).message })
@@ -197,6 +232,31 @@ export default function Launch() {
                   onInput={(e) => setImage(e.currentTarget.value)}
                   placeholder="…or enter a custom image (e.g., ghcr.io/org/app:tag)"
                 />
+              </div>
+            </label>
+            <label class="block text-sm">
+              Target device
+              <select
+                class="mt-1 w-full rounded-md border px-3 py-2 bg-white dark:bg-neutral-900"
+                value={targetDevice()}
+                onChange={(e) => setTargetDevice(e.currentTarget.value)}
+              >
+                <option value="__current__">This device (default)</option>
+                <For each={sites()}>
+                  {(s) => (
+                    <option value={s.name || s.id}>
+                      {(s.name || s.id) +
+                        (Array.isArray(s.tailnetIPs) && s.tailnetIPs.length > 0
+                          ? ` — ${s.tailnetIPs.join(',')}`
+                          : '')}
+                    </option>
+                  )}
+                </For>
+              </select>
+              <div class="text-xs text-neutral-500 mt-1">
+                If unset, the workload launches on this device. Selecting a
+                device sets a scheduling hint so Kubernetes places the pod on
+                that node.
               </div>
             </label>
             <label class="block text-sm">

@@ -52,7 +52,8 @@ else
 fi
 
 # De-dup PIDs (avoid mapfile/readarray for macOS bash compatibility)
-if [ "${#existing_pids[@]:-0}" -gt 0 ]; then
+len=${#existing_pids[@]}
+if [ "${len:-0}" -gt 0 ]; then
   tmp=$(printf "%s\n" "${existing_pids[@]:-}" | awk 'NF' | sort -u || true)
   existing_pids=()
   if [ -n "$tmp" ]; then
@@ -136,10 +137,21 @@ if [ -n "$listener_check_cmd" ] && eval "$listener_check_cmd" >/dev/null 2>&1; t
     if echo "$exe" | grep -q "/hostapp$\|hostapp"; then ours=1; fi
   done
   if [ "$ours" -eq 0 ]; then
-    echo "Port ${PORT_PART} is in use by another process; aborting." >&2
-    eval "$listener_check_cmd" || true
-    exit 1
+    echo "Port ${PORT_PART} is in use by another process; attempting best-effort kill to free it." >&2
+    for pid in $listeners; do
+      echo "Attempting to kill pid=$pid" >&2
+      kill "$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null || true
+    done
+    sleep 1
+    # Re-check listeners; if still used, print and continue (we will still try to start)
+    if eval "$listener_check_cmd" >/dev/null 2>&1; then
+      echo "Warning: port ${PORT_PART} still in use after kill attempts:" >&2
+      eval "$listener_check_cmd" || true
+    fi
   fi
 fi
 
+# Ensure we run with the repository root as the working directory so relative
+# paths like ui/dist resolve correctly when the binary checks the CWD.
+cd "$ROOT_DIR"
 exec "$BIN" serve
