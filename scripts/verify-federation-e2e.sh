@@ -113,6 +113,18 @@ REMOTE_HOSTNAME=$(ssh -o BatchMode=yes "$REMOTE_SSH" -t 'hostname -s 2>/dev/null
 LOCAL_SCHEDULE_NODE=$(echo "$LOCAL_HOSTNAME" | tr '[:upper:]' '[:lower:]')
 REMOTE_SCHEDULE_NODE=$(echo "$REMOTE_HOSTNAME" | tr '[:upper:]' '[:lower:]')
 
+# Detect single-node cluster early (to route remote creation via local)
+SINGLE_NODE=0
+if command -v kubectl >/dev/null 2>&1; then
+  KCFG_CHECK="$LOCAL_KUBECONFIG"
+  if [ -s "$KCFG_CHECK" ]; then
+    NC=$(kubectl --kubeconfig="$KCFG_CHECK" get nodes --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo 0)
+  else
+    NC=$(kubectl get nodes --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo 0)
+  fi
+  if [ "${NC:-0}" -lt 2 ]; then SINGLE_NODE=1; fi
+fi
+
 post_local_workspace(){
   local name="$1"
   vv "Creating local workspace: ${name}"
@@ -227,12 +239,18 @@ if ! wait_workspace_local "$WS_LOCAL_NAME"; then
 fi
 
 log "Spawning code-server from remote: $WS_REMOTE_NAME"
-post_remote_workspace "$WS_REMOTE_NAME"
+REMOTE_CREATED_LOCALLY=0
+if [ "$SINGLE_NODE" = "1" ]; then
+  log "Single-node cluster detected — creating 'remote' workspace via local hostapp."
+  post_local_workspace "$WS_REMOTE_NAME"
+  REMOTE_CREATED_LOCALLY=1
+else
+  post_remote_workspace "$WS_REMOTE_NAME"
+fi
 # Fallback for single-node k0s: if remote hostapp cannot observe the Workspace quickly (due to
 # local-only kube-API), create the remote workspace via local hostapp instead to continue e2e.
-REMOTE_CREATED_LOCALLY=0
 SHORT_WAIT=60
-if ! ( TIMEOUT_SEC=$SHORT_WAIT wait_workspace_remote "$WS_REMOTE_NAME" ); then
+if [ "$REMOTE_CREATED_LOCALLY" != "1" ] && ! ( TIMEOUT_SEC=$SHORT_WAIT wait_workspace_remote "$WS_REMOTE_NAME" ); then
   log "Remote did not observe workspace within ${SHORT_WAIT}s — creating it via local hostapp as a fallback."
   post_local_workspace "$WS_REMOTE_NAME"
   if ! wait_workspace_local "$WS_REMOTE_NAME"; then
