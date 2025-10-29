@@ -351,7 +351,7 @@ Run from Device A:
 
 ```bash
 # Replace with your remote user and host
-REMOTE_SSH=field@192.168.1.52 \
+REMOTE_SSH=user@192.168.0.1 \
 VERBOSE=1 \
 scripts/verify-federation-e2e.sh
 ```
