@@ -23,6 +23,7 @@ TAILSCALE_IMAGE=${TAILSCALE_IMAGE:-tailscale/tailscale:stable}
 GN_STATE_DIR=${GN_STATE_DIR:-"$HOME/.guildnet"}
 GN_K0S_DIR=${GN_K0S_DIR:-"$GN_STATE_DIR/k0s"}
 GN_KUBECONFIG=${GN_KUBECONFIG:-"$HOME/.guildnet/kubeconfig"}
+K0S_HOST_PORT=${K0S_HOST_PORT:-16443}
 
 # CIDRs (used by tailscale routes if enabled)
 K0S_POD_CIDR=${K0S_POD_CIDR:-10.244.0.0/16}
@@ -67,6 +68,25 @@ fi
 echo "[k0s-node-up] starting k0s container" | tee -a "$LOG"
 docker rm -f guildnet-k0s >/dev/null 2>&1 || true
 
+# Select a free localhost port for kube-apiserver if the default is busy
+pick_port() {
+  local p="$1"; local max=$((p+10));
+  while [ "$p" -le "$max" ]; do
+    if command -v ss >/dev/null 2>&1; then
+      if ! ss -ltn 2>/dev/null | awk '/LISTEN/ {print}' | grep -q ":${p}\\b"; then echo "$p"; return; fi
+    elif command -v lsof >/dev/null 2>&1; then
+      if ! lsof -nP -iTCP:${p} -sTCP:LISTEN >/dev/null 2>&1; then echo "$p"; return; fi
+    else
+      # last resort: try to bind with nc
+      if ! (echo >/dev/tcp/127.0.0.1/${p}) >/dev/null 2>&1; then echo "$p"; return; fi
+    fi
+    p=$((p+1))
+  done
+  echo "$1"
+}
+K0S_HOST_PORT=$(pick_port "$K0S_HOST_PORT")
+echo "[k0s-node-up] using host API port: $K0S_HOST_PORT" | tee -a "$LOG"
+
 docker run -d \
   --name guildnet-k0s \
   --privileged \
@@ -75,7 +95,7 @@ docker run -d \
   -v "$GN_K0S_DIR/kubelet:/var/lib/kubelet" \
   -v "$GN_K0S_DIR/containerd:/var/lib/containerd" \
   -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
-  -p 127.0.0.1:16443:6443 \
+  -p 127.0.0.1:${K0S_HOST_PORT}:6443 \
   "$K0S_IMAGE" \
   sh -c "set -e; k0s controller --single --data-dir /var/lib/k0s --enable-worker >>/var/lib/k0s/k0s.log 2>&1" \
   >/dev/null
@@ -100,8 +120,8 @@ else
 fi
 
 if [ -s "$TMP_KC" ]; then
-  # Rewrite server to 127.0.0.1:16443 for local access (certs include 127.0.0.1 by default)
-  sed -E 's#(server:).*#\1 https://127.0.0.1:16443#g' "$TMP_KC" > "$GN_KUBECONFIG"
+  # Rewrite server to selected localhost port for local access
+  sed -E "s#(server:).*#\\1 https://127.0.0.1:${K0S_HOST_PORT}#g" "$TMP_KC" > "$GN_KUBECONFIG"
   chmod 600 "$GN_KUBECONFIG"
   echo "[k0s-node-up] wrote kubeconfig: $GN_KUBECONFIG" | tee -a "$LOG"
 else
