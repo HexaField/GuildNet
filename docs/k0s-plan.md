@@ -44,6 +44,11 @@ Planned next
 - Phase 7–8: Validate storage persistence and proxy/ingress parity on k0s.
 - Phase 12: Reset safeguards (avoid deleting k0s volumes unless explicitly confirmed).
 
+Recent additions
+- Added `scripts/verify-storage.sh` and `make verify-storage` to validate default StorageClass and RethinkDB PVC readiness.
+- Added `scripts/verify-tailnet-kubeapi.sh` and `make verify-tailnet-kubeapi` to validate tailnet kube-API exposure and TLS SAN coverage.
+- Hardened `make reset` to preserve k0s state and kubeconfig by default via `KEEP_K0S=1`.
+
 ## Phase 0 — Compatibility (no regressions)
 
 Tasks

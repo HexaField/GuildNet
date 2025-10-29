@@ -184,9 +184,23 @@ reset: ## Full reset: stop hostapp, headscale, tailscale, delete test clusters, 
 	@echo "[reset] Bringing down Tailscale router (if configured)";
 	@$(MAKE) router-down || true
 	@echo "[reset] Running cleanup script to remove local state under ~/.guildnet (if present)";
-	@bash ./scripts/cleanup.sh --all || true
-	@echo "[reset] Removing local GN_KUBECONFIG file: $(GN_KUBECONFIG) (if present)";
-	@if [ -f "$(GN_KUBECONFIG)" ]; then rm -f "$(GN_KUBECONFIG)" && echo "  removed $(GN_KUBECONFIG)"; else echo "  not found: $(GN_KUBECONFIG)"; fi
+	@KEEP_K0S=$${KEEP_K0S:-1}; \
+	BK="/tmp/k0s-preserve-$$USER-$$(date +%s)"; \
+	if [ "$$KEEP_K0S" = "1" ] && [ -d "$(HOME)/.guildnet/k0s" ]; then \
+		echo "[reset] KEEP_K0S=1 -> preserving $(HOME)/.guildnet/k0s"; \
+		mkdir -p "$$BK"; \
+		mv "$(HOME)/.guildnet/k0s" "$$BK/k0s"; \
+		if [ -f "$(GN_KUBECONFIG)" ]; then cp -f "$(GN_KUBECONFIG)" "$$BK/kubeconfig"; fi; \
+	fi; \
+	bash ./scripts/cleanup.sh --all || true; \
+	if [ -d "$$BK/k0s" ]; then \
+		mkdir -p "$(HOME)/.guildnet"; \
+		mv "$$BK/k0s" "$(HOME)/.guildnet/k0s"; \
+		[ -f "$$BK/kubeconfig" ] && mv "$$BK/kubeconfig" "$(GN_KUBECONFIG)" || true; \
+		echo "[reset] restored preserved k0s state and kubeconfig"; \
+	fi
+	@echo "[reset] Removing local GN_KUBECONFIG file: $(GN_KUBECONFIG) (if present and KEEP_K0S!=1)";
+	@if [ "$${KEEP_K0S:-1}" != "1" ]; then if [ -f "$(GN_KUBECONFIG)" ]; then rm -f "$(GN_KUBECONFIG)" && echo "  removed $(GN_KUBECONFIG)"; else echo "  not found: $(GN_KUBECONFIG)"; fi; else echo "  preserved due to KEEP_K0S=1"; fi
 	@echo "[reset] Removing temporary headscale/router cluster files in tmp/ (if present)";
 	@rm -f tmp/cluster-*-headscale.json tmp/cluster-*-kubeconfig || true
 	@echo "[reset] Completed. Some resources (e.g., cluster objects on remote K8s, remote Tailscale state) may remain and require manual cleanup.";
@@ -324,6 +338,13 @@ verify-k0s: ## Verify Docker-only k0s node readiness
 
 verify-operator: ## Verify CRDs and operator are installed and running
 	bash ./scripts/verify-crds-operator.sh
+
+.PHONY: verify-storage verify-tailnet-kubeapi
+verify-storage: ## Verify default StorageClass and RethinkDB PVC readiness
+	bash ./scripts/verify-storage.sh
+
+verify-tailnet-kubeapi: ## Verify kube-API is reachable over Tailnet and cert SANs include tail IP when configured
+	bash ./scripts/verify-tailnet-kubeapi.sh
 
 ts-serve-kubeapi: ## Expose local kube-API over tailnet via tailscale serve tcp
 	bash ./scripts/ts-serve-kubeapi.sh

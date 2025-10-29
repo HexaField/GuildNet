@@ -384,10 +384,10 @@ For local test environments there is a guarded convenience target that performs 
 
 ```bash
 # Requires explicit confirmation to avoid accidental data loss
-make reset MAKE_RESET_CONFIRM=1
+make reset MAKE_RESET_CONFIRM=1 [KEEP_K0S=1]
 ```
 
-This target is destructive for local state files (by default it removes `~/.guildnet` and the `GN_KUBECONFIG` file). It attempts best-effort cleanup of Docker Headscale and in-cluster subnet router, and deletes test-like clusters using the Host App API. Some remote resources may remain and require manual cleanup.
+This target is destructive for local state files (by default it removes `~/.guildnet` and the `GN_KUBECONFIG` file). Set `KEEP_K0S=1` to preserve containerized k0s state under `~/.guildnet/k0s` and the emitted kubeconfig while other state is cleaned. The target attempts best-effort cleanup of Docker Headscale and in-cluster subnet router, and deletes test-like clusters using the Host App API. Some remote resources may remain and require manual cleanup.
 
 Run the repository end-to-end verifier (this sequence exercises operator reconciliation and proxying):
 
@@ -396,6 +396,19 @@ make verify-e2e
 ```
 
 Note: `scripts/verify-e2e.sh` now uses a headscale-compatible check (`headscale nodes list`) and follows redirects when probing HostApp proxy endpoints; this makes the verifier robust across Headscale CLI versions and proxied responses.
+
+Storage and tailnet verification
+--------------------------------
+
+Quick checks are available to validate storage provisioning and tailnet kube-API exposure:
+
+```bash
+# Verify default StorageClass and RethinkDB PVC readiness
+make verify-storage
+
+# Verify kube-API is reachable over Tailnet and, if SANs were injected, cert includes tailnet IP
+make verify-tailnet-kubeapi
+```
 
 If you need to reproduce older controller-gen crashes seen during generator debugging, run `make gen` with different `controller-gen` versions in a hermetic environment.
 
