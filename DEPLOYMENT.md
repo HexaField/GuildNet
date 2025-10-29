@@ -25,7 +25,7 @@ make smoke-workspace
 
 Notes:
 - The k0s API is bound locally to 127.0.0.1:16443 by default. Tailnet exposure is layered via the Tailscale container and routing in follow-ups.
-- The node stack also starts a DinD container for local image builds; use `DOCKER_HOST=tcp://localhost:2375` only if you explicitly expose DinD, otherwise use `docker exec guildnet-dind` for builds.
+- The node stack also starts a DinD container for local image builds and exposes it on localhost (2375 without TLS, 2376 with TLS). A helper env file is written at `~/.guildnet/dind-env.sh`; `source` it to point your Docker client at DinD when needed.
 - The existing `setup-all` target prefers the Docker-only path; it will fall back to MicroK8s when necessary.
 
 Image pipeline smoke (no registry)
@@ -86,6 +86,28 @@ docker version
 ```
 
 For pushing to an in-cluster registry, ensure `make deploy-k8s-addons` created an image pull secret (or configure `K8S_IMAGE_PULL_SECRET`), tag your images with the registry host (LoadBalancer IP/DNS), and push from the DinD client. The “image pipeline smoke” avoids a registry by importing directly into the k0s containerd and remains available as a fast path.
+
+Helper: push from DinD to any registry
+--------------------------------------
+Use the convenience script to push images that exist inside the DinD daemon to a remote registry (GHCR, Docker Hub, or a private registry):
+
+```bash
+# Point your docker client at DinD (optional; the script will also source this)
+source ~/.guildnet/dind-env.sh
+
+# Push a local tag built in DinD to GHCR
+REGISTRY_USER=<gh-username> REGISTRY_PASS=$GITHUB_TOKEN \
+	scripts/dind-registry-push.sh --src gn/smoke-app:local --dest ghcr.io/<user>/gn-smoke:local
+
+# Makefile wrapper (same effect)
+make dind-image-push SRC=gn/smoke-app:local DEST=ghcr.io/<user>/gn-smoke:local REGISTRY_USER=<user> REGISTRY_PASS=$GITHUB_TOKEN
+```
+
+If you cannot or prefer not to use a registry, continue to use the local import flow:
+
+```bash
+make smoke-image-pipeline
+```
 
 
 IMPORTANT NOTE: Local code generation (controller-gen)

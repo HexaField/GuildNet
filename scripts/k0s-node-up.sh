@@ -174,10 +174,15 @@ if [ "${DIND_TLS:-0}" != "0" ]; then
   mkdir -p "$GN_K0S_DIR/dind-certs"
   TLS_ARGS="-e DOCKER_TLS_CERTDIR=/certs -v $GN_K0S_DIR/dind-certs:/certs"
 fi
+PORT_ARGS="-p 127.0.0.1:2375:2375"
+if [ "${DIND_TLS:-0}" != "0" ]; then
+  PORT_ARGS="-p 127.0.0.1:2376:2376"
+fi
 docker run -d \
   --name guildnet-dind \
   --privileged \
   -v "$GN_K0S_DIR/dind:/var/lib/docker" \
+  $PORT_ARGS \
   $TLS_ARGS \
   "$DIND_IMAGE" \
   >/dev/null

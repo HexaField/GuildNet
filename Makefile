@@ -450,3 +450,11 @@ deploy-networkpolicies: ## Apply recommended network policies for workspace isol
 	else \
 		echo "Kubernetes API not reachable; skipping networkpolicies"; \
 	fi
+
+# ---------- DinD / Registry helpers ----------
+.PHONY: dind-image-push
+
+dind-image-push: ## Push an image from DinD to a registry (usage: make dind-image-push SRC=<img:tag> DEST=<registry/repo:tag>)
+	@[ -n "$(SRC)" ] || { echo "SRC=<image:tag> required"; exit 2; }
+	@[ -n "$(DEST)" ] || { echo "DEST=<registry/repo:tag> required"; exit 2; }
+	SRC_IMG=$(SRC) DEST_IMG=$(DEST) REGISTRY_USER=$(REGISTRY_USER) REGISTRY_PASS=$(REGISTRY_PASS) bash ./scripts/dind-registry-push.sh

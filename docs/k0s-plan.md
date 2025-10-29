@@ -1,6 +1,6 @@
 # GuildNet k0s-in-Docker Implementation Plan
 
-Status: In progress • Date: 2025-10-29 • Scope: Make Docker-only the default runtime (k0s + Tailscale + DinD), preserving existing API/UX and multi-device federation
+Status: In progress • Date: 2025-10-30 • Scope: Make Docker-only the default runtime (k0s + Tailscale + DinD), preserving existing API/UX and multi-device federation
 
 This document operationalizes the ADR “Fully Containerized GuildNet Architecture with Cross-Device Federation over Tailscale” into concrete, verifiable engineering tasks. It keeps Host App API and existing flows stable while making containerized k0s the default path.
 
@@ -30,16 +30,19 @@ Done
 - Phase 1–2: Containerized k0s node stack with kubeconfig emission and dynamic API port selection. Scripts added: `k0s-node-up.sh`, `k0s-node-down.sh`, `attach-local-k0s.sh`, `verify-k0s.sh`. DinD enabled by default; image pipeline smoke implemented.
 - Phase 11 (partial): E2E hardened for single-node/local-only API. Federation verifier skips remote perspective when unreachable and relaxes placement when both workspaces land on one node. Build/Lint/Tests: PASS.
 - Docs: `DEPLOYMENT.md` and `architecture.md` updated with Docker-only flow and e2e behavior notes.
+ - Phase 6: Operator deployed on k0s and verified. CRDs present (`deviceparticipants`, `workspaces`, etc.); DeviceParticipant CRs are created in `guildnet-system` and workspaces reconcile to Running.
+ - Phase 4 (partial): DinD TLS option implemented and exposed on localhost (2375/2376) with helper env at `~/.guildnet/dind-env.sh`. Added `scripts/dind-registry-push.sh` and `make dind-image-push` for registry pushes.
 
 In progress
 - Phase 3: Tailscale container is started automatically when `TS_AUTHKEY` is set; optional `TS_SERVE_KUBEAPI=1` will configure `tailscale serve tcp` to expose the kube-API over the tailnet. SAN coverage for tailnet IP/MagicDNS is pending.
 - Phase 5/9/10: Make defaults + bootstrap polish + docs alignment. Scripts and targets exist; final defaultization and README/API polish underway.
+ - Phase 7/8: Storage persistence validation (PVCs survive restarts) and proxy/ingress parity checks on k0s.
 
 Planned next
-- Phase 6: Deploy in-cluster operator on k0s with RBAC; validate DeviceParticipant CR and published-* mirroring.
-- Phase 4: Harden DinD with TLS and integrate registry push/pull path (keep local containerd import as fallback).
+- Phase 3: Validate tailnet kube-API access (serve + SANs) across devices and document.
+- Phase 4: Optional in-cluster registry path docs and Makefile wiring (current push helper covers external registries; local import remains the default fast path).
 - Phase 7–8: Validate storage persistence and proxy/ingress parity on k0s.
-- Phase 12: Migration helper and reset safeguards.
+- Phase 12: Reset safeguards (avoid deleting k0s volumes unless explicitly confirmed).
 
 ## Phase 0 — Compatibility (no regressions)
 
