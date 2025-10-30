@@ -8,7 +8,7 @@ This document operationalizes the ADR “Fully Containerized GuildNet Architectu
 
 - Production-first defaults, no special dev/local modes. Everything works out-of-the-box.
 - Preserve current APIs, deterministic cluster IDs, bootstrap, per‑cluster tsnet connectors, and DB flows.
-- Do not break existing helpers during transition (MicroK8s remains available, marked legacy later).
+- MicroK8s is no longer supported; repository is k0s-in-Docker only.
 
 Acceptance
 - Existing Make targets and flows keep working while the new path is added and becomes the default.
@@ -52,8 +52,8 @@ Recent additions
 ## Phase 0 — Compatibility (no regressions)
 
 Tasks
-- Keep MicroK8s helpers working during transition.
-- No behavior changes to Host App HTTP API, reverse proxy priority, or DB/CRD semantics.
+- Remove MicroK8s helpers and references.
+- Keep Host App HTTP API, reverse proxy priority, and DB/CRD semantics unchanged.
 
 Acceptance
 - Health endpoints and e2e checks pass with current flow while new path is introduced.
@@ -120,7 +120,7 @@ Tasks
   - `node-down` → `scripts/k0s-node-down.sh`
   - `deploy-k0s-node` → tailscale up + k0s up + kubeconfig emit
   - `attach-local-node` → POST `/bootstrap` with emitted kubeconfig
-- Update `setup-all` to prefer Docker+k0s by default; keep MicroK8s on explicit opt-in.
+- Update `setup-all` to provision Docker+k0s only (MicroK8s removed).
 
 Acceptance
 - `make setup-all` provisions the containerized node and completes existing e2e checks.
@@ -133,7 +133,7 @@ Tasks
 - Confirm `DeviceParticipant` CRD upsert and ConfigMap mirroring (`guildnet-system/published-<id>`).
 
 Acceptance
-- Operator reconciles `Workspace` CRs into Deployments/Services on k0s as it does on MicroK8s.
+- Operator reconciles `Workspace` CRs into Deployments/Services on k0s.
 
 ## Phase 7 — Storage and persistence
 
@@ -169,7 +169,7 @@ Acceptance
 ## Phase 10 — Documentation updates
 
 Required updates (commit alongside implementation):
-- `README.md`: Docker-only quickstart (tailscale + k0s + DinD); MicroK8s marked legacy.
+- `README.md`: Docker-only quickstart (tailscale + k0s + DinD); MicroK8s removed.
 - `DEPLOYMENT.md`: containerized node steps, volumes, route advertising, registry flow, verification.
 - `architecture.md`: per-device containers (Tailscale, k0s, DinD, Host App, Operator) and tailnet-only links.
 - `API.md`: clarify that deterministic ID and bootstrap semantics apply equally to k0s kubeconfig; show example with emitted kubeconfig.
@@ -190,7 +190,6 @@ Acceptance
 ## Phase 12 — Migration and rollback
 
 Tasks
-- `scripts/node-migrate.sh`: guide migration from MicroK8s to k0s (export kubeconfig, apply CRDs, deploy DB/operator, re-bootstrap).
 - Ensure `make reset` does not remove k0s volumes unless explicitly confirmed.
 
 Acceptance

@@ -8,11 +8,11 @@ NAMESPACE=${OPERATOR_NAMESPACE:-guildnet-system}
 IMG_PULL_SECRET=${K8S_IMAGE_PULL_SECRET:-}
 IMAGE=${OPERATOR_IMAGE:-ghcr.io/your/module/hostapp:latest}
 
-# Normalize local dev image names: when using a ':local' tag we usually import
-# them into microk8s as 'docker.io/<repo>:local'. If OPERATOR_IMAGE looks like
-# a local tag (ends with ':local') and doesn't already have a registry prefix
-# (i.e. contains no '.' in the first path segment), prefer the docker.io form
-# so the runtime resolves the same ref we imported.
+# Normalize local dev image names: when using a ':local' tag and loading into a
+# local runtime (k0s/containerd), keep refs consistent. If OPERATOR_IMAGE looks
+# like a local tag (ends with ':local') and doesn't already have a registry
+# prefix (i.e. contains no '.' in the first path segment), prefer the
+# docker.io/<repo>:local form so the runtime resolves the same ref we imported.
 if echo "$IMAGE" | grep -q ":local$"; then
   # If image already starts with a domain like 'ghcr.io' or 'docker.io', keep it
   if ! echo "$IMAGE" | grep -qE "^[^/]+\.[^/]+/"; then
@@ -22,7 +22,7 @@ fi
 
 # Prefer 'Never' for local dev images (e.g. tags that include ':local') so
 # container runtimes don't attempt to pull from a registry when the image is
-# loaded locally (microk8s import). Default to IfNotPresent.
+# loaded locally (k0s/containerd import). Default to IfNotPresent.
 case "$IMAGE" in
   *:local)
     IMAGE_PULL_POLICY=Never
@@ -174,7 +174,7 @@ fi
 echo "Operator deployment applied in namespace ${NAMESPACE}"
 
 # If no image pull secret was configured, ensure any previous imagePullSecrets
-# are removed from the Deployment so clusters that only use local images (e.g. microk8s)
+# are removed from the Deployment so clusters that only use local images
 # don't attempt to fetch from a registry using a missing secret.
 if [ -z "${IMG_PULL_SECRET:-}" ] || [ "$USE_IMG_PULL_SECRET" -eq 0 ]; then
   echolog() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
@@ -184,5 +184,5 @@ fi
 
 # If running in a local cluster and the image appears to be a remote GHCR image, warn the user
 if echo "${IMAGE}" | grep -q "ghcr.io" 2>/dev/null; then
-  echo "[operator] NOTE: operator image appears to be hosted on ghcr.io; ensure the target cluster can pull this image or import it into microk8s before deploying"
+  echo "[operator] NOTE: operator image appears to be hosted on ghcr.io; ensure the target cluster can pull this image or import it into local k0s (e.g., docker exec guildnet-k0s ctr images import /path/image.tar) before deploying"
 fi

@@ -1,46 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# microk8s-setup.sh
-# Start microk8s (if not running), enable community addons useful for GuildNet,
-# and write a kubeconfig that other machines can use (optionally replacing the
-# API server host with TAILSCALE_IP or KUBE_API_SERVER_OVERRIDE).
-
-ROOT=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-LOGFILE=${LOGFILE:-/tmp/microk8s-setup.log}
-echolog() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" | tee -a "$LOGFILE"; }
-
-
-need() { command -v "$1" >/dev/null 2>&1 || return 1; }
-
-# Auto-install microk8s via snap if not present (requires sudo)
-if ! need microk8s; then
-  echolog "microk8s not found. Attempting to auto-install via snap (requires sudo)."
-  if ! need snap; then
-    echolog "snap not found. Attempting to install snapd via package manager."
-    if [ -x "$(command -v apt-get)" ]; then
-      echolog "Installing snapd via apt-get"
-      sudo apt-get update && sudo apt-get install -y snapd
-    else
-      echolog "Unsupported OS for auto-install. Please install snapd and microk8s manually."; exit 2
-    fi
-  fi
-  echolog "Installing microk8s via snap (this requires network and sudo)"
-  sudo snap install microk8s --classic || { echolog "snap install microk8s failed"; exit 2; }
-  echolog "microk8s installed via snap"
-fi
-
-echolog "Ensuring microk8s is running (may require sudo)"
-try_status() {
-  # Run microk8s status, preferring sudo (some installs require it)
-  if sudo microk8s status --wait-ready >/dev/null 2>&1; then
-    return 0
-  fi
-  if microk8s status --wait-ready >/dev/null 2>&1; then
-    return 0
-  fi
-  return 1
-}
+# Deprecated: MicroK8s flow removed. This repository is k0s-in-Docker only.
+echo "[microk8s-setup] This helper is deprecated. Use scripts/k0s-node-up.sh instead." >&2
+echo "[microk8s-setup] Example: bash scripts/k0s-node-up.sh (emits ~/.guildnet/kubeconfig)" >&2
+exit 2
 
 if ! try_status; then
   echolog "Starting microk8s (may require sudo)"

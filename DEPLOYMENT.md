@@ -2,7 +2,7 @@ GuildNet — Production Deployment Guide
 Containerized node (Docker-only, k0s)
 -------------------------------------
 
-In addition to legacy MicroK8s, GuildNet now supports a Docker-only runtime using k0s inside a privileged container per device, plus optional Tailscale and Docker-in-Docker for image builds. This path is the new default for local and production-style setups where only Docker is available on the host.
+GuildNet now uses a Docker-only runtime using k0s inside a privileged container per device, plus optional Tailscale and Docker-in-Docker for image builds. This path is the default for local and production-style setups.
 
 Quick path (one-liners):
 
@@ -26,7 +26,7 @@ make smoke-workspace
 Notes:
 - The k0s API is bound locally to 127.0.0.1:16443 by default. Tailnet exposure is layered via the Tailscale container and routing in follow-ups.
 - The node stack also starts a DinD container for local image builds and exposes it on localhost (2375 without TLS, 2376 with TLS). A helper env file is written at `~/.guildnet/dind-env.sh`; `source` it to point your Docker client at DinD when needed.
-- The existing `setup-all` target prefers the Docker-only path; it will fall back to MicroK8s when necessary.
+- The `setup-all` target provisions the Docker-only path; MicroK8s fallback has been removed.
 
 Image pipeline smoke (no registry)
 ----------------------------------
@@ -170,7 +170,7 @@ make deploy-operator
 ```
 
 This will build or ensure the operator image is available to your cluster and then run `./scripts/deploy-operator.sh` to apply the operator manifests to the cluster.
-Import the operator image into microk8s prior to running the deploy script.
+Note: MicroK8s import path has been removed; prefer pushing to a registry or importing into k0s containerd from within the k0s container.
 
 Verify operator status with kubectl (quick checks):
 
@@ -192,26 +192,26 @@ If you cannot push to a container registry from your environment, use the local-
 docker build --platform=linux/amd64 -f scripts/Dockerfile.operator -t registry.local/guildnet/hostapp:local-amd64 .
 ```
 
-2) Export the image and copy it to your microk8s host (or run locally there):
+2) Export the image and copy it to your k0s host (or run locally there or inside DinD):
 
 ```bash
 docker save -o /tmp/op-amd64.tar registry.local/guildnet/hostapp:local-amd64
-scp /tmp/op-amd64.tar user@microk8s-host:/tmp/
+scp /tmp/op-amd64.tar user@k0s-host:/tmp/
 ```
 
-3) Import into microk8s containerd and confirm digest:
+3) Import into k0s containerd and confirm digest (inside the k0s container):
 
 ```bash
-sudo microk8s ctr images import /tmp/op-amd64.tar
-sudo microk8s ctr images ls | grep guildnet/hostapp
+ctr -n k8s.io images import /tmp/op-amd64.tar
+ctr -n k8s.io images ls | grep guildnet/hostapp
 ```
 
 4) Patch the operator Deployment to use the imported image tag (or digest) and set imagePullPolicy to IfNotPresent or Never to avoid kubelet attempting to pull from external registries:
 
 ```bash
-sudo microk8s kubectl -n guildnet-system set image deployment/workspace-operator operator=registry.local/guildnet/hostapp:local-amd64
-sudo microk8s kubectl -n guildnet-system patch deployment workspace-operator -p '{"spec":{"template":{"spec":{"containers":[{"name":"operator","imagePullPolicy":"IfNotPresent"}]}}}}'
-sudo microk8s kubectl -n guildnet-system rollout restart deployment workspace-operator
+kubectl -n guildnet-system set image deployment/workspace-operator operator=registry.local/guildnet/hostapp:local-amd64
+kubectl -n guildnet-system patch deployment workspace-operator -p '{"spec":{"template":{"spec":{"containers":[{"name":"operator","imagePullPolicy":"IfNotPresent"}]}}}}'
+kubectl -n guildnet-system rollout restart deployment workspace-operator
 ```
 
 5) If the operator needs to manage other clusters, mount the control-plane kubeconfig into the operator Deployment and set the environment variable `GN_CONTROL_PLANE_KUBECONFIG` to the mounted path (e.g., `/etc/guildnet/kubeconfig`). The operator will load kubeconfig from this env var first.
@@ -367,7 +367,7 @@ In production you generally do NOT use a local `kubectl proxy`. If you must, exp
 7) Verify basic flow (easy Makefile shortcuts)
 
 Operational note (2025-10-21):
-- During recent local testing the operator image was rebuilt and imported into microk8s with the tag `guildnet/hostapp:local` and the operator Deployment was patched to use that image. Several CRDs in `config/crd/bases/` were applied to the test cluster to ensure all reconcilers are available (federatedclusters, federatedservices, sitestatuses, workspaces, capabilities).
+- During recent local testing the operator image was rebuilt and loaded into k0s (or pulled from registry) with the tag `guildnet/hostapp:local` and the operator Deployment was patched to use that image. Several CRDs in `config/crd/bases/` were applied to the test cluster to ensure all reconcilers are available (federatedclusters, federatedservices, sitestatuses, workspaces, capabilities).
 
 If you follow the local image import flow, remember to set imagePullPolicy to `IfNotPresent` or `Never` for local tags and perform a `kubectl -n guildnet-system rollout restart deployment workspace-operator` after updating the image.
 
@@ -451,8 +451,8 @@ make multi-device-joiner
 ```
 
 This will:
-- Device A: start Headscale, bring up tailscale router, provision microk8s, apply CRDs/addons, deploy operator, start Host App, and emit a `guildnet.config` join file.
-- Device B: join tailscale, provision microk8s, apply CRDs/addons, deploy operator, generate `guildnet.config`, and POST it to Device A’s Host App `/bootstrap`.
+- Device A: start Headscale, bring up tailscale router, provision k0s-in-Docker, apply CRDs/addons, deploy operator, start Host App, and emit a `guildnet.config` join file.
+- Device B: join tailscale, provision k0s-in-Docker, apply CRDs/addons, deploy operator, generate `guildnet.config`, and POST it to Device A’s Host App `/bootstrap`.
 
 Diagnostics and verification:
 
@@ -497,17 +497,15 @@ Connecting multiple devices to the same cluster (explicit steps)
 This section shows the manual sequence to attach multiple Host App instances (devices) to the same Kubernetes cluster and to share published services. The `make multi-device-*` targets automate this, but doing the steps manually helps when debugging or customizing the flow.
 
 Prerequisites
-- A target Kubernetes cluster with a kubeconfig accessible from at least one device.
-- On each device: Host App (binary or built from repo), `kubectl`, and optionally `microk8s` for single-node testing.
+- A target Kubernetes cluster with a kubeconfig accessible from at least one device (use scripts/k0s-node-up.sh to provision local k0s and emit ~/.guildnet/kubeconfig).
+- On each device: Host App (binary or built from repo), `kubectl`, and Docker for k0s-in-Docker runtime.
 - Optional but recommended: tailscale/headscale so devices can reach each other over a secure tailnet.
 
 Steps (manual)
-1) Prepare the kubeconfig on the primary device (Device A). For microk8s:
+1) Prepare the kubeconfig on the primary device (Device A). For k0s-in-Docker:
 
 ```bash
-sudo microk8s status --wait-ready
-mkdir -p ~/.guildnet
-microk8s config > ~/.guildnet/kubeconfig
+scripts/k0s-node-up.sh
 export KUBECONFIG=~/.guildnet/kubeconfig
 ```
 
@@ -598,7 +596,7 @@ Requirements:
 Troubleshooting tips
 - If scripts fail with "set: Illegal option -o pipefail" or `syntax` errors, make sure you run them under `bash` (not `/bin/sh`). The orchestrator now invokes remote helpers with `bash`.
 - If `docker buildx --load` is missing on a host, `scripts/agent-build-load.sh` falls back to `docker build`.
-- When importing images to microk8s use `sudo microk8s ctr images import /tmp/image.tar` and set `imagePullPolicy: IfNotPresent` on operator Deployment to prefer local images.
+- When importing images to local k0s, use `docker exec guildnet-k0s ctr images import /tmp/image.tar` and set `imagePullPolicy: IfNotPresent` (or `Never` for `:local` tags) on the operator Deployment to prefer local images.
 - To confirm cross-device service mirrors, check for ConfigMaps named `guildnet-system/published-<id>` in the cluster; these are the mirrored published service mappings devices use to resync.
 
 Deterministic cluster identity and multi-device attach

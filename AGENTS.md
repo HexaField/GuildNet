@@ -16,4 +16,6 @@ ALWAYS update API.md, architecture.md and DEPLOYMENT.md with any relevant change
 
 Always update planning docs with progress on tasks.
 
+Do not leave deprecated code or comments in the codebase. Remove any code that is no longer needed.
+
 Use /tmp for temporary files, never the project directory.

@@ -71,14 +71,7 @@ Verification:
 - Ensure local tailscaled / router is running: `make router-daemon` or check status with `make router-status`
 - Verify routes are approved and visible in Headscale: `make headscale-approve-routes`
 
-### Deploy cluster (legacy MicroK8s)
-
-You can still use MicroK8s if preferred: `bash ./scripts/microk8s-setup.sh` (writes kubeconfig to `$(GN_KUBECONFIG)`). After the cluster is ready, install addons and RethinkDB with `make deploy-k8s-addons` and deploy the operator with `make deploy-operator`.
-
-Verification:
-
-- Verify Kubernetes API connectivity & nodes: `make diag-k8s`
-- Verify deployed addons and operator reconciliation: `make verify-e2e`
+<!-- MicroK8s path removed: repository is k0s-in-Docker only -->
 
 ### Launch Host App server
 

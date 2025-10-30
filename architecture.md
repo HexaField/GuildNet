@@ -138,7 +138,7 @@ For a simplified multi-device flow (Device A host + Device B joiner), see the mu
 - Make targets: `make multi-device-host`, `make multi-device-joiner`
 - Script: `scripts/multi-device-setup.sh`
 
-These orchestrate Headscale/tailscale, microk8s, CRDs/addons, operator, Host App startup, and `/bootstrap` attach in one step per device.
+These orchestrate Headscale/tailscale, k0s-in-Docker, CRDs/addons, operator, Host App startup, and `/bootstrap` attach in one step per device.
  - Multi-device resilience: the embedded/in-cluster operator uses controller-runtime leader election so only one leader reconciles at a time across devices. Published service mappings are mirrored into an in-cluster ConfigMap (`guildnet-system/published-<id>`) which allows devices to resync published endpoints consistently after restarts.
 - The Registry builds and caches `Instance` objects. Each `Instance` encapsulates:
   - per-cluster SQLite (`internal/localdb`)
@@ -268,16 +268,16 @@ Note: The verifier `scripts/verify-e2e.sh` was recently updated to be more robus
 
 ### Developer & deployment workflow
 
-- `scripts/microk8s-setup.sh` — provision microk8s and write kubeconfig to `~/.guildnet/kubeconfig`.
+- `scripts/k0s-node-up.sh` — provision k0s-in-Docker and write kubeconfig to `~/.guildnet/kubeconfig`.
 - `scripts/deploy-metallb.sh` — install MetalLB for LoadBalancer IPs in local clusters.
-- `scripts/deploy-operator.sh` — apply CRDs, create `guildnet-system` namespace and deploy the in-cluster operator (image configurable via env/IMAGE). The script can be extended to load local images into microk8s for dev.
+- `scripts/deploy-operator.sh` — apply CRDs, create `guildnet-system` namespace and deploy the in-cluster operator (image configurable via env/IMAGE).
 - `scripts/run-hostapp.sh` — recommended dev flow; sets `KUBECONFIG=~/.guildnet/kubeconfig` when present, stops any existing hostapp listening on the chosen port, and starts `bin/hostapp serve` with an embedded operator.
 
 ### Future small improvements (suggestions)
 
 - Add a short `README` snippet or `docs/bootstrap.md` showing the exact `POST /bootstrap` JSON and form upload shape and an example `guildnet.config`.
-- Add a `make recreate-dev` or `make dev-setup` target that wires `scripts/microk8s-setup.sh`, `scripts/deploy-metallb.sh` and `kubectl apply -f k8s/rethinkdb.yaml` for easier local setup.
-- Make `scripts/deploy-operator.sh` accept a `LOCAL_IMAGE` argument or provide instructions to import the operator image into microk8s when necessary for local operator image testing.
+- Add a `make recreate-dev` or `make dev-setup` target that wires `scripts/k0s-node-up.sh`, `scripts/deploy-metallb.sh` and `kubectl apply -f k8s/rethinkdb.yaml` for easier local setup.
+- Make `scripts/deploy-operator.sh` accept a `LOCAL_IMAGE` argument or provide instructions to import the operator image via DinD/registry when necessary for local operator image testing.
 
 If you want, I can add any of the small follow-ups above (README snippet, Make target, or deploy-operator enhancements).
 

@@ -313,7 +313,7 @@ The config file path: `~/.guildnet/config.json` (created by tools like the init 
  - GN_CONTROL_PLANE_KUBECONFIG — when set in the operator Deployment or Host App environment, the operator will load the control-plane kubeconfig from the specified file path inside the process/container (for example `/etc/guildnet/kubeconfig`). This is used when the operator must act on a remote control plane; it is preferred over the standard `KUBECONFIG` location when present.
  - WORKSPACE_NGINX_UNPRIVILEGED_IMAGE — optional environment variable to override the operator's preferred unprivileged nginx image used when a Workspace image appears to be an `nginx` variant. Default: `nginxinc/nginx-unprivileged:1.25`.
 - LISTEN_LOCAL (or environment used to override `pkg/config.Config.ListenLocal`) — override the HTTP listener address
-- Local cluster image/load variables — used by Makefile to build and load images for local clusters (prefer microk8s imports). See Makefile targets rather than environment-driven behavior for production.
+- Local cluster image/load variables — used by Makefile to build and load images for local clusters (prefer k0s containerd import or pushing via DinD to a registry). See Makefile targets rather than environment-driven behavior for production.
 
 ### Runtime settings stored in localdb (via `settings.Manager`)
 

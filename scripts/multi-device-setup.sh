@@ -38,10 +38,10 @@ if [[ "$MODE" == "host" ]]; then
   make router-install || true
   make router-up || true
 
-  # Kubernetes (microk8s helper)
+  # Kubernetes (k0s-in-Docker helper)
   if [[ ! -f "$HOME/.guildnet/kubeconfig" ]]; then
-    echo "[host] setting up microk8s and kubeconfig"
-    bash ./scripts/microk8s-setup.sh "$HOME/.guildnet/kubeconfig"
+    echo "[host] bringing up k0s (Docker) and writing kubeconfig"
+    TS_SERVE_KUBEAPI=${TS_SERVE_KUBEAPI:-0} TS_ADD_SANS=${TS_ADD_SANS:-0} bash ./scripts/k0s-node-up.sh
   fi
 
   echo "[host] deploying k8s addons (CRDs, MetalLB, RethinkDB)"
@@ -80,10 +80,10 @@ fi
 echo "[joiner] installing tailscale and bringing it up"
 make setup-tailscale || true
 
-# Kubernetes (microk8s helper)
+# Kubernetes (k0s-in-Docker helper)
 if [[ ! -f "$HOME/.guildnet/kubeconfig" ]]; then
-  echo "[joiner] setting up microk8s and kubeconfig"
-  bash ./scripts/microk8s-setup.sh "$HOME/.guildnet/kubeconfig"
+  echo "[joiner] bringing up k0s (Docker) and writing kubeconfig"
+  TS_SERVE_KUBEAPI=${TS_SERVE_KUBEAPI:-0} TS_ADD_SANS=${TS_ADD_SANS:-0} bash ./scripts/k0s-node-up.sh
 fi
 
 echo "[joiner] deploying k8s addons (CRDs, MetalLB, RethinkDB)"

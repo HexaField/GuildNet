@@ -21,7 +21,7 @@ PROVIDER ?= lan
 	agent-build \
 	crd-apply operator-run operator-build db-health \
 	setup-headscale setup-tailscale setup-all \
-	# Local disposable cluster helper removed; use microk8s or set KUBECONFIG
+	# Local disposable cluster helper removed; use k0s-node-up.sh or set KUBECONFIG
 	deploy-k8s-addons deploy-operator deploy-hostapp verify-e2e \
 	diag-router diag-k8s diag-db headscale-approve-routes
 multi-device-host: ## One-command bootstrap of Device A (Headscale+cluster+operator+Host App)
@@ -90,20 +90,17 @@ setup-headscale: ## Setup Headscale (Docker) and bootstrap preauth
 setup-tailscale: ## Setup Tailscale router (enable forwarding, up, approve routes)
 	bash ./scripts/setup-tailscale.sh
 
-setup-all: ## One-command: Headscale up -> LAN sync -> ensure Kubernetes (microk8s) -> Headscale namespace -> router DS -> addons -> operator -> hostapp -> verify
+setup-all: ## One-command: Headscale up -> LAN sync -> ensure Kubernetes (k0s in Docker) -> Headscale namespace -> router DS -> addons -> operator -> hostapp -> verify
 	@CL=$${CLUSTER:-$${GN_CLUSTER_NAME:-default}}; \
 	echo "[setup-all] Using cluster: $$CL"; \
 	$(MAKE) headscale-up; \
 	$(MAKE) env-sync-lan; \
-	# Ensure Kubernetes is reachable; if not, try containerized k0s first, then microk8s as fallback
+	# Ensure Kubernetes is reachable; if not, bring up containerized k0s
 	ok=1; kubectl --request-timeout=3s get --raw=/readyz >/dev/null 2>&1 || ok=0; \
 	if [ $$ok -eq 0 ]; then \
 		if [ -x "./scripts/k0s-node-up.sh" ]; then \
 			TS_SERVE_KUBEAPI=$${TS_SERVE_KUBEAPI:-0} TS_ADD_SANS=$${TS_ADD_SANS:-0} bash ./scripts/k0s-node-up.sh || true; \
 			kubectl --request-timeout=5s get --raw=/readyz >/dev/null 2>&1 || ok=0; \
-		fi; \
-		if [ $$ok -eq 0 ] && [ -x "./scripts/microk8s-setup.sh" ]; then \
-			bash ./scripts/microk8s-setup.sh $(GN_KUBECONFIG) || { echo "microk8s setup failed"; exit 2; }; \
 		fi; \
 	fi; \
 	CLUSTER=$$CL $(MAKE) headscale-namespace; \
@@ -130,10 +127,9 @@ operator-image-build: build-backend ## Build a container image for the operator 
 	@echo "Building operator image $(OPERATOR_IMAGE) ..."
 	docker build -f scripts/Dockerfile.operator -t $(OPERATOR_IMAGE) .
 
-operator-image-load: operator-image-build ## Load the operator image into a local cluster (microk8s preferred)
-	@echo "Loading operator image into local cluster (microk8s preferred)"
-	# Delegate to helper script which handles microk8s image import
-	@bash ./scripts/load-operator-image.sh $(OPERATOR_IMAGE) "" || echo "operator image load helper failed"
+operator-image-load: operator-image-build ## Load the operator image into local k0s (containerd) if needed
+	@echo "Loading operator image into local k0s if needed (prefer pulling from registry or using dind helper)"
+	@echo "Tip: use 'make dind-image-push' to push images from DinD to your registry, or import via 'ctr' into k0s containerd if required."
 
 operator-build-load: operator-image-load ## Convenience target to build and load operator image
 	@echo "operator image build+load complete"
@@ -308,7 +304,7 @@ deploy-k8s-addons: ## Install MetalLB (pool from .env), CRDs, imagePullSecret, D
 	bash ./scripts/rethinkdb-setup.sh || true
 
 deploy-operator: ## Deploy operator (ensure operator image is available, then apply manifests)
-	# If you use microk8s for local development, import the operator image first with: make operator-image-load
+	# For local k0s, prefer pushing to a registry or importing into k0s containerd as needed (see dind helpers)
 	bash ./scripts/deploy-operator.sh
 
 deploy-hostapp: ## Run hostapp locally (or deploy in cluster if configured)
