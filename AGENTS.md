@@ -12,6 +12,8 @@ Always ensure everything the user asks to be done is actually done, even if it r
 
 Before asking the user to choose from an option, automatically go with the simplest option and keep going until the problem is solved.
 
-ALWAYS update API.md, architecture.md and DEPLOYMENT.md with any relevant changes.
+ALWAYS update API.md, architecture.md and DEPLOYMENT.md with any relevant changes without duplicating information.
+
+Always update planning docs with progress on tasks.
 
 Use /tmp for temporary files, never the project directory.
