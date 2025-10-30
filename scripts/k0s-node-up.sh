@@ -126,13 +126,16 @@ docker run -d \
   -v "$GN_K0S_DIR/containerd:/var/lib/containerd" \
   -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
   -p 127.0.0.1:${K0S_HOST_PORT}:6443 \
+  --entrypoint /bin/sh \
   "$K0S_IMAGE" \
-  sh -c "set -e; k0s controller --single --data-dir /var/lib/k0s --enable-worker ${CONFIG_ARG} >>/var/lib/k0s/k0s.log 2>&1" \
+  -c "set -e; mkdir -p /var/lib/k0s; touch /var/lib/k0s/k0s.log; \
+    k0s controller --single --data-dir /var/lib/k0s --enable-worker ${CONFIG_ARG} >>/var/lib/k0s/k0s.log 2>&1 & \
+    tail -F /var/lib/k0s/k0s.log" \
   >/dev/null
 
 # Wait for API server readiness (best-effort)
 READY=0
-for i in $(seq 1 60); do
+for i in $(seq 1 90); do
   if docker exec guildnet-k0s /bin/sh -c "k0s kubectl --kubeconfig=/var/lib/k0s/pki/admin.conf get --raw=/readyz" >/dev/null 2>&1; then
     READY=1; break
   fi

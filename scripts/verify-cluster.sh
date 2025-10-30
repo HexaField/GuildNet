@@ -128,7 +128,7 @@ if ! kubectl --request-timeout=5s get --raw='/readyz' >/dev/null 2>&1; then
   exit 4
 fi
 
-# Operator image should be reachable by the cluster; prefer registry or DinD helper (no microk8s import path).
+# Operator image should be reachable by the cluster; prefer registry or DinD helper.
 
 # Deploy the operator into the target cluster so the operator's API types (CRDs)
 # and controller become available for the test run.

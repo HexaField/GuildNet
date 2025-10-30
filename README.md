@@ -71,7 +71,7 @@ Verification:
 - Ensure local tailscaled / router is running: `make router-daemon` or check status with `make router-status`
 - Verify routes are approved and visible in Headscale: `make headscale-approve-routes`
 
-<!-- MicroK8s path removed: repository is k0s-in-Docker only -->
+
 
 ### Launch Host App server
 

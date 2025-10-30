@@ -26,7 +26,7 @@ make smoke-workspace
 Notes:
 - The k0s API is bound locally to 127.0.0.1:16443 by default. Tailnet exposure is layered via the Tailscale container and routing in follow-ups.
 - The node stack also starts a DinD container for local image builds and exposes it on localhost (2375 without TLS, 2376 with TLS). A helper env file is written at `~/.guildnet/dind-env.sh`; `source` it to point your Docker client at DinD when needed.
-- The `setup-all` target provisions the Docker-only path; MicroK8s fallback has been removed.
+- The `setup-all` target provisions the Docker-only path.
 
 Image pipeline smoke (no registry)
 ----------------------------------
@@ -170,7 +170,7 @@ make deploy-operator
 ```
 
 This will build or ensure the operator image is available to your cluster and then run `./scripts/deploy-operator.sh` to apply the operator manifests to the cluster.
-Note: MicroK8s import path has been removed; prefer pushing to a registry or importing into k0s containerd from within the k0s container.
+Note: Prefer pushing to a registry or importing into k0s containerd from within the k0s container.
 
 Verify operator status with kubectl (quick checks):
 
