@@ -107,7 +107,7 @@ setup-all: ## One-command: Headscale up -> LAN sync -> ensure Kubernetes (k0s in
 	CLUSTER=$$CL $(MAKE) router-ensure || true; \
 	$(MAKE) deploy-k8s-addons || true; \
 	$(MAKE) deploy-operator || true; \
-	SET_DEFAULTS=1 $(SHELL) ./scripts/attach-local-k0s.sh || true; \
+	SET_DEFAULTS=1 bash ./scripts/attach-local-k0s.sh || true; \
 	$(MAKE) ensure-operator-setup || true; \
 	$(MAKE) deploy-hostapp || true; \
 	$(MAKE) verify-e2e || true

@@ -87,7 +87,21 @@ while (( tries > 0 )); do
   sleep "$delay"
 done
 
-# Apply pool + L2Advertisement for real
-printf '%s' "$MANIFEST" | kubectl apply -f -
+# Apply pool + L2Advertisement for real with retries to tolerate webhook startup races
+tries=${METALLB_APPLY_RETRIES_FINAL:-60}
+delay=${METALLB_APPLY_DELAY_FINAL:-3}
+ok=0
+while (( tries > 0 )); do
+  if printf '%s' "$MANIFEST" | kubectl apply -f -; then
+    ok=1
+    break
+  fi
+  tries=$((tries-1))
+  sleep "$delay"
+done
 
-echo "MetalLB installed with pool ${POOL_NAME}=${POOL_RANGE}"
+if [ "$ok" -ne 1 ]; then
+  echo "[metallb] WARN: Failed to apply IPAddressPool/L2Advertisement after retries; continuing" >&2
+else
+  echo "MetalLB installed with pool ${POOL_NAME}=${POOL_RANGE}"
+fi

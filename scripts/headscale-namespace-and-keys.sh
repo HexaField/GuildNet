@@ -43,10 +43,23 @@ echo "[headscale] Using server: ${HEADSCALE_URL} namespace: ${ns}"
 # Ensure user/namespace exists; Headscale uses users as namespaces
 docker exec -i guildnet-headscale headscale users create "$ns" >/dev/null 2>&1 || true
 
+# Resolve Headscale user ID for namespace (some headscale builds require numeric --user id)
+resolve_user_id() {
+  local user_name="$1"
+  docker exec -i guildnet-headscale headscale users list \
+    | awk -F'\|' -v target="$user_name" 'NR>1{uid=$1; uname=$3; gsub(/^[ \t]+|[ \t]+$/,"",uid); gsub(/^[ \t]+|[ \t]+$/,"",uname); if (uname==target) {print uid; exit}}'
+}
+
+USER_ID=$(resolve_user_id "$ns")
+if [ -z "${USER_ID:-}" ]; then
+  echo "[headscale] ERROR: could not resolve user id for namespace $ns" >&2
+  exit 1
+fi
+
 # Generate keys
 gen_key() {
   local tag="$1"
-  docker exec -i guildnet-headscale headscale preauthkeys create --reusable --ephemeral=false --expiration 24h --user "$ns" | tr -d '\r' | tr -d '\n'
+  docker exec -i guildnet-headscale headscale preauthkeys create --reusable --ephemeral=false --expiration 24h --user "$USER_ID" | tr -d '\r' | tr -d '\n'
 }
 
 routerKey=$(gen_key router)

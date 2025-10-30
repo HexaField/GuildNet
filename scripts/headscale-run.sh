@@ -220,7 +220,14 @@ create_user() {
 
 preauth_key() {
   local user="${1:-}"; if [ -z "$user" ]; then echo "Usage: $0 preauth-key <user>" >&2; exit 2; fi
-  docker exec -i "$CONTAINER" headscale preauthkeys create --reusable --ephemeral=false --expiration 24h --user "$user" | tee "$STATE_DIR/preauth-${user}.txt"
+  # Resolve numeric user id if this headscale build requires it
+  local uid
+  uid=$(docker exec -i "$CONTAINER" headscale users list | awk -F'\|' -v target="$user" 'NR>1{id=$1; uname=$3; gsub(/^[ \t]+|[ \t]+$/,"",id); gsub(/^[ \t]+|[ \t]+$/,"",uname); if (uname==target) {print id; exit}}')
+  if [ -z "$uid" ]; then
+    echo "[headscale] ERROR: could not resolve user id for $user" >&2
+    exit 1
+  fi
+  docker exec -i "$CONTAINER" headscale preauthkeys create --reusable --ephemeral=false --expiration 24h --user "$uid" | tee "$STATE_DIR/preauth-${user}.txt"
 }
 
 cmd="${1:-up}"; shift || true
