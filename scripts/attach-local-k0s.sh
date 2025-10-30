@@ -30,7 +30,7 @@ if [ -n "$API_TOKEN" ]; then
 fi
 
 set -x
-RESP=$(curl -sk -X POST "$HOSTAPP_URL/bootstrap" "${HDRS[@]}" --data "$BODY")
+RESP=$(curl -sk -X POST "$HOSTAPP_URL/api/bootstrap" "${HDRS[@]}" --data "$BODY")
 RC=$?
 set +x
 if [ $RC -ne 0 ] || [ -z "$RESP" ]; then
