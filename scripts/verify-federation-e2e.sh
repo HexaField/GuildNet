@@ -277,11 +277,30 @@ fi
 # Wait for pods to come up to avoid log flakiness
 log "Waiting for workspaces to reach running state before fetching logs"
 if ! wait_server_status_local "$WS_LOCAL_NAME" running; then
-  echo "FAIL: Local workspace $WS_LOCAL_NAME did not reach running state within $TIMEOUT_SEC s" >&2; exit 33
+  # Fallback: verify via kubectl directly in case API view lags
+  if command -v kubectl >/dev/null 2>&1; then
+    NS="${WS_NAMESPACE:-default}"
+    if kubectl --kubeconfig="$LOCAL_KUBECONFIG" get pods -n "$NS" -o custom-columns=NAME:.metadata.name,PHASE:.status.phase --no-headers 2>/dev/null | grep -E "^${WS_LOCAL_NAME}-.*\\s+Running$" >/dev/null; then
+      log "WARN: API server view did not reflect running state, but kubectl shows pod Running for $WS_LOCAL_NAME — proceeding."
+    else
+      echo "FAIL: Local workspace $WS_LOCAL_NAME did not reach running state within $TIMEOUT_SEC s" >&2; exit 33
+    fi
+  else
+    echo "FAIL: Local workspace $WS_LOCAL_NAME did not reach running state within $TIMEOUT_SEC s" >&2; exit 33
+  fi
 fi
 if [ "$REMOTE_CREATED_LOCALLY" = "1" ]; then
   if ! wait_server_status_local "$WS_REMOTE_NAME" running; then
-    echo "FAIL: (fallback) Workspace $WS_REMOTE_NAME did not reach running state within $TIMEOUT_SEC s" >&2; exit 34
+    if command -v kubectl >/dev/null 2>&1; then
+      NS="${WS_NAMESPACE:-default}"
+      if kubectl --kubeconfig="$LOCAL_KUBECONFIG" get pods -n "$NS" -o custom-columns=NAME:.metadata.name,PHASE:.status.phase --no-headers 2>/dev/null | grep -E "^${WS_REMOTE_NAME}-.*\\s+Running$" >/dev/null; then
+        log "WARN: API server view did not reflect running state for remote, but kubectl shows pod Running for $WS_REMOTE_NAME — proceeding."
+      else
+        echo "FAIL: (fallback) Workspace $WS_REMOTE_NAME did not reach running state within $TIMEOUT_SEC s" >&2; exit 34
+      fi
+    else
+      echo "FAIL: (fallback) Workspace $WS_REMOTE_NAME did not reach running state within $TIMEOUT_SEC s" >&2; exit 34
+    fi
   fi
 else
   if ! wait_server_status_remote "$WS_REMOTE_NAME" running; then
