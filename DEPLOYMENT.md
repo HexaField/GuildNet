@@ -521,14 +521,14 @@ Tailscale/Headscale quick verification
 
 Multi-device E2E verification (scripted)
 ---------------------------------------
-Use the included script to verify that two devices reference the same deterministic cluster ID, can each spawn a code-server workspace, can see both servers, and can read logs from both. The script also validates placement (each device’s workspace runs on its own node).
+Use the included script to verify that two devices reference the same deterministic cluster ID, can each spawn a code-server workspace, can see both servers, and can read logs from both. The script also validates placement (each device’s workspace runs on its own node). This verifier is strict and requires a multi-node cluster (>= 2 nodes) and two HostApp instances.
 
 Prerequisites:
 - Host App running on both devices at https://127.0.0.1:8090 (self-signed TLS is OK).
 - SSH access to the remote device without interactive prompts (e.g., key auth).
 - curl and jq installed on both devices.
 
-Run from Device A:
+Run from Device A (requires >=2 cluster nodes):
 
 ```bash
 # Replace with your remote user and host
@@ -536,6 +536,22 @@ REMOTE_SSH=user@192.168.0.1 \
 VERBOSE=1 \
 scripts/verify-federation-e2e.sh
 ```
+
+Environment variables supported by the verifier:
+
+- REMOTE_SSH: user@host of the remote device (required)
+- REMOTE_HOSTAPP_URL: Remote URL for hostapp (defaults to https://127.0.0.1:8090)
+- LOCAL_HOSTAPP_URL: Local URL for hostapp (defaults to https://127.0.0.1:8090)
+- CURL_TIMEOUT: Per-request timeout in seconds for HTTP calls (default 10)
+- SSH_TIMEOUT: Timeout in seconds for individual SSH calls (default 15)
+- WS_NAMESPACE: Namespace where workspaces deploy (default "default")
+
+Behavior notes:
+
+- The verifier enforces multi-node, multi-device federation. It fails if fewer than two nodes are detected.
+- All HTTP calls are bounded by timeouts; remote calls are wrapped in SSH timeouts to avoid hangs.
+- Remote perspective is mandatory: the remote HostApp must list both servers and read logs for both workspaces.
+- Placement is strict: each workspace must run on the device that launched it.
 
 What it does:
 - Compares cluster IDs from both Host Apps and, if missing on the remote, attaches the local kubeconfig via the supported API.
