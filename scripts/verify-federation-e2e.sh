@@ -45,8 +45,9 @@ if [ -z "$LOCAL_IDS" ]; then echo "ERROR: no clusters on local hostapp" >&2; exi
 vv "LOCAL_IDS: $LOCAL_IDS"
 
 # Pick canonical local cluster id: prefer 32 hex chars (deterministic id)
-LOCAL_DET="$(echo "$LOCAL_IDS" | awk '/^[0-9a-f]{32}$/ {print; exit}')"
-if [ -z "$LOCAL_DET" ]; then LOCAL_DET="$(echo "$LOCAL_IDS" | head -n1)"; fi
+# Use grep instead of awk to avoid locale/awk quirks seen in some environments.
+LOCAL_DET="$(printf "%s\n" "$LOCAL_IDS" | grep -E '^[0-9a-f]{32}$' | head -n1 || true)"
+if [ -z "$LOCAL_DET" ]; then LOCAL_DET="$(printf "%s\n" "$LOCAL_IDS" | head -n1)"; fi
 log "Local deterministic cluster id: $LOCAL_DET"
 
 # Fetch remote cluster IDs
