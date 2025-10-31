@@ -20,6 +20,10 @@ set -euo pipefail
 REMOTE_SSH="${REMOTE_SSH}"
 REMOTE_HOSTAPP_URL="${REMOTE_HOSTAPP_URL:-https://127.0.0.1:8090}"
 LOCAL_HOSTAPP_URL="${LOCAL_HOSTAPP_URL:-https://127.0.0.1:8090}"
+# Timeouts and SSH options to avoid indefinite hangs
+CURL_TIMEOUT="${CURL_TIMEOUT:-10}"
+SSH_TIMEOUT="${SSH_TIMEOUT:-15}"
+SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=${SSH_TIMEOUT} -o ServerAliveInterval=5 -o ServerAliveCountMax=1"
 
 log(){ echo "[E2E] $*"; }
 vv(){ [ "${VERBOSE:-0}" != "0" ] && echo "[E2E:DBG] $*" || true; }
@@ -40,7 +44,7 @@ fi
 log "Local kubeconfig: $LOCAL_KUBECONFIG"
 
 # Fetch local cluster IDs
-LOCAL_IDS=$(curl -k -s "$LOCAL_HOSTAPP_URL/api/deploy/clusters" | jq -r '.[].id')
+LOCAL_IDS=$(curl -k -sS --max-time "$CURL_TIMEOUT" "$LOCAL_HOSTAPP_URL/api/deploy/clusters" | jq -r '.[].id')
 if [ -z "$LOCAL_IDS" ]; then echo "ERROR: no clusters on local hostapp" >&2; exit 3; fi
 vv "LOCAL_IDS: $LOCAL_IDS"
 
@@ -51,7 +55,7 @@ if [ -z "$LOCAL_DET" ]; then LOCAL_DET="$(printf "%s\n" "$LOCAL_IDS" | head -n1)
 log "Local deterministic cluster id: $LOCAL_DET"
 
 # Fetch remote cluster IDs
-REMOTE_IDS=$(ssh -o BatchMode=yes -o ConnectTimeout=5 "$REMOTE_SSH" -t "curl -k -s '$REMOTE_HOSTAPP_URL/api/deploy/clusters' | jq -r '.[].id'" 2>/dev/null | tr -d '\r') || true
+REMOTE_IDS=$(timeout "$SSH_TIMEOUT"s ssh $SSH_OPTS "$REMOTE_SSH" "curl -k -sS --max-time $CURL_TIMEOUT '$REMOTE_HOSTAPP_URL/api/deploy/clusters' | jq -r '.[].id'" 2>/dev/null) || true
 vv "REMOTE_IDS: $REMOTE_IDS"
 
 HAS_REMOTE_DET=$(echo "$REMOTE_IDS" | grep -c "^$LOCAL_DET$") || true
@@ -63,10 +67,10 @@ if [ "$HAS_REMOTE_DET" -eq 0 ]; then
   scp -q "$TMPJSON" "$REMOTE_SSH:/tmp/verify-kc.json"
   rm -f "$TMPJSON"
   # Attach on remote using action=attach-kubeconfig (supports deterministic id)
-  ssh -o BatchMode=yes "$REMOTE_SSH" -t "curl -k -s -X POST '$REMOTE_HOSTAPP_URL/api/deploy/clusters/placeholder?action=attach-kubeconfig' -H 'Content-Type: application/json' --data-binary @/tmp/verify-kc.json" >/tmp/e2e-attach.out 2>/dev/null || true
+  timeout "$SSH_TIMEOUT"s ssh $SSH_OPTS "$REMOTE_SSH" "curl -k -sS --max-time $CURL_TIMEOUT -X POST '$REMOTE_HOSTAPP_URL/api/deploy/clusters/placeholder?action=attach-kubeconfig' -H 'Content-Type: application/json' --data-binary @/tmp/verify-kc.json" >/tmp/e2e-attach.out 2>/dev/null || true
   vv "remote attach response: $(cat /tmp/e2e-attach.out 2>/dev/null)"
   # Re-fetch remote IDs
-  REMOTE_IDS=$(ssh -o BatchMode=yes "$REMOTE_SSH" -t "curl -k -s '$REMOTE_HOSTAPP_URL/api/deploy/clusters' | jq -r '.[].id'" 2>/dev/null | tr -d '\r') || true
+  REMOTE_IDS=$(timeout "$SSH_TIMEOUT"s ssh $SSH_OPTS "$REMOTE_SSH" "curl -k -sS --max-time $CURL_TIMEOUT '$REMOTE_HOSTAPP_URL/api/deploy/clusters' | jq -r '.[].id'" 2>/dev/null) || true
 fi
 
 log "Remote cluster ids: $(echo "$REMOTE_IDS" | paste -sd ',' -)"
@@ -79,7 +83,7 @@ else
 fi
 
 # Optional: verify /v1/sites returns records with clusterId == LOCAL_DET (best-effort)
-LOCAL_SITES=$(curl -k -s "$LOCAL_HOSTAPP_URL/api/v1/sites" | jq -r '.[] | .clusterId' 2>/dev/null | sort -u || true)
+LOCAL_SITES=$(curl -k -sS --max-time "$CURL_TIMEOUT" "$LOCAL_HOSTAPP_URL/api/v1/sites" | jq -r '.[] | .clusterId' 2>/dev/null | sort -u || true)
 vv "LOCAL_SITES clusterIds: $LOCAL_SITES"
 if echo "$LOCAL_SITES" | grep -q "^$LOCAL_DET$"; then
   log "Local sites reflect cluster $LOCAL_DET"
@@ -87,8 +91,8 @@ else
   log "WARN: Local sites did not include clusterId $LOCAL_DET (may be transient)"
 fi
 
-ssh -o BatchMode=yes "$REMOTE_SSH" -t "curl -k -s '$REMOTE_HOSTAPP_URL/api/v1/sites' | jq -r '.[] | .clusterId' 2>/dev/null | sort -u" >/tmp/e2e-remote-sites.txt 2>/dev/null || true
-REMOTE_SITES=$(tr -d '\r' </tmp/e2e-remote-sites.txt || true)
+timeout "$SSH_TIMEOUT"s ssh $SSH_OPTS "$REMOTE_SSH" "curl -k -sS --max-time $CURL_TIMEOUT '$REMOTE_HOSTAPP_URL/api/v1/sites' | jq -r '.[] | .clusterId' 2>/dev/null | sort -u" >/tmp/e2e-remote-sites.txt 2>/dev/null || true
+REMOTE_SITES=$(cat /tmp/e2e-remote-sites.txt 2>/dev/null || true)
 vv "REMOTE_SITES clusterIds: $REMOTE_SITES"
 if echo "$REMOTE_SITES" | grep -q "^$LOCAL_DET$"; then
   log "Remote sites reflect cluster $LOCAL_DET"
@@ -131,7 +135,7 @@ post_local_workspace(){
   vv "Creating local workspace: ${name}"
   local payload
   payload=$(jq -nc --arg img "$WS_IMG" --arg name "$name" --arg node "$LOCAL_SCHEDULE_NODE" '{image:$img,name:$name,scheduleNode:$node}')
-  curl -k -s -X POST "$LOCAL_HOSTAPP_URL/api/cluster/$LOCAL_DET/workspaces" \
+  curl -k -sS --max-time "$CURL_TIMEOUT" -X POST "$LOCAL_HOSTAPP_URL/api/cluster/$LOCAL_DET/workspaces" \
     -H 'Content-Type: application/json' \
     -d "$payload" | jq -r '.' || true
 }
@@ -141,8 +145,8 @@ post_remote_workspace(){
   vv "Creating remote workspace: ${name}"
   local payload
   payload=$(jq -nc --arg img "$WS_IMG" --arg name "$name" --arg node "$REMOTE_SCHEDULE_NODE" '{image:$img,name:$name,scheduleNode:$node}')
-  ssh -o BatchMode=yes "$REMOTE_SSH" -t \
-    "curl -k -s -X POST '$REMOTE_HOSTAPP_URL/api/cluster/$LOCAL_DET/workspaces' -H 'Content-Type: application/json' -d '$payload' | jq -r '.'" \
+  timeout "$SSH_TIMEOUT"s ssh $SSH_OPTS "$REMOTE_SSH" \
+    "curl -k -sS --max-time $CURL_TIMEOUT -X POST '$REMOTE_HOSTAPP_URL/api/cluster/$LOCAL_DET/workspaces' -H 'Content-Type: application/json' -d '$payload' | jq -r '.'" \
     >/tmp/e2e-remote-create-${name}.json 2>/dev/null || true
 }
 
@@ -153,9 +157,9 @@ workspace_exists_local(){
 
 workspace_exists_remote(){
   local name="$1"
-  ssh -o BatchMode=yes "$REMOTE_SSH" -t \
-    "curl -k -s '$REMOTE_HOSTAPP_URL/api/cluster/$LOCAL_DET/workspaces/$name' | jq -e '.metadata.name==\"$name\"' >/dev/null 2>&1; echo \$?" \
-    2>/dev/null | tr -d '\r' | grep -q '^0$'
+  timeout "$SSH_TIMEOUT"s ssh $SSH_OPTS "$REMOTE_SSH" \
+    "curl -k -sS --max-time $CURL_TIMEOUT '$REMOTE_HOSTAPP_URL/api/cluster/$LOCAL_DET/workspaces/$name' | jq -e '.metadata.name==\"$name\"' >/dev/null 2>&1; echo \$?" \
+    2>/dev/null | grep -q '^0$'
 }
 
 wait_workspace_local(){
@@ -177,37 +181,37 @@ wait_workspace_remote(){
 }
 
 list_servers_local(){
-  curl -k -s "$LOCAL_HOSTAPP_URL/api/cluster/$LOCAL_DET/servers" | jq -r '.[].name' 2>/dev/null || true
+  curl -k -sS --max-time "$CURL_TIMEOUT" "$LOCAL_HOSTAPP_URL/api/cluster/$LOCAL_DET/servers" | jq -r '.[].name' 2>/dev/null || true
 }
 
 list_servers_remote(){
-  ssh -o BatchMode=yes "$REMOTE_SSH" -t \
-    "curl -k -s '$REMOTE_HOSTAPP_URL/api/cluster/$LOCAL_DET/servers' | jq -r '.[].name'" \
-    2>/dev/null | tr -d '\r' || true
+  timeout "$SSH_TIMEOUT"s ssh $SSH_OPTS "$REMOTE_SSH" \
+    "curl -k -sS --max-time $CURL_TIMEOUT '$REMOTE_HOSTAPP_URL/api/cluster/$LOCAL_DET/servers' | jq -r '.[].name'" \
+    2>/dev/null || true
 }
 
 # Helpers to retrieve placement fields from servers list
 get_server_field_local(){
   local name="$1"; local field="$2"
-  curl -k -s "$LOCAL_HOSTAPP_URL/api/cluster/$LOCAL_DET/servers" | jq -r ".[] | select(.name==\"$name\") | .${field} // \"\"" 2>/dev/null || true
+  curl -k -sS --max-time "$CURL_TIMEOUT" "$LOCAL_HOSTAPP_URL/api/cluster/$LOCAL_DET/servers" | jq -r ".[] | select(.name==\"$name\") | .${field} // \"\"" 2>/dev/null || true
 }
 get_server_field_remote(){
   local name="$1"; local field="$2"
-  ssh -o BatchMode=yes "$REMOTE_SSH" -t \
-    "curl -k -s '$REMOTE_HOSTAPP_URL/api/cluster/$LOCAL_DET/servers' | jq -r '.[] | select(.name==\"$name\") | .${field} // \"\"'" \
-    2>/dev/null | tr -d '\r' || true
+  timeout "$SSH_TIMEOUT"s ssh $SSH_OPTS "$REMOTE_SSH" \
+    "curl -k -sS --max-time $CURL_TIMEOUT '$REMOTE_HOSTAPP_URL/api/cluster/$LOCAL_DET/servers' | jq -r '.[] | select(.name==\"$name\") | .${field} // \"\"'" \
+    2>/dev/null || true
 }
 
 fetch_logs_local(){
   local name="$1"
-  curl -k -s "$LOCAL_HOSTAPP_URL/api/cluster/$LOCAL_DET/workspaces/$name/logs" | jq -r '.[]?' 2>/dev/null || true
+  curl -k -sS --max-time "$CURL_TIMEOUT" "$LOCAL_HOSTAPP_URL/api/cluster/$LOCAL_DET/workspaces/$name/logs" | jq -r '.[]?' 2>/dev/null || true
 }
 
 fetch_logs_remote(){
   local name="$1"
-  ssh -o BatchMode=yes "$REMOTE_SSH" -t \
-    "curl -k -s '$REMOTE_HOSTAPP_URL/api/cluster/$LOCAL_DET/workspaces/$name/logs' | jq -r '.[]?'" \
-    2>/dev/null | tr -d '\r' || true
+  timeout "$SSH_TIMEOUT"s ssh $SSH_OPTS "$REMOTE_SSH" \
+    "curl -k -sS --max-time $CURL_TIMEOUT '$REMOTE_HOSTAPP_URL/api/cluster/$LOCAL_DET/workspaces/$name/logs' | jq -r '.[]?'" \
+    2>/dev/null || true
 }
 
 # Wait until a server reaches desired status using the /servers view
@@ -224,9 +228,9 @@ wait_server_status_local(){
 wait_server_status_remote(){
   local name="$1"; local want="${2:-running}"; local waited=0
   while [ $waited -lt $TIMEOUT_SEC ]; do
-    st=$(ssh -o BatchMode=yes "$REMOTE_SSH" -t \
-      "curl -k -s '$REMOTE_HOSTAPP_URL/api/cluster/$LOCAL_DET/servers' | jq -r '.[] | select(.name==\"$name\") | .status // \"\"'" \
-      2>/dev/null | tr -d '\r')
+    st=$(timeout "$SSH_TIMEOUT"s ssh $SSH_OPTS "$REMOTE_SSH" \
+      "curl -k -sS --max-time $CURL_TIMEOUT '$REMOTE_HOSTAPP_URL/api/cluster/$LOCAL_DET/servers' | jq -r '.[] | select(.name==\"$name\") | .status // \"\"'" \
+      2>/dev/null)
     if [ "$st" = "$want" ]; then return 0; fi
     sleep "$SLEEP_SEC"; waited=$((waited+SLEEP_SEC))
   done
