@@ -113,13 +113,12 @@ SLEEP_SEC="${SLEEP_SEC:-5}"
 
 # Determine expected schedule node names (DNS-1123-ish) for placement
 LOCAL_HOSTNAME=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo "")
-REMOTE_HOSTNAME=$(ssh -o BatchMode=yes "$REMOTE_SSH" -t 'hostname -s 2>/dev/null || hostname 2>/dev/null || echo ""' 2>/dev/null | tr -d '\r')
+REMOTE_HOSTNAME=$(ssh $SSH_OPTS "$REMOTE_SSH" 'hostname -s 2>/dev/null || hostname 2>/dev/null || echo ""' 2>/dev/null)
 # Normalize to lowercase; most clusters use lowercase node names
 LOCAL_SCHEDULE_NODE=$(echo "$LOCAL_HOSTNAME" | tr '[:upper:]' '[:lower:]')
 REMOTE_SCHEDULE_NODE=$(echo "$REMOTE_HOSTNAME" | tr '[:upper:]' '[:lower:]')
 
-# Detect single-node cluster early (to route remote creation via local)
-SINGLE_NODE=0
+# Enforce multi-node: require >= 2 schedulable nodes
 if command -v kubectl >/dev/null 2>&1; then
   KCFG_CHECK="$LOCAL_KUBECONFIG"
   if [ -s "$KCFG_CHECK" ]; then
@@ -127,7 +126,13 @@ if command -v kubectl >/dev/null 2>&1; then
   else
     NC=$(kubectl get nodes --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo 0)
   fi
-  if [ "${NC:-0}" -lt 2 ]; then SINGLE_NODE=1; fi
+  if [ "${NC:-0}" -lt 2 ]; then
+    echo "FAIL: Multi-device federation E2E requires a multi-node cluster (>=2 nodes). Detected ${NC:-0}." >&2
+    exit 40
+  fi
+else
+  echo "FAIL: kubectl is required to assert multi-node topology for federation E2E." >&2
+  exit 41
 fi
 
 post_local_workspace(){
@@ -244,34 +249,10 @@ if ! wait_workspace_local "$WS_LOCAL_NAME"; then
 fi
 
 log "Spawning code-server from remote: $WS_REMOTE_NAME"
-REMOTE_CREATED_LOCALLY=0
-if [ "$SINGLE_NODE" = "1" ]; then
-  log "Single-node cluster detected — creating 'remote' workspace via local hostapp."
-  post_local_workspace "$WS_REMOTE_NAME"
-  REMOTE_CREATED_LOCALLY=1
-else
-  post_remote_workspace "$WS_REMOTE_NAME"
-fi
-# Fallback for single-node k0s: if remote hostapp cannot observe the Workspace quickly (due to
-# local-only kube-API), create the remote workspace via local hostapp instead to continue e2e.
+post_remote_workspace "$WS_REMOTE_NAME"
 SHORT_WAIT=60
-# Prefer cluster truth: if the CR does not appear locally quickly, assume remote create failed and fall back.
-if [ "$REMOTE_CREATED_LOCALLY" != "1" ] && ! ( TIMEOUT_SEC=$SHORT_WAIT wait_workspace_local "$WS_REMOTE_NAME" ); then
-  log "Local cluster did not observe remote workspace CR within ${SHORT_WAIT}s — creating via local hostapp."
-  post_local_workspace "$WS_REMOTE_NAME"
-  if ! wait_workspace_local "$WS_REMOTE_NAME"; then
-    echo "FAIL: Fallback local creation for remote workspace $WS_REMOTE_NAME not observed within $TIMEOUT_SEC s" >&2; exit 22
-  fi
-  REMOTE_CREATED_LOCALLY=1
-fi
-
-if [ "$REMOTE_CREATED_LOCALLY" != "1" ] && ! ( TIMEOUT_SEC=$SHORT_WAIT wait_workspace_remote "$WS_REMOTE_NAME" ); then
-  log "Remote did not observe workspace within ${SHORT_WAIT}s — creating it via local hostapp as a fallback."
-  post_local_workspace "$WS_REMOTE_NAME"
-  if ! wait_workspace_local "$WS_REMOTE_NAME"; then
-    echo "FAIL: Fallback local creation for remote workspace $WS_REMOTE_NAME not observed within $TIMEOUT_SEC s" >&2; exit 22
-  fi
-  REMOTE_CREATED_LOCALLY=1
+if ! ( TIMEOUT_SEC=$SHORT_WAIT wait_workspace_remote "$WS_REMOTE_NAME" ); then
+  echo "FAIL: Remote HostApp did not observe remote workspace $WS_REMOTE_NAME within ${SHORT_WAIT}s" >&2; exit 22
 fi
 
 # Wait for pods to come up to avoid log flakiness
@@ -289,27 +270,10 @@ if ! wait_server_status_local "$WS_LOCAL_NAME" running; then
     echo "FAIL: Local workspace $WS_LOCAL_NAME did not reach running state within $TIMEOUT_SEC s" >&2; exit 33
   fi
 fi
-if [ "$REMOTE_CREATED_LOCALLY" = "1" ]; then
-  if ! wait_server_status_local "$WS_REMOTE_NAME" running; then
-    if command -v kubectl >/dev/null 2>&1; then
-      NS="${WS_NAMESPACE:-default}"
-      if kubectl --kubeconfig="$LOCAL_KUBECONFIG" get pods -n "$NS" -o custom-columns=NAME:.metadata.name,PHASE:.status.phase --no-headers 2>/dev/null | grep -E "^${WS_REMOTE_NAME}-.*\\s+Running$" >/dev/null; then
-        log "WARN: API server view did not reflect running state for remote, but kubectl shows pod Running for $WS_REMOTE_NAME — proceeding."
-      else
-        echo "FAIL: (fallback) Workspace $WS_REMOTE_NAME did not reach running state within $TIMEOUT_SEC s" >&2; exit 34
-      fi
-    else
-      echo "FAIL: (fallback) Workspace $WS_REMOTE_NAME did not reach running state within $TIMEOUT_SEC s" >&2; exit 34
-    fi
-  fi
-else
-  if ! wait_server_status_remote "$WS_REMOTE_NAME" running; then
-    # Last-chance fallback: if local sees it running, proceed (remote API reachability issue)
-    if ! wait_server_status_local "$WS_REMOTE_NAME" running; then
-      echo "FAIL: Remote workspace $WS_REMOTE_NAME did not reach running state within $TIMEOUT_SEC s (and local also does not report running)" >&2; exit 34
-    fi
-    log "WARN: Remote did not observe running state; local reports running — proceeding."
-  fi
+if ! wait_server_status_remote "$WS_REMOTE_NAME" running; then
+  echo "FAIL: Remote did not observe running state for $WS_REMOTE_NAME within $TIMEOUT_SEC s." >&2
+  echo "Hint: ensure remote HostApp can query the cluster API (tailnet kube-API or HostApp port-forward path)." >&2
+  exit 34
 fi
 
 # Visibility checks from local perspective
@@ -341,35 +305,16 @@ if ! echo "$LOCAL_SERVERS" | grep -q "^$WS_REMOTE_NAME$"; then
   fi
 fi
 
-# Visibility checks from remote perspective (skip in single-node mode or when remote API/state is clearly unavailable)
-SKIP_REMOTE_PERSPECTIVE=0
-if [ "$SINGLE_NODE" = "1" ]; then
-  SKIP_REMOTE_PERSPECTIVE=1
+# Visibility checks from remote perspective (required)
+REMOTE_SERVERS=$(list_servers_remote)
+vv "Remote sees servers: $REMOTE_SERVERS"
+if [ -z "${REMOTE_SERVERS//\n/}" ]; then
+  echo "FAIL: Remote HostApp returned no servers; remote perspective unavailable. Ensure remote HostApp can reach kube-API (serve over tailnet or enable port-forward path)." >&2
+  echo "Hint: try 'make ts-serve-kubeapi' or enable port-forward path via per-cluster settings and restart HostApp on both devices." >&2
+  exit 24
 fi
-
-REMOTE_SERVERS=""
-if [ "$SKIP_REMOTE_PERSPECTIVE" != "1" ]; then
-  REMOTE_SERVERS=$(list_servers_remote)
-  vv "Remote sees servers: $REMOTE_SERVERS"
-  # If the remote perspective appears empty while local perspective shows both workspaces, assume remote cannot reach kube-API/state
-  if [ -z "${REMOTE_SERVERS//\n/}" ]; then
-    log "WARN: Remote did not return any servers; assuming remote perspective is unavailable — skipping remote visibility checks."
-    SKIP_REMOTE_PERSPECTIVE=1
-  fi
-fi
-
-if [ "$SKIP_REMOTE_PERSPECTIVE" = "1" ]; then
-  log "Skipping remote perspective visibility checks."
-else
-  echo "$REMOTE_SERVERS" | grep -q "^$WS_LOCAL_NAME$" || { echo "FAIL: Remote does not list local workspace $WS_LOCAL_NAME" >&2; exit 25; }
-  if ! echo "$REMOTE_SERVERS" | grep -q "^$WS_REMOTE_NAME$"; then
-    if [ "$REMOTE_CREATED_LOCALLY" = "1" ]; then
-      log "WARN: Remote did not list its own workspace; proceeding (fallback creation via local)."
-    else
-      echo "FAIL: Remote does not list its own workspace $WS_REMOTE_NAME" >&2; exit 26
-    fi
-  fi
-fi
+echo "$REMOTE_SERVERS" | grep -q "^$WS_LOCAL_NAME$" || { echo "FAIL: Remote does not list local workspace $WS_LOCAL_NAME" >&2; exit 25; }
+echo "$REMOTE_SERVERS" | grep -q "^$WS_REMOTE_NAME$" || { echo "FAIL: Remote does not list its own workspace $WS_REMOTE_NAME" >&2; exit 26; }
 
 # Logs checks – app should be running now; fetch logs
 LOCAL_LOGS_SELF=$(fetch_logs_local "$WS_LOCAL_NAME")
@@ -382,48 +327,17 @@ if [ -z "$LOCAL_LOGS_PEER" ] && command -v kubectl >/dev/null 2>&1; then
   NS="${WS_NAMESPACE:-default}"
   LOCAL_LOGS_PEER=$(kubectl --kubeconfig="$LOCAL_KUBECONFIG" logs deploy/"$WS_REMOTE_NAME" -n "$NS" --tail=50 2>/dev/null || true)
 fi
-REMOTE_LOGS_SELF=""; REMOTE_LOGS_PEER=""
-if [ "$SINGLE_NODE" != "1" ] && [ "$SKIP_REMOTE_PERSPECTIVE" != "1" ]; then
-  REMOTE_LOGS_SELF=$(fetch_logs_remote "$WS_REMOTE_NAME")
-  REMOTE_LOGS_PEER=$(fetch_logs_remote "$WS_LOCAL_NAME")
-fi
+REMOTE_LOGS_SELF=$(fetch_logs_remote "$WS_REMOTE_NAME")
+REMOTE_LOGS_PEER=$(fetch_logs_remote "$WS_LOCAL_NAME")
 
 if [ -z "$LOCAL_LOGS_SELF" ]; then echo "FAIL: Local could not read logs for its own workspace $WS_LOCAL_NAME" >&2; exit 27; fi
 if [ -z "$LOCAL_LOGS_PEER" ]; then echo "FAIL: Local could not read logs for remote workspace $WS_REMOTE_NAME" >&2; exit 28; fi
-if [ "$SINGLE_NODE" != "1" ] && [ "$SKIP_REMOTE_PERSPECTIVE" != "1" ]; then
-  if [ -z "$REMOTE_LOGS_SELF" ]; then
-    if [ "$REMOTE_CREATED_LOCALLY" = "1" ]; then
-      log "WARN: Remote could not read logs for its own workspace (fallback case); continuing."
-    else
-      echo "FAIL: Remote could not read logs for its own workspace $WS_REMOTE_NAME" >&2; exit 29
-    fi
-  fi
-  if [ -z "$REMOTE_LOGS_PEER" ]; then echo "FAIL: Remote could not read logs for local workspace $WS_LOCAL_NAME" >&2; exit 30; fi
-fi
+if [ -z "$REMOTE_LOGS_SELF" ]; then echo "FAIL: Remote could not read logs for its own workspace $WS_REMOTE_NAME" >&2; exit 29; fi
+if [ -z "$REMOTE_LOGS_PEER" ]; then echo "FAIL: Remote could not read logs for local workspace $WS_LOCAL_NAME" >&2; exit 30; fi
 
 log "PASS: Distributed cluster verified — both devices spawned code-server, see each other, and can read logs for both."
 
-# Placement checks — verify each workspace is running on the device that launched it
-# For single-node k0s (or any cluster with <2 schedulable nodes), skip strict placement.
-SKIP_PLACEMENT=0
-if command -v kubectl >/dev/null 2>&1; then
-  # Try local kubeconfig first; fall back to default env if not set
-  KCFG="$LOCAL_KUBECONFIG"
-  if [ -s "$KCFG" ]; then
-    NODES=$(kubectl --kubeconfig="$KCFG" get nodes --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo 0)
-  else
-    NODES=$(kubectl get nodes --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo 0)
-  fi
-  vv "Cluster node count detected: $NODES"
-  if [ "${NODES:-0}" -lt 2 ]; then SKIP_PLACEMENT=1; fi
-else
-  # No kubectl; conservatively skip strict placement
-  SKIP_PLACEMENT=1
-fi
-
-if [ "$SKIP_PLACEMENT" = "1" ]; then
-  log "Skipping strict placement checks (single-node cluster detected or kubectl unavailable)."
-else
+"# Placement checks — verify each workspace is running on the device that launched it (strict)"
   vv "Local hostname: $LOCAL_HOSTNAME, Remote hostname: $REMOTE_HOSTNAME"
 
   # Fetch placement info
