@@ -35,6 +35,9 @@ Done
  - Phase 8 (partial): Reverse proxy verified end-to-end on k0s — base path returns 302 to `./login` and resolves to 200 for code-server login when following redirects; header rewrites (Location/Set-Cookie/CSP/COOP) confirmed.
  - API/docs polish: `API.md` expanded with proxy transport/redirect details and settings restart note; `architecture.md` proxy redirect behavior documented; `DEPLOYMENT.md` includes proxy verification tip.
  - Per-cluster settings path fixed (`/api/settings/cluster/{id}`), persistence confirmed in per-cluster DB; Host App gracefully restarts on settings changes.
+ - Make targets & README: `node-up`, `node-down`, `attach-local-node`, and `deploy-k0s-node` targets present; README quickstart references these flows.
+ - Reset safeguards: `make reset` preserves k0s state/kubeconfig by default via `KEEP_K0S=1` and requires explicit confirmation.
+ - Registry path docs: DEPLOYMENT/Makefile include DinD→registry push helper and guidance; local import smoke remains the default fast path.
 
 In progress
 - Phase 3: Tailscale container is started automatically when `TS_AUTHKEY` is set; optional `TS_SERVE_KUBEAPI=1` will configure `tailscale serve tcp` to expose the kube-API over the tailnet. SAN coverage for tailnet IP/MagicDNS is pending.

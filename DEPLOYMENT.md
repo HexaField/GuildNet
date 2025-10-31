@@ -150,6 +150,23 @@ curl -k --http1.1 -sS -D - "https://127.0.0.1:8090/api/cluster/<clusterID>/proxy
 curl -k --http1.1 -sS -L -D - "https://127.0.0.1:8090/api/cluster/<clusterID>/proxy/server/<service>/" -o /tmp/proxy.html
 ```
 
+Port-forward + tsnet publish path (optional)
+-------------------------------------------
+You can instruct the Host App to prefer the port-forward fallback and publish the port over the tailnet when a tsnet connector is available. This is useful when Service endpoints aren’t reachable cross-device.
+
+```bash
+# Enable PF path via per-cluster settings (triggers a short hostapp restart)
+curl -k --http1.1 -X PUT "https://127.0.0.1:8090/api/settings/cluster/<clusterID>" \
+	-H 'Content-Type: application/json' \
+	-d '{"prefer_pod_proxy":true,"use_port_forward":true}'
+
+# Hit the proxy again and watch logs (/tmp/hostapp.log) for lines like:
+#   cluster: started port-forward cluster=<id> pod=<pod> localPort=<N>
+#   cluster: published port <N> via tsnet for cluster=<id> service=<svc> addr=:<443 or ts addr>
+
+# From another device on the tailnet, connect to the published addr/port to reach the workspace
+```
+
 Goals
 
 - Deploy the operator in-cluster (no embedded operator in production).
