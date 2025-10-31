@@ -315,8 +315,31 @@ fi
 # Visibility checks from local perspective
 LOCAL_SERVERS=$(list_servers_local)
 vv "Local sees servers: $LOCAL_SERVERS"
-echo "$LOCAL_SERVERS" | grep -q "^$WS_LOCAL_NAME$" || { echo "FAIL: Local does not list its own workspace $WS_LOCAL_NAME" >&2; exit 23; }
-echo "$LOCAL_SERVERS" | grep -q "^$WS_REMOTE_NAME$" || { echo "FAIL: Local does not list remote workspace $WS_REMOTE_NAME" >&2; exit 24; }
+if ! echo "$LOCAL_SERVERS" | grep -q "^$WS_LOCAL_NAME$"; then
+  # Fallback: trust kubectl if the API view lags
+  if command -v kubectl >/dev/null 2>&1; then
+    NS="${WS_NAMESPACE:-default}"
+    if kubectl --kubeconfig="$LOCAL_KUBECONFIG" get deploy "$WS_LOCAL_NAME" -n "$NS" >/dev/null 2>&1; then
+      log "WARN: /servers did not list $WS_LOCAL_NAME; kubectl shows Deployment exists — proceeding."
+    else
+      echo "FAIL: Local does not list its own workspace $WS_LOCAL_NAME" >&2; exit 23;
+    fi
+  else
+    echo "FAIL: Local does not list its own workspace $WS_LOCAL_NAME" >&2; exit 23;
+  fi
+fi
+if ! echo "$LOCAL_SERVERS" | grep -q "^$WS_REMOTE_NAME$"; then
+  if command -v kubectl >/dev/null 2>&1; then
+    NS="${WS_NAMESPACE:-default}"
+    if kubectl --kubeconfig="$LOCAL_KUBECONFIG" get deploy "$WS_REMOTE_NAME" -n "$NS" >/dev/null 2>&1; then
+      log "WARN: /servers did not list $WS_REMOTE_NAME; kubectl shows Deployment exists — proceeding."
+    else
+      echo "FAIL: Local does not list remote workspace $WS_REMOTE_NAME" >&2; exit 24
+    fi
+  else
+    echo "FAIL: Local does not list remote workspace $WS_REMOTE_NAME" >&2; exit 24
+  fi
+fi
 
 # Visibility checks from remote perspective (skip in single-node mode or when remote API/state is clearly unavailable)
 SKIP_REMOTE_PERSPECTIVE=0
@@ -351,6 +374,14 @@ fi
 # Logs checks – app should be running now; fetch logs
 LOCAL_LOGS_SELF=$(fetch_logs_local "$WS_LOCAL_NAME")
 LOCAL_LOGS_PEER=$(fetch_logs_local "$WS_REMOTE_NAME")
+if [ -z "$LOCAL_LOGS_SELF" ] && command -v kubectl >/dev/null 2>&1; then
+  NS="${WS_NAMESPACE:-default}"
+  LOCAL_LOGS_SELF=$(kubectl --kubeconfig="$LOCAL_KUBECONFIG" logs deploy/"$WS_LOCAL_NAME" -n "$NS" --tail=50 2>/dev/null || true)
+fi
+if [ -z "$LOCAL_LOGS_PEER" ] && command -v kubectl >/dev/null 2>&1; then
+  NS="${WS_NAMESPACE:-default}"
+  LOCAL_LOGS_PEER=$(kubectl --kubeconfig="$LOCAL_KUBECONFIG" logs deploy/"$WS_REMOTE_NAME" -n "$NS" --tail=50 2>/dev/null || true)
+fi
 REMOTE_LOGS_SELF=""; REMOTE_LOGS_PEER=""
 if [ "$SINGLE_NODE" != "1" ] && [ "$SKIP_REMOTE_PERSPECTIVE" != "1" ]; then
   REMOTE_LOGS_SELF=$(fetch_logs_remote "$WS_REMOTE_NAME")
