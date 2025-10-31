@@ -220,14 +220,21 @@ create_user() {
 
 preauth_key() {
   local user="${1:-}"; if [ -z "$user" ]; then echo "Usage: $0 preauth-key <user>" >&2; exit 2; fi
-  # Resolve numeric user id if this headscale build requires it
+  # Resolve numeric user id using JSON and jq on the host
   local uid
-  uid=$(docker exec -i "$CONTAINER" headscale users list | awk -F'\|' -v target="$user" 'NR>1{id=$1; uname=$3; gsub(/^[ \t]+|[ \t]+$/,"",id); gsub(/^[ \t]+|[ \t]+$/,"",uname); if (uname==target) {print id; exit}}')
-  if [ -z "$uid" ]; then
+  uid=$(docker exec -i "$CONTAINER" headscale users list -o json | jq -r --arg name "$user" '.[] | select(.name==$name) | .id' | head -n1)
+  if [ -z "$uid" ] || [ "$uid" = "null" ]; then
+    docker exec -i "$CONTAINER" headscale users create "$user" >/dev/null 2>&1 || true
+    uid=$(docker exec -i "$CONTAINER" headscale users list -o json | jq -r --arg name "$user" '.[] | select(.name==$name) | .id' | head -n1)
+  fi
+  if [ -z "$uid" ] || [ "$uid" = "null" ]; then
     echo "[headscale] ERROR: could not resolve user id for $user" >&2
     exit 1
   fi
-  docker exec -i "$CONTAINER" headscale preauthkeys create --reusable --ephemeral=false --expiration 24h --user "$uid" | tee "$STATE_DIR/preauth-${user}.txt"
+  # Create preauth key and print the tskey- value
+  local line
+  line=$(docker exec -i "$CONTAINER" headscale preauthkeys create --reusable --ephemeral=false --expiration 24h --user "$uid" | tail -n1)
+  echo "$line" | awk '{ for (i=1;i<=NF;i++) if ($i ~ /^tskey-/) { print $i; found=1 } } END { if (!found) print $0 }' | tee "$STATE_DIR/preauth-${user}.txt"
 }
 
 cmd="${1:-up}"; shift || true

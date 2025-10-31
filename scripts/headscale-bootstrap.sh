@@ -27,9 +27,13 @@ if ! docker exec -i "$CONTAINER" headscale users list 2>/dev/null | awk '{print 
   docker exec -i "$CONTAINER" headscale users create "$USER_NAME" >/dev/null
 fi
 
-# Create a reusable preauth key
+# Create a reusable preauth key and extract the actual tskey- value (not the numeric ID)
 KEY_LINE=$(docker exec -i "$CONTAINER" headscale preauthkeys create --reusable --ephemeral=false --expiration 168h --user "$USER_NAME" | tail -n1)
-KEY=$(echo "$KEY_LINE" | awk '{print $1}')
+# Prefer a column matching tskey-; fallback to first token if not found
+KEY=$(echo "$KEY_LINE" | awk '{
+  for (i=1;i<=NF;i++) { if ($i ~ /^tskey-/) { print $i; exit } }
+  print $1
+}')
 if [ -z "$KEY" ]; then
   echo "Failed to obtain preauth key from headscale." >&2
   exit 1

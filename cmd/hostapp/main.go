@@ -349,8 +349,10 @@ func main() {
 		log.Fatalf("invalid config: %v", err)
 	}
 
-	// Create cancellation context for the serve lifecycle; include HUP/QUIT so closing the terminal also stops the server
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
+	// Create cancellation context for the serve lifecycle; handle only SIGINT and SIGTERM.
+	// Avoid reacting to SIGHUP/QUIT which can be delivered by terminals, log rotation, or parent process events
+	// and cause unintended shutdowns during active requests.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	// On Linux, ask the kernel to send us SIGTERM if the parent dies (e.g., terminal closed).

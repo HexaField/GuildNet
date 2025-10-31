@@ -34,7 +34,7 @@ The Host App exposes an HTTP API (default listen is configurable; see Host App c
 
 Authorization model: GET requests are open. Mutating requests require either a configured bearer token (Host App `Deps.Token`) in the `Authorization: Bearer <token>` header or must originate from loopback (127.0.0.1 / ::1) when no token is set. Some endpoints also accept `X-API-Token` header.
 
-- POST /bootstrap
+- POST /api/bootstrap
   - Purpose: Accept a join payload (JSON or `guildnet.config`) and persist a cluster record and kubeconfig. Performs a bounded pre-warm (10s) to validate cluster API and RethinkDB (if Registry is present).
   - Request body (JSON):
     - tailscale: optional object matching `settings.Tailscale` (login_server, preauth_key, hostname)
@@ -50,7 +50,7 @@ Authorization model: GET requests are open. Mutating requests require either a c
 
   - Example (attach kubeconfig emitted by `scripts/k0s-node-up.sh` and then set cluster defaults):
 
-    1) POST `/bootstrap` with body `{"cluster":{"kubeconfig":"<yaml>"}}` — response: `{ "id": "<deterministicId>" }`
+  1) POST `/api/bootstrap` with body `{"cluster":{"kubeconfig":"<yaml>"}}` — response: `{ "id": "<deterministicId>" }`
     2) PUT `/api/settings/cluster/<deterministicId>` with a subset of fields, for example:
 
     ```json
@@ -65,7 +65,7 @@ Authorization model: GET requests are open. Mutating requests require either a c
 
     The helper `scripts/attach-local-k0s.sh` automates this flow when invoked with `SET_DEFAULTS=1` and reads settings overrides from environment variables.
 
-Multi-device automation: Use `make multi-device-host` on Device A and `make multi-device-joiner` on Device B to bootstrap quickly. The joiner will call this `/bootstrap` endpoint with its generated `guildnet.config`.
+Multi-device automation: Use `make multi-device-host` on Device A and `make multi-device-joiner` on Device B to bootstrap quickly. The joiner will call this `/api/bootstrap` endpoint with its generated `guildnet.config`.
 
   Multi-device note: After successful bootstrap, the Host App mirrors its published service mappings into a shared ConfigMap in the cluster (`guildnet-system/published-<id>`). Other devices reading the same cluster will observe and resync state from this registry.
 
@@ -79,9 +79,10 @@ Multi-device automation: Use `make multi-device-host` on Device A and `make mult
   - Get or update runtime global settings (`settings.Global`).
 
 - GET/PUT /api/settings/cluster/{clusterID}
-  - Purpose: per-cluster settings (persisted into per-cluster DB when available).
-  - GET returns `settings.Cluster` for the cluster.
-  - PUT accepts `settings.Cluster` fields to update runtime behavior and will write a `ConfigMap` named `guildnet-cluster-settings` into the cluster namespace `guildnet-system` when cluster clients are available. This configmap is used by in-cluster controllers to read runtime preferences.
+  - Purpose: per-cluster settings (persisted into the per-cluster local DB under `~/.guildnet/state/<id>/guildnet.sqlite`).
+  - GET returns `settings.Cluster` for the cluster. Fields use `omitempty` in JSON; empty/false values are omitted in responses.
+  - PUT accepts `settings.Cluster` fields and persists them. On success the Host App triggers a graceful restart to apply changes; your client may briefly see connection resets while the supervisor restarts the process.
+  - When Kubernetes clients are available, a `ConfigMap` named `guildnet-cluster-settings` is also written into `guildnet-system` so in-cluster controllers can read runtime flags.
 
 - GET /api/jobs
   - List submitted jobs (or orchestration tasks).
@@ -120,16 +121,21 @@ Multi-device automation: Use `make multi-device-host` on Device A and `make mult
 
 Deterministic cluster IDs and attach-kubeconfig behavior
 -------------------------------------------------------
-- Cluster IDs are deterministic: when a kubeconfig is provided (via POST /bootstrap or attach-kubeconfig), the backend computes a canonical ID from the kubeconfig's normalized server URL and certificate-authority data.
+- Cluster IDs are deterministic: when a kubeconfig is provided (via POST /api/bootstrap or attach-kubeconfig), the backend computes a canonical ID from the kubeconfig's normalized server URL and certificate-authority data.
 - POST `/api/deploy/clusters/{id}?action=attach-kubeconfig` may be invoked with any placeholder `{id}`. The backend will compute the deterministic ID and, if no record exists yet, create a cluster record with state `imported` so that UIs/agents can reference the same cluster across devices. The response includes `{ id: <deterministicId>, ok: true }` on success.
 
 Docker-only k0s node note
 -------------------------
-- The helper script `scripts/k0s-node-up.sh` emits a kubeconfig (default `~/.guildnet/kubeconfig`) for the containerized k0s control-plane running on the same device. This kubeconfig can be posted to `/bootstrap` exactly like any other cluster.
+- The helper script `scripts/k0s-node-up.sh` emits a kubeconfig (default `~/.guildnet/kubeconfig`) for the containerized k0s control-plane running on the same device. This kubeconfig can be posted to `/api/bootstrap` exactly like any other cluster.
 - Initial defaults bind the API to `https://127.0.0.1:16443` (port auto-increments if busy). Tailnet-based access can be configured via Tailscale routing/serve (`TS_SERVE_KUBEAPI=1`) and the API cert may include the tailnet IP in SANs when `TS_ADD_SANS=1` is provided. The API surface and bootstrap semantics remain unchanged.
 
 - GET /ui-config
   - UI runtime config placeholder (returns {} in current implementation).
+
+Server runtime notes
+--------------------
+- Signals: the Host App exits gracefully on SIGINT/SIGTERM only; SIGHUP/QUIT are ignored to avoid accidental exits during log rotation or terminal events.
+- Parent-death behavior (Linux): the process requests a parent-death signal (SIGTERM). If you launch the Host App from a short-lived shell, it may exit when the shell terminates. Start via `scripts/run-hostapp.sh` (or a long-lived supervisor), or disable with `GN_DISABLE_PDEATHSIG=1` when launching.
 
 - Cluster proxied APIs (per-cluster path prefix: /api/cluster/{clusterID}/...)
   - GET /api/cluster/{id}/published-services
@@ -138,8 +144,11 @@ Docker-only k0s node note
     - Remove a published service and stop the tsnet listener for it.
   - GET /api/cluster/{id}/status
     - Quick cluster-local status (internal helper).
-  - Proxy endpoint: /api/cluster/{id}/proxy/server/{serviceName}/... -> reverse proxy to the Service (via API proxy path or port-forward fallbacks).
-    - This endpoint performs service discovery (Service -> Pod selection) and supports port-forward fallback, tsnet publishing, and streamable websocket proxying.
+  - Proxy endpoint: /api/cluster/{id}/proxy/server/{serviceName}/... -> reverse proxy to the Service (prefers Kubernetes API service proxy; falls back to port-forward when enabled).
+    - Discovery: resolves the Service and preferred port; checks Endpoints/EndpointSlices.
+    - Transports: uses the Kubernetes API service proxy when possible; otherwise selects a managed SPDY port-forward. When port-forward is selected and a tsnet connector is present, the Host App can publish the local port on the tailnet.
+    - Redirects: many UIs (e.g., code-server) redirect from the base path to a login path. Expect a 302 to "./login" on the base URL. Follow redirects with `-L` if using curl.
+    - Headers: sets `X-Forwarded-Prefix` and rewrites `Location`, `Set-Cookie`, and CSP/COOP headers so apps work when embedded under a subpath/iframe.
   - GET /api/cluster/{id}/servers
     - List Workspaces (maps `Workspace` CRs to a simplified Server model: id, name, image, status, ports).
     - Now includes machine identity for each server when available.
@@ -275,6 +284,7 @@ Notes on tsnet connector settings
 Notes:
 - `PutCluster` will store `TSClientAuthKey` in the `credentials` bucket to avoid echoing it back in GET responses.
 - `PutCluster` writes a `guildnet-cluster-settings` ConfigMap into the cluster namespace `guildnet-system` when Host App has cluster clients, enabling the in-cluster operator to read runtime flags.
+- After a successful PUT to `/api/settings/cluster/{id}`, the Host App performs a graceful restart to apply settings. If your client receives a transient TLS error or connection reset immediately after the PUT, retry the GET after a second.
 
 
 ## Host App configuration options (global and runtime)
@@ -369,9 +379,19 @@ Sites listing (multi-device UI)
 
 
 ```bash
-curl -X POST "https://<host>:8090/api/deploy/clusters/<id>?action=attach-kubeconfig" \
+# Attach a kubeconfig (deterministic cluster ID will be computed server-side)
+curl -k --http1.1 -X POST "https://127.0.0.1:8090/api/deploy/clusters/<id>?action=attach-kubeconfig" \
   -H 'Content-Type: application/json' \
   -d '{"kubeconfig": "<base64-or-raw-kubeconfig-content>"}'
+
+# Update per-cluster settings (enables port-forward and pod-proxy preference)
+curl -k --http1.1 -X PUT "https://127.0.0.1:8090/api/settings/cluster/<clusterID>" \
+  -H 'Content-Type: application/json' \
+  -d '{"prefer_pod_proxy":true,"use_port_forward":true}'
+
+# Proxy to a workspace service (expect 302 to ./login on base; follow with -L)
+curl -k --http1.1 -sS -D - "https://127.0.0.1:8090/api/cluster/<clusterID>/proxy/server/<service>/"
+curl -k --http1.1 -sS -L -D - "https://127.0.0.1:8090/api/cluster/<clusterID>/proxy/server/<service>/" -o /tmp/proxy.html
 ```
 
 ## Notes

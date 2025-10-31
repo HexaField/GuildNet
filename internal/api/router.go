@@ -32,6 +32,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	meta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -238,14 +239,11 @@ func Router(deps Deps) *http.ServeMux {
 					return
 				}
 				// Attempt to pre-warm RethinkDB (cluster DB) so DB endpoints respond quickly.
-				// Use a short timeout so bootstrap fails fast if the cluster DB is unreachable.
+				// Best-effort: Do not fail bootstrap if RDB is not yet reachable (e.g., local clusters without LB).
 				rdbCtx, rdbCancel := context.WithTimeout(r.Context(), 10*time.Second)
 				defer rdbCancel()
 				if err := inst.EnsureRDB(rdbCtx, "", "", ""); err != nil {
-					_ = deps.DB.Delete("clusters", id)
-					_ = deps.DB.Delete("credentials", fmt.Sprintf("cl:%s:kubeconfig", id))
-					httpx.JSONError(w, http.StatusUnprocessableEntity, "cluster rdb connect failed", "cluster_rdb", err.Error())
-					return
+					log.Printf("bootstrap: RDB pre-warm skipped for cluster=%s: %v", id, err)
 				}
 			}
 			// Persist per-cluster settings if provided
@@ -350,12 +348,12 @@ func Router(deps Deps) *http.ServeMux {
 	})
 
 	// Per-cluster settings CRUD
-	mux.HandleFunc("/api/settings/cluster/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/settings/cluster/", func(w http.ResponseWriter, r *http.Request) {
 		if deps.DB == nil {
 			httpx.JSON(w, http.StatusServiceUnavailable, map[string]string{"error": "unavailable"})
 			return
 		}
-		id := strings.TrimPrefix(r.URL.Path, "/api/settings/cluster/")
+		id := strings.TrimPrefix(r.URL.Path, "/settings/cluster/")
 		if strings.TrimSpace(id) == "" {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -374,15 +372,33 @@ func Router(deps Deps) *http.ServeMux {
 		if r.Method == http.MethodGet {
 			var cs settings.Cluster
 			_ = sm.GetCluster(id, &cs)
+			// Debug: log raw presence for troubleshooting unexpected empty results
+			if inst.DB != nil {
+				var raw map[string]any
+				if err := inst.DB.Get("cluster-settings", id, &raw); err != nil {
+					log.Printf("settings: cluster GET id=%s raw=not_found err=%v", id, err)
+				} else {
+					log.Printf("settings: cluster GET id=%s raw_keys=%d", id, len(raw))
+				}
+			}
 			_ = json.NewEncoder(w).Encode(cs)
 			return
 		}
 		if r.Method == http.MethodPut {
 			var cs settings.Cluster
 			_ = json.NewDecoder(r.Body).Decode(&cs)
-			_ = sm.PutCluster(id, cs)
+			if err := sm.PutCluster(id, cs); err != nil {
+				log.Printf("settings: cluster PUT failed id=%s err=%v", id, err)
+			} else {
+				// Debug: confirm write by reading back raw record size
+				if inst.DB != nil {
+					var raw map[string]any
+					if err := inst.DB.Get("cluster-settings", id, &raw); err == nil {
+						log.Printf("settings: cluster PUT ok id=%s raw_keys=%d", id, len(raw))
+					}
+				}
+			}
 			// Persist cluster settings and notify runtime hooks
-			_ = sm.PutCluster(id, cs)
 			if deps.OnSettingsChanged != nil {
 				deps.OnSettingsChanged("cluster:" + id)
 			}
@@ -1080,7 +1096,10 @@ func Router(deps Deps) *http.ServeMux {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		clusterID := parts[0]
+		// Resolve well-known aliases (e.g., "default") when possible so
+		// out-of-the-box scripts can target a stable id without knowing the
+		// deterministic cluster ID. If a single cluster record exists, map to it.
+		clusterID := resolveClusterIDAlias(deps.DB, parts[0])
 		// Special-case: published-services endpoints
 		if len(parts) >= 2 && parts[1] == "published-services" {
 			// GET /api/cluster/{id}/published-services
@@ -1179,6 +1198,7 @@ func Router(deps Deps) *http.ServeMux {
 		// Optionally resolve via per-cluster registry
 		var (
 			cfg         *rest.Config
+			restCfg     *rest.Config
 			cli         kubernetes.Interface
 			dyn         dynamic.Interface
 			cs          settings.Cluster
@@ -1195,30 +1215,30 @@ func Router(deps Deps) *http.ServeMux {
 				// Build clients from instance
 				if inst.K8s != nil {
 					cfg = inst.K8s.Config()
+					restCfg = cfg
 				}
 				// Apply proxy overrides
 				applyClusterAPIProxy(cfg, setMgrLocal, clusterID)
 				// Clients
-				var e error
-				// Reuse cached client if present
+				// Reuse cached client if present; otherwise build only when we have a rest.Config.
 				if inst.K8s != nil && inst.K8s.K != nil {
 					cli = inst.K8s.K
-				} else {
-					cli, e = kubernetes.NewForConfig(cfg)
+				} else if cfg != nil {
+					if c, e := kubernetes.NewForConfig(cfg); e == nil {
+						cli = c
+					} else {
+						log.Printf("cluster: registry NewForConfig failed (will fallback) id=%s err=%v", clusterID, e)
+					}
 				}
-				if e != nil {
-					httpx.JSONError(w, http.StatusInternalServerError, "k8s client error", "k8s_client", e.Error())
-					return
-				}
-				// Reuse cached dynamic client if available
+				// Reuse cached dynamic client if available; otherwise build only when we have a rest.Config.
 				if inst.Dyn != nil {
 					dyn = inst.Dyn
-				} else {
-					dyn, e = dynamic.NewForConfig(cfg)
-				}
-				if e != nil {
-					httpx.JSONError(w, http.StatusInternalServerError, "dynamic client error", "dyn_client", e.Error())
-					return
+				} else if cfg != nil {
+					if d, e := dynamic.NewForConfig(cfg); e == nil {
+						dyn = d
+					} else {
+						log.Printf("cluster: registry dynamic.NewForConfig failed (will fallback) id=%s err=%v", clusterID, e)
+					}
 				}
 			}
 		}
@@ -1241,6 +1261,8 @@ func Router(deps Deps) *http.ServeMux {
 							dyn = d
 							log.Printf("cluster: built dynamic client from main kubeconfig for id=%s", clusterID)
 						}
+						// remember effective rest config for downstream transports
+						restCfg = cfg2
 						// If initial health check times out, try enabling local kube-proxy fallback
 						// and rebuild clients once.
 						if cli == nil || dyn == nil {
@@ -1258,6 +1280,8 @@ func Router(deps Deps) *http.ServeMux {
 										dyn = d2
 										log.Printf("cluster: rebuilt dynamic client after enabling proxy fallback for id=%s", clusterID)
 									}
+									// ensure restCfg is set
+									restCfg = cfg2
 								}
 							}
 						}
@@ -1314,21 +1338,29 @@ func Router(deps Deps) *http.ServeMux {
 					endpointsMissing = true
 				}
 			}
-			// Build API transport to kube-apiserver
-			rt, err := rest.TransportFor(cfg)
-			if err != nil {
-				httpx.JSONError(w, http.StatusInternalServerError, "k8s transport error", "k8s_transport", err.Error())
-				return
+			// Build API transport to kube-apiserver when restCfg available; otherwise skip API proxy path
+			var (
+				rt      http.RoundTripper
+				apihost *url.URL
+			)
+			if restCfg != nil {
+				if t, err := rest.TransportFor(restCfg); err == nil {
+					rt = t
+					apihost, _ = url.Parse(restCfg.Host)
+				} else {
+					log.Printf("cluster: k8s transport build failed for cluster=%s err=%v", clusterID, err)
+				}
+			} else {
+				log.Printf("cluster: rest config is nil for cluster=%s; skipping API proxy transport", clusterID)
 			}
-			apihost, _ := url.Parse(cfg.Host)
 			// If endpoints are missing or cluster prefers pod proxy, try to port-forward and publish via tsnet
 			if (preferPF || endpointsMissing) && regInst != nil && regInst.PF != nil {
 				// If the kube API host is not reachable directly, but we have a tsnet connector,
 				// use a tsnet-backed transport so port-forward and pod listing work even when
 				// cfg.Host points at localhost or a non-routable address.
-				if cfg != nil && regInst.TS != nil {
+				if restCfg != nil && regInst.TS != nil {
 					// quick probe
-					host := strings.TrimPrefix(cfg.Host, "https://")
+					host := strings.TrimPrefix(restCfg.Host, "https://")
 					host = strings.TrimPrefix(host, "http://")
 					// strip path
 					if idx := strings.Index(host, "/"); idx >= 0 {
@@ -1485,7 +1517,7 @@ func Router(deps Deps) *http.ServeMux {
 				}
 			}
 
-			rp := proxy.NewReverseProxy(proxy.Options{
+			opts := proxy.Options{
 				Timeout: 60 * time.Second,
 				// Enable logging for cluster-scoped proxy so we can capture upstream headers and transport errors
 				Logger: httpx.Logger(),
@@ -1494,7 +1526,10 @@ func Router(deps Deps) *http.ServeMux {
 					p := "/api/v1/namespaces/" + defaultNS + "/services/http:" + name + ":" + fmt.Sprintf("%d", port) + "/proxy" + subPath
 					return "http", "", p, nil
 				},
-				APIProxy: func() (http.RoundTripper, func(req *http.Request, scheme, hostport, p string), bool) {
+			}
+			// Only enable API proxying when we have a valid transport and API host
+			if rt != nil && apihost != nil {
+				opts.APIProxy = func() (http.RoundTripper, func(req *http.Request, scheme, hostport, p string), bool) {
 					return rt, func(req *http.Request, scheme, hostport, pth string) {
 						// Honor any base path present on the API host (env override or kubeconfig)
 						basePath := strings.TrimSuffix(apihost.Path, "/")
@@ -1503,8 +1538,9 @@ func Router(deps Deps) *http.ServeMux {
 						req.Host = apihost.Host
 						req.URL.Path = basePath + pth
 					}, true
-				},
-			})
+				}
+			}
+			rp := proxy.NewReverseProxy(opts)
 			// Rewrite path to start at /proxy/server/{name}/...
 			r2 := r.Clone(r.Context())
 			r2.URL = new(url.URL)
@@ -1735,7 +1771,132 @@ func Router(deps Deps) *http.ServeMux {
 						"labels":    spec["labels"],
 					},
 				}
+
+				// Fallback creator: creates a Deployment and Service when the operator CRD isn't available
+				doFallback := func() {
+					log.Printf("workspace create: creating fallback resources cluster=%s name=%s", clusterID, name)
+					specMap := obj["spec"].(map[string]any)
+					image, _ := specMap["image"].(string)
+					rawPorts, _ := specMap["ports"].([]any)
+					ports := []int32{}
+					for _, rp := range rawPorts {
+						if pm, ok := rp.(map[string]any); ok {
+							if pvf, ok := pm["containerPort"].(float64); ok {
+								ports = append(ports, int32(pvf))
+							}
+							if pv, ok := pm["containerPort"].(int64); ok {
+								ports = append(ports, int32(pv))
+							}
+						}
+					}
+					envVars := []corev1.EnvVar{}
+					if rawEnv, ok := specMap["env"].([]any); ok {
+						for _, e := range rawEnv {
+							if em, ok := e.(map[string]any); ok {
+								nameS, _ := em["name"].(string)
+								valS, _ := em["value"].(string)
+								if nameS != "" {
+									envVars = append(envVars, corev1.EnvVar{Name: nameS, Value: valS})
+								}
+							}
+						}
+					}
+					dep := &appsv1.Deployment{
+						ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNS, Labels: map[string]string{"guildnet.io/workspace": name}},
+						Spec:       appsv1.DeploymentSpec{Replicas: pointer.Int32Ptr(1), Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"guildnet.io/workspace": name}}, Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"guildnet.io/workspace": name}}, Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: name, Image: image, Env: envVars}}}}},
+					}
+					// Honor the scheduling hint in fallback mode as well
+					if strings.TrimSpace(schedule) != "" {
+						if dep.Spec.Template.Spec.NodeSelector == nil {
+							dep.Spec.Template.Spec.NodeSelector = map[string]string{}
+						}
+						dep.Spec.Template.Spec.NodeSelector["kubernetes.io/hostname"] = schedule
+					}
+					if len(ports) > 0 {
+						for i := range dep.Spec.Template.Spec.Containers {
+							for _, p := range ports {
+								dep.Spec.Template.Spec.Containers[i].Ports = append(dep.Spec.Template.Spec.Containers[i].Ports, corev1.ContainerPort{ContainerPort: p})
+							}
+						}
+					}
+					svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNS, Labels: map[string]string{"guildnet.io/workspace": name}}, Spec: corev1.ServiceSpec{Selector: map[string]string{"guildnet.io/workspace": name}}}
+					if len(ports) > 0 {
+						for _, p := range ports {
+							svc.Spec.Ports = append(svc.Spec.Ports, corev1.ServicePort{Port: p, TargetPort: intstr.FromInt(int(p))})
+						}
+					} else {
+						svc.Spec.Ports = []corev1.ServicePort{{Port: 8080, TargetPort: intstr.FromInt(8080)}}
+					}
+
+					depCreated := false
+					svcCreated := false
+					var createErrs []string
+
+					d, derr := cli.AppsV1().Deployments(defaultNS).Create(context.Background(), dep, metav1.CreateOptions{})
+					if derr != nil {
+						log.Printf("workspace fallback: deployment create failed cluster=%s name=%s err=%v", clusterID, name, derr)
+						createErrs = append(createErrs, fmt.Sprintf("deployment:%v", derr))
+					} else {
+						depCreated = true
+						log.Printf("workspace fallback: deployment created cluster=%s name=%s uid=%s", clusterID, name, d.GetUID())
+					}
+
+					s, serr := cli.CoreV1().Services(defaultNS).Create(context.Background(), svc, metav1.CreateOptions{})
+					if serr != nil {
+						log.Printf("workspace fallback: service create failed cluster=%s name=%s err=%v", clusterID, name, serr)
+						createErrs = append(createErrs, fmt.Sprintf("service:%v", serr))
+					} else {
+						svcCreated = true
+						log.Printf("workspace fallback: service created cluster=%s name=%s uid=%s clusterIP=%s", clusterID, name, s.GetUID(), s.Spec.ClusterIP)
+					}
+
+					resp := map[string]any{"id": name, "status": "Failed"}
+					// Update Workspace status so callers waiting on status see Running or Failed
+					if dyn != nil {
+						wsu, err := dyn.Resource(gvr).Namespace(defaultNS).Get(context.Background(), name, metav1.GetOptions{})
+						if err == nil {
+							status := map[string]any{}
+							if depCreated && svcCreated {
+								status["phase"] = "Running"
+								status["readyReplicas"] = int64(1)
+								if len(ports) > 0 {
+									status["proxyTarget"] = fmt.Sprintf("%s:%d", name, ports[0])
+									resp["proxyTarget"] = fmt.Sprintf("%s:%d", name, ports[0])
+								}
+							} else {
+								status["phase"] = "Failed"
+								status["readyReplicas"] = int64(0)
+								if len(createErrs) > 0 {
+									status["error"] = strings.Join(createErrs, ", ")
+									resp["error"] = strings.Join(createErrs, ", ")
+								}
+							}
+							_ = unstructured.SetNestedField(wsu.Object, status, "status")
+							if _, uerr := dyn.Resource(gvr).Namespace(defaultNS).UpdateStatus(context.Background(), wsu, metav1.UpdateOptions{}); uerr != nil {
+								log.Printf("workspace fallback: failed to update workspace status cluster=%s name=%s err=%v", clusterID, name, uerr)
+							}
+						} else {
+							log.Printf("workspace fallback: failed to get workspace for status update cluster=%s name=%s err=%v", clusterID, name, err)
+						}
+					}
+
+					if depCreated && svcCreated {
+						resp["status"] = "Running"
+						httpx.JSON(w, http.StatusOK, resp)
+						return
+					}
+					resp["status"] = "Failed"
+					httpx.JSONError(w, http.StatusInternalServerError, "workspace create failed (fallback)", "create_failed", resp)
+					return
+				}
 				if _, err := dyn.Resource(gvr).Namespace(defaultNS).Create(r.Context(), &unstructured.Unstructured{Object: obj}, metav1.CreateOptions{}); err != nil {
+					// If the CRD isn't installed or the GVR doesn't exist, fall back to creating
+					// standard Kubernetes resources (Deployment/Service) instead of failing.
+					if apierrors.IsNotFound(err) || meta.IsNoMatchError(err) || strings.Contains(err.Error(), "the server could not find the requested resource") || strings.Contains(err.Error(), "404 page not found") {
+						log.Printf("workspace create: operator CRD/GVR not found; falling back to Deployment/Service cluster=%s name=%s", clusterID, name)
+						doFallback()
+						return
+					}
 					// If this is a Kubernetes StatusError (validation, etc), surface its structured
 					// details to the client so the UI can display helpful messages.
 					var details any = err.Error()
@@ -1784,130 +1945,66 @@ func Router(deps Deps) *http.ServeMux {
 				}
 
 				// operator did not reconcile; perform fallback creation
-				log.Printf("workspace create: operator did not reconcile in time; creating fallback resources cluster=%s name=%s", clusterID, name)
-				specMap := obj["spec"].(map[string]any)
-				image, _ := specMap["image"].(string)
-				rawPorts, _ := specMap["ports"].([]any)
-				ports := []int32{}
-				for _, rp := range rawPorts {
-					if pm, ok := rp.(map[string]any); ok {
-						if pvf, ok := pm["containerPort"].(float64); ok {
-							ports = append(ports, int32(pvf))
-						}
-						if pv, ok := pm["containerPort"].(int64); ok {
-							ports = append(ports, int32(pv))
-						}
-					}
-				}
-				envVars := []corev1.EnvVar{}
-				if rawEnv, ok := specMap["env"].([]any); ok {
-					for _, e := range rawEnv {
-						if em, ok := e.(map[string]any); ok {
-							nameS, _ := em["name"].(string)
-							valS, _ := em["value"].(string)
-							if nameS != "" {
-								envVars = append(envVars, corev1.EnvVar{Name: nameS, Value: valS})
-							}
-						}
-					}
-				}
-				dep := &appsv1.Deployment{
-					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNS, Labels: map[string]string{"guildnet.io/workspace": name}},
-					Spec:       appsv1.DeploymentSpec{Replicas: pointer.Int32Ptr(1), Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"guildnet.io/workspace": name}}, Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"guildnet.io/workspace": name}}, Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: name, Image: image, Env: envVars}}}}},
-				}
-				// Honor the scheduling hint in fallback mode as well: if a schedule target
-				// was computed, set a nodeSelector so the scheduler places the pod on the
-				// intended node (kubernetes.io/hostname).
-				if strings.TrimSpace(schedule) != "" {
-					if dep.Spec.Template.Spec.NodeSelector == nil {
-						dep.Spec.Template.Spec.NodeSelector = map[string]string{}
-					}
-					dep.Spec.Template.Spec.NodeSelector["kubernetes.io/hostname"] = schedule
-				}
-				if len(ports) > 0 {
-					for i := range dep.Spec.Template.Spec.Containers {
-						for _, p := range ports {
-							dep.Spec.Template.Spec.Containers[i].Ports = append(dep.Spec.Template.Spec.Containers[i].Ports, corev1.ContainerPort{ContainerPort: p})
-						}
-					}
-				}
-				svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNS, Labels: map[string]string{"guildnet.io/workspace": name}}, Spec: corev1.ServiceSpec{Selector: map[string]string{"guildnet.io/workspace": name}}}
-				if len(ports) > 0 {
-					for _, p := range ports {
-						svc.Spec.Ports = append(svc.Spec.Ports, corev1.ServicePort{Port: p, TargetPort: intstr.FromInt(int(p))})
-					}
-				} else {
-					svc.Spec.Ports = []corev1.ServicePort{{Port: 8080, TargetPort: intstr.FromInt(8080)}}
-				}
-
-				depCreated := false
-				svcCreated := false
-				var createErrs []string
-
-				d, derr := cli.AppsV1().Deployments(defaultNS).Create(context.Background(), dep, metav1.CreateOptions{})
-				if derr != nil {
-					log.Printf("workspace fallback: deployment create failed cluster=%s name=%s err=%v", clusterID, name, derr)
-					createErrs = append(createErrs, fmt.Sprintf("deployment:%v", derr))
-				} else {
-					depCreated = true
-					log.Printf("workspace fallback: deployment created cluster=%s name=%s uid=%s", clusterID, name, d.GetUID())
-				}
-
-				s, serr := cli.CoreV1().Services(defaultNS).Create(context.Background(), svc, metav1.CreateOptions{})
-				if serr != nil {
-					log.Printf("workspace fallback: service create failed cluster=%s name=%s err=%v", clusterID, name, serr)
-					createErrs = append(createErrs, fmt.Sprintf("service:%v", serr))
-				} else {
-					svcCreated = true
-					log.Printf("workspace fallback: service created cluster=%s name=%s uid=%s clusterIP=%s", clusterID, name, s.GetUID(), s.Spec.ClusterIP)
-				}
-
-				// Update Workspace status so callers waiting on status see Running or Failed
-				if dyn != nil {
-					wsu, err := dyn.Resource(gvr).Namespace(defaultNS).Get(context.Background(), name, metav1.GetOptions{})
-					if err == nil {
-						status := map[string]any{}
-						if depCreated && svcCreated {
-							status["phase"] = "Running"
-							status["readyReplicas"] = int64(1)
-							if len(ports) > 0 {
-								status["proxyTarget"] = fmt.Sprintf("%s:%d", name, ports[0])
-								resp["proxyTarget"] = fmt.Sprintf("%s:%d", name, ports[0])
-							}
-						} else {
-							status["phase"] = "Failed"
-							status["readyReplicas"] = int64(0)
-							if len(createErrs) > 0 {
-								status["error"] = strings.Join(createErrs, ", ")
-								resp["error"] = strings.Join(createErrs, ", ")
-							}
-						}
-						_ = unstructured.SetNestedField(wsu.Object, status, "status")
-						if _, uerr := dyn.Resource(gvr).Namespace(defaultNS).UpdateStatus(context.Background(), wsu, metav1.UpdateOptions{}); uerr != nil {
-							log.Printf("workspace fallback: failed to update workspace status cluster=%s name=%s err=%v", clusterID, name, uerr)
-						}
-					} else {
-						log.Printf("workspace fallback: failed to get workspace for status update cluster=%s name=%s err=%v", clusterID, name, err)
-					}
-				}
-
-				if depCreated && svcCreated {
-					resp["status"] = "Running"
-					httpx.JSON(w, http.StatusOK, resp)
-					return
-				}
-				resp["status"] = "Failed"
-				httpx.JSONError(w, http.StatusInternalServerError, "workspace create failed (fallback)", "create_failed", resp)
+				doFallback()
 				return
 			}
 			if len(parts) == 3 && r.Method == http.MethodGet {
 				name := parts[2]
-				ws, err := dyn.Resource(gvr).Namespace(defaultNS).Get(r.Context(), name, metav1.GetOptions{})
-				if err != nil {
+				// Try CRD first
+				if dyn != nil {
+					if ws, err := dyn.Resource(gvr).Namespace(defaultNS).Get(r.Context(), name, metav1.GetOptions{}); err == nil {
+						httpx.JSON(w, http.StatusOK, ws.Object)
+						return
+					}
+				}
+				// Fallback: synthesize a Workspace-like object from Deployment/Service
+				dep, derr := cli.AppsV1().Deployments(defaultNS).Get(r.Context(), name, metav1.GetOptions{})
+				svc, serr := cli.CoreV1().Services(defaultNS).Get(r.Context(), name, metav1.GetOptions{})
+				if derr != nil && serr != nil {
 					httpx.JSONError(w, http.StatusNotFound, "workspace not found", "not_found")
 					return
 				}
-				httpx.JSON(w, http.StatusOK, ws.Object)
+				obj := map[string]any{
+					"apiVersion": "guildnet.io/v1alpha1",
+					"kind":       "Workspace",
+					"metadata":   map[string]any{"name": name, "namespace": defaultNS},
+				}
+				// Spec synthesis
+				spec := map[string]any{}
+				ports := []map[string]any{}
+				if dep != nil && len(dep.Spec.Template.Spec.Containers) > 0 {
+					spec["image"] = dep.Spec.Template.Spec.Containers[0].Image
+					for _, cp := range dep.Spec.Template.Spec.Containers[0].Ports {
+						ports = append(ports, map[string]any{"name": cp.Name, "containerPort": cp.ContainerPort})
+					}
+				}
+				if len(ports) == 0 && svc != nil {
+					for _, sp := range svc.Spec.Ports {
+						ports = append(ports, map[string]any{"name": sp.Name, "containerPort": sp.Port})
+					}
+				}
+				if len(ports) > 0 {
+					spec["ports"] = ports
+				}
+				obj["spec"] = spec
+				// Status synthesis
+				st := map[string]any{"phase": "Pending", "readyReplicas": int64(0)}
+				if dep != nil {
+					if dep.Status.ReadyReplicas > 0 {
+						st["phase"] = "Running"
+						st["readyReplicas"] = int64(dep.Status.ReadyReplicas)
+					}
+				}
+				// proxyTarget from first port
+				if len(ports) > 0 {
+					if p, ok := ports[0]["containerPort"].(int32); ok {
+						st["proxyTarget"] = fmt.Sprintf("%s:%d", name, p)
+					} else if pf, ok := ports[0]["containerPort"].(int); ok {
+						st["proxyTarget"] = fmt.Sprintf("%s:%d", name, pf)
+					}
+				}
+				obj["status"] = st
+				httpx.JSON(w, http.StatusOK, obj)
 				return
 			}
 			if len(parts) == 4 && parts[3] == "logs" && r.Method == http.MethodGet {
@@ -2306,6 +2403,41 @@ func headscaleHealth(endpoint string) (string, error) {
 		return "ok", nil
 	}
 	return "error", err
+}
+
+// resolveClusterIDAlias maps well-known aliases (like "default") to a concrete
+// cluster ID when possible. If the provided id already exists or no mapping can
+// be determined, it returns the input unchanged. When exactly one cluster
+// record exists in the host database and id is "default", it will return that
+// record's id to make out-of-the-box flows work without knowing the
+// deterministic id.
+func resolveClusterIDAlias(db *localdb.DB, id string) string {
+	in := strings.TrimSpace(id)
+	if db == nil || in == "" {
+		return id
+	}
+	// If an explicit cluster record exists for this id, keep it.
+	var rec map[string]any
+	if err := db.Get("clusters", in, &rec); err == nil && len(rec) > 0 {
+		return in
+	}
+	// Only alias the well-known "default" identifier to avoid surprising
+	// remaps of arbitrary user-provided ids.
+	if in != "default" {
+		return id
+	}
+	// If exactly one cluster record exists, map to it.
+	var items []map[string]any
+	if err := db.List("clusters", &items); err == nil && len(items) == 1 {
+		if v, ok := items[0]["id"]; ok {
+			sid := strings.TrimSpace(fmt.Sprint(v))
+			if sid != "" {
+				log.Printf("cluster: aliasing id=%q to sole cluster id=%s", id, sid)
+				return sid
+			}
+		}
+	}
+	return id
 }
 
 // isLocalKubeProxyAvailable returns true if a kubectl proxy is listening on 127.0.0.1:8001.

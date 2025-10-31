@@ -1,3 +1,9 @@
+Notes:
+- `scripts/verify-e2e.sh` uses a headscale-compatible check (`headscale nodes list`) and follows redirects when probing HostApp proxy endpoints; this makes the verifier robust across Headscale CLI versions and proxied responses.
+- Tailscale is required for production and for the repository verifier. Ensure you have a running Headscale or Tailscale control plane and provide `TS_AUTHKEY` (and `TS_LOGIN_SERVER` for Headscale) before running `make verify-e2e`.
+- The Tailscale router deploy script normalizes raw-hex preauth keys into canonical `tskey-...` form so `tailscale up` succeeds even when older Headscale CLIs print hex values.
+- The MetalLB installer tolerates early webhook startup by temporarily setting failurePolicy=Ignore on the validating webhook and retrying applies; this avoids transient admission failures on fresh k0s clusters.
+- The MetalLB installer now also ensures the required `memberlist` Secret exists in `metallb-system` (auto-generates a random key); without it, the `speaker` pods stay in ContainerCreating with `secret "memberlist" not found`.
 GuildNet — Production Deployment Guide
 Containerized node (Docker-only, k0s)
 -------------------------------------
@@ -10,7 +16,7 @@ Quick path (one-liners):
 # Bring up node stack and emit kubeconfig to ~/.guildnet/kubeconfig
 scripts/k0s-node-up.sh
 
-# Attach the emitted kubeconfig to the Host App via /bootstrap
+# Attach the emitted kubeconfig to the Host App via /api/bootstrap
 scripts/attach-local-k0s.sh
 
 # Deploy cluster addons, CRDs, DB, and operator (as before)
@@ -27,6 +33,7 @@ Notes:
 - The k0s API is bound locally to 127.0.0.1:16443 by default. Tailnet exposure is layered via the Tailscale container and routing in follow-ups.
 - The node stack also starts a DinD container for local image builds and exposes it on localhost (2375 without TLS, 2376 with TLS). A helper env file is written at `~/.guildnet/dind-env.sh`; `source` it to point your Docker client at DinD when needed.
 - The `setup-all` target provisions the Docker-only path.
+- Kernel modules: the k0s container mounts the host `/lib/modules` read-only to ensure kube-proxy/kube-router and CNI components can load required iptables/nftables kernel modules. This is necessary for stable networking in a containerized control-plane.
 
 Image pipeline smoke (no registry)
 ----------------------------------
@@ -58,7 +65,7 @@ Alternatively, you can have `scripts/k0s-node-up.sh` configure this automaticall
 ```bash
 TS_AUTHKEY=tskey-... TS_LOGIN_SERVER=http://<headscale>:8081 TS_SERVE_KUBEAPI=1 scripts/k0s-node-up.sh
 ```
-This will start the `guildnet-tailscale` container, advertise Pod/Service CIDRs (`$K0S_POD_CIDR,$K0S_SVC_CIDR`), and run `tailscale serve tcp` to forward the local kube-API port to the same tailnet port.
+This will start the `guildnet-tailscale` container, advertise Pod/Service CIDRs (`$K0S_POD_CIDR,$K0S_SVC_CIDR`), and run `tailscale serve tcp` to forward the local kube-API port to the same tailnet port. Tailscale must be configured on each device to participate in federation and to pass the verifier.
 
 TLS SANs for remote kubectl
 ---------------------------
@@ -130,6 +137,19 @@ Note on recent dependency updates (2025-10-19):
 
 This document describes a production-first deployment flow for GuildNet: how to install CRDs and the in-cluster operator, bring up durable RethinkDB, deploy Host App instances, and perform basic verification and hardening.
 
+Proxy verification tip
+----------------------
+When validating the reverse proxy endpoint, force HTTP/1.1 locally and follow redirects. Many UI images (like code-server) return a 302 redirect to `./login` at the base path.
+
+Examples:
+```bash
+# Expect 302 with Location: ./login
+curl -k --http1.1 -sS -D - "https://127.0.0.1:8090/api/cluster/<clusterID>/proxy/server/<service>/"
+
+# Follow to 200 and store HTML
+curl -k --http1.1 -sS -L -D - "https://127.0.0.1:8090/api/cluster/<clusterID>/proxy/server/<service>/" -o /tmp/proxy.html
+```
+
 Goals
 
 - Deploy the operator in-cluster (no embedded operator in production).
@@ -180,6 +200,19 @@ kubectl -n guildnet-system logs -l app=guildnet-operator --tail=200
 ```
 
 Troubleshooting: If the operator logs show RBAC or permission errors, review the manifests created by `scripts/deploy-operator.sh` and ensure the ServiceAccount and ClusterRoleBindings are applied and approved by your cluster admin.
+
+Running the Host App (service) and signals
+-----------------------------------------
+
+Start the Host App using the provided script or editor task so it stays supervised and logs are tailed:
+
+- Script: `scripts/run-hostapp.sh` (idempotent; stops any existing instance on the bound port and starts a new one)
+- VS Code task: “Run server and tail logs” (uses the same script and tails `/tmp/hostapp.log`)
+
+Signal handling:
+- The Host App shuts down gracefully on SIGINT/SIGTERM only. SIGHUP/QUIT are ignored to avoid accidental exits.
+- On Linux, the process requests a parent-death signal (SIGTERM). If you start the Host App from a short-lived shell (e.g., a one-off command that exits immediately), the kernel may terminate the Host App when that shell exits. Use `scripts/run-hostapp.sh` or disable this behavior with `GN_DISABLE_PDEATHSIG=1` when launching.
+
 
 Local image import runbook
 --------------------------------------------------
@@ -354,7 +387,7 @@ bash scripts/generate_join_config.sh --kubeconfig /path/to/kubeconfig --out guil
 Attach via API (same flow):
 
 ```bash
-curl -k -X POST "https://<hostapp-host>:8090/bootstrap" -F "file=@guildnet.config"
+curl -k -X POST "https://<hostapp-host>:8090/api/bootstrap" -F "file=@guildnet.config"
 ```
 
 The Host App will persist the kubeconfig and perform a bounded pre-warm check and will roll back on failure.
@@ -395,7 +428,9 @@ Run the repository end-to-end verifier (this sequence exercises operator reconci
 make verify-e2e
 ```
 
-Note: `scripts/verify-e2e.sh` now uses a headscale-compatible check (`headscale nodes list`) and follows redirects when probing HostApp proxy endpoints; this makes the verifier robust across Headscale CLI versions and proxied responses.
+Notes:
+- `scripts/verify-e2e.sh` uses a headscale-compatible check (`headscale nodes list`) and follows redirects when probing HostApp proxy endpoints; this makes the verifier robust across Headscale CLI versions and proxied responses.
+- Tailscale is optional. If you have not provided `TS_AUTHKEY`, the verifier will skip the Tailscale subnet-router readiness check rather than fail the run. Provide `TS_AUTHKEY` (and `TS_LOGIN_SERVER` if using Headscale) to enable full tailnet checks.
 
 Storage and tailnet verification
 --------------------------------
@@ -525,10 +560,10 @@ export LISTEN_LOCAL="0.0.0.0:8090"
 bash scripts/generate_join_config.sh --kubeconfig /path/to/kubeconfig --out guildnet.config
 ```
 
-4) From Device B (the joiner), POST the join artifact to Device A's `/bootstrap` endpoint:
+4) From Device B (the joiner), POST the join artifact to Device A's `/api/bootstrap` endpoint:
 
 ```bash
-curl -k -X POST "https://<deviceA-host-or-tailnet-ip>:8090/bootstrap" -F "file=@guildnet.config"
+curl -k -X POST "https://<deviceA-host-or-tailnet-ip>:8090/api/bootstrap" -F "file=@guildnet.config"
 ```
 
 5) Verify on Device A the cluster is attached and the kubeconfig is stored in the Host App DB (or visible via `GET /api/deploy/clusters`):

@@ -34,6 +34,20 @@ type ReverseProxy struct {
 func NewReverseProxy(opts Options) *ReverseProxy { return &ReverseProxy{opts: opts} }
 
 func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Defensive: ensure a panic inside the reverse proxy never results in an empty TLS close to clients.
+	// If any unexpected panic occurs, return a 502 with a minimal body so curl and browsers don't report
+	// "Empty reply from server". This also prevents the whole server from crashing.
+	defer func() {
+		if rec := recover(); rec != nil {
+			if p.opts.Logger != nil {
+				p.opts.Logger.Printf("proxy: recovered from panic: %v", rec)
+			} else {
+				log.Printf("proxy: recovered from panic: %v", rec)
+			}
+			// Best-effort error response; if headers already sent this will be ignored by net/http.
+			http.Error(w, "upstream error: proxy panic", http.StatusBadGateway)
+		}
+	}()
 	// Attach a request id if available for correlation
 	reqID := r.Header.Get("X-Request-Id")
 	q := r.URL.Query()
@@ -230,7 +244,19 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Rewrite response headers for iframe/subpath compatibility (Location, Set-Cookie, CSP)
-	rp.ModifyResponse = func(resp *http.Response) error {
+	rp.ModifyResponse = func(resp *http.Response) (err error) {
+		// Guard against unexpected panics during header rewriting to avoid empty replies to clients.
+		defer func() {
+			if rec := recover(); rec != nil {
+				if p.opts.Logger != nil {
+					p.opts.Logger.Printf("proxy: ModifyResponse recovered panic: %v", rec)
+				} else {
+					log.Printf("proxy: ModifyResponse recovered panic: %v", rec)
+				}
+				// Tell ReverseProxy to synthesize a 502 to the client.
+				err = errors.New("modify-response panic")
+			}
+		}()
 		// Debug: log upstream headers that affect embedding so callers can trace why an
 		// iframe may be blocked (e.g., ingress reintroducing X-Frame-Options/CSP).
 		// Emit upstream header summary to configured logger or to standard logger as a fallback

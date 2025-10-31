@@ -32,11 +32,15 @@ Done
 - Docs: `DEPLOYMENT.md` and `architecture.md` updated with Docker-only flow and e2e behavior notes.
  - Phase 6: Operator deployed on k0s and verified. CRDs present (`deviceparticipants`, `workspaces`, etc.); DeviceParticipant CRs are created in `guildnet-system` and workspaces reconcile to Running.
  - Phase 4 (partial): DinD TLS option implemented and exposed on localhost (2375/2376) with helper env at `~/.guildnet/dind-env.sh`. Added `scripts/dind-registry-push.sh` and `make dind-image-push` for registry pushes.
+ - Phase 8 (partial): Reverse proxy verified end-to-end on k0s — base path returns 302 to `./login` and resolves to 200 for code-server login when following redirects; header rewrites (Location/Set-Cookie/CSP/COOP) confirmed.
+ - API/docs polish: `API.md` expanded with proxy transport/redirect details and settings restart note; `architecture.md` proxy redirect behavior documented; `DEPLOYMENT.md` includes proxy verification tip.
+ - Per-cluster settings path fixed (`/api/settings/cluster/{id}`), persistence confirmed in per-cluster DB; Host App gracefully restarts on settings changes.
 
 In progress
 - Phase 3: Tailscale container is started automatically when `TS_AUTHKEY` is set; optional `TS_SERVE_KUBEAPI=1` will configure `tailscale serve tcp` to expose the kube-API over the tailnet. SAN coverage for tailnet IP/MagicDNS is pending.
 - Phase 5/9/10: Make defaults + bootstrap polish + docs alignment. Scripts and targets exist; final defaultization and README/API polish underway.
  - Phase 7/8: Storage persistence validation (PVCs survive restarts) and proxy/ingress parity checks on k0s.
+ - Proxy PF/tsnet path validation: exercise `prefer_pod_proxy`/`use_port_forward` to ensure port-forward selection and publication on tailnet (pending).
 
 Planned next
 - Phase 3: Validate tailnet kube-API access (serve + SANs) across devices and document.
@@ -119,7 +123,7 @@ Tasks
   - `node-up` → `scripts/k0s-node-up.sh`
   - `node-down` → `scripts/k0s-node-down.sh`
   - `deploy-k0s-node` → tailscale up + k0s up + kubeconfig emit
-  - `attach-local-node` → POST `/bootstrap` with emitted kubeconfig
+  - `attach-local-node` → POST `/api/bootstrap` with emitted kubeconfig
 - Update `setup-all` to provision Docker+k0s only (MicroK8s removed).
 
 Acceptance
@@ -159,7 +163,7 @@ Acceptance
 
 Tasks
 - `scripts/attach-local-k0s.sh`:
-  - Read emitted kubeconfig and call Host App `/bootstrap`.
+  - Read emitted kubeconfig and call Host App `/api/bootstrap`.
   - Apply default per-cluster settings (e.g., API proxy hints, imagePullSecret) via `PUT /api/settings/cluster/{id}`.
 - UI “Download join config” remains unchanged.
 

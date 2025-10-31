@@ -1,2 +1,3 @@
 - [ ] consolidate LOCAL_LISTEN and VITE_API_BASE to a single var
 - [ ] more clean up
+- [x] Prevent unintended HostApp shutdowns: ignore SIGHUP/QUIT and document pdeathsig behavior in docs

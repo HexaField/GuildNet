@@ -46,8 +46,8 @@ docker exec -i guildnet-headscale headscale users create "$ns" >/dev/null 2>&1 |
 # Resolve Headscale user ID for namespace (some headscale builds require numeric --user id)
 resolve_user_id() {
   local user_name="$1"
-  docker exec -i guildnet-headscale headscale users list \
-    | awk -F'\|' -v target="$user_name" 'NR>1{uid=$1; uname=$3; gsub(/^[ \t]+|[ \t]+$/,"",uid); gsub(/^[ \t]+|[ \t]+$/,"",uname); if (uname==target) {print uid; exit}}'
+  docker exec -i guildnet-headscale headscale users list -o json \
+    | jq -r --arg name "$user_name" '.[] | select(.name==$name) | .id' | head -n1
 }
 
 USER_ID=$(resolve_user_id "$ns")

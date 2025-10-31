@@ -78,6 +78,7 @@ Containerized node runtime (k0s in Docker)
 E2E verification behavior with local-only API
 - When a device runs k0s with the kube-API bound to 127.0.0.1, other devices' HostApp instances cannot reach the API directly. The e2e verifier (`scripts/verify-federation-e2e.sh`) treats the local cluster state as authoritative and will skip remote-perspective visibility/log checks if the remote HostApp returns an empty server list. In genuine single-node clusters (<2 nodes), remote-perspective checks are always skipped.
 - Placement relies on the operator honoring the `guildnet.io/schedule-node` hint by setting a nodeSelector for `kubernetes.io/hostname`. If node labels/hostnames do not align or the scheduler cannot satisfy constraints, both workspaces may land on the same node; the e2e will warn and proceed in that case to prioritize end-to-end functionality over strict placement in constrained environments.
+ - Tailscale is required. The repository-level `verify-e2e` script requires the subnet-router DaemonSet to be present and Ready; provide a valid `TS_AUTHKEY` (and `TS_LOGIN_SERVER` for Headscale) before running the verifier.
 
 tsnet connectors and Headscale auth (implementation details)
 -----------------------------------------------------------
@@ -99,7 +100,7 @@ Mirror & resync mechanism (short)
 - When a Host App publishes a service, it mirrors the mapping into `guildnet-system/published-<id>` in the cluster. Other devices read that ConfigMap and resync local listeners/proxies so published services are visible across devices.
 
 Bootstrap & coordination (short)
-- Devices join by submitting a `guildnet.config` (or kubeconfig) to an existing Host App via `POST /bootstrap`. The receiver persists the kubeconfig and runs a short pre-warm probe. Leader election (controller-runtime) ensures only one reconciler actively changes cluster-scoped resources at a time.
+- Devices join by submitting a `guildnet.config` (or kubeconfig) to an existing Host App via `POST /api/bootstrap`. The receiver persists the kubeconfig and runs a short pre-warm probe. Leader election (controller-runtime) ensures only one reconciler actively changes cluster-scoped resources at a time.
 
 Deterministic cluster identity
 ------------------------------
@@ -121,7 +122,7 @@ In-cluster DeviceParticipant SOT and name sanitization
 High level summary
 
 - Per-cluster kubeconfigs: the Host App stores kubeconfigs in local state and looks them up under the DB key `credentials:cl:{id}:kubeconfig` when creating per-cluster `Instance` clients. For interactive dev flows the code now prefers `~/.guildnet/kubeconfig` as the default kubeconfig before `~/.kube/config`.
-- `POST /bootstrap` accepts a join payload (`guildnet.config` file or JSON with `cluster.kubeconfig`), persists a cluster record and kubeconfig, then performs a bounded pre-warm (10s) which attempts a light Kubernetes API call and a short `EnsureRDB`. On pre-warm failure bootstrap rolls back persisted state and returns an error.
+- `POST /api/bootstrap` accepts a join payload (`guildnet.config` file or JSON with `cluster.kubeconfig`), persists a cluster record and kubeconfig, then performs a bounded pre-warm (10s) which attempts a light Kubernetes API call and a short `EnsureRDB`.
 
 Developer teardown helper
 -------------------------
@@ -185,7 +186,7 @@ Dev convenience: the router can detect a local `kubectl proxy` and rewrite clust
 ### Join/bootstrap flow and cluster management
 
 - `scripts/generate_join_config.sh` produces `guildnet.config` join artifacts used by the UI and automation.
-- `POST /bootstrap` persists cluster records and kubeconfigs, then pre-warms clients and RDB connectivity. On failure, state is rolled back to keep the UI consistent.
+- `POST /api/bootstrap` persists cluster records and kubeconfigs, then pre-warms clients and RDB connectivity. Pre-warm of the DB is best-effort; API connectivity must succeed.
 
 ### Operator modes and CRDs
 
@@ -203,14 +204,14 @@ Dev convenience: the router can detect a local `kubectl proxy` and rewrite clust
   - GET `/healthz` — quick liveness & readiness checks
 
 - Join/bootstrap
-  - POST `/bootstrap` — accept join file or JSON with kubeconfig and optional hints (pre-warm clients)
+  - POST `/api/bootstrap` — accept join file or JSON with kubeconfig and optional hints (pre-warm clients)
 
 - Jobs / Workspaces
   - POST `/api/jobs` — create a workspace (translates to a Workspace CR)
   - GET `/api/jobs`, GET `/api/jobs/{id}` — list and inspect
 
 - Per-cluster operations
-  - GET/PUT `/api/settings/cluster/{id}` — cluster settings
+  - GET/PUT `/api/settings/cluster/{id}` — cluster settings (persisted in per-cluster local DB; PUT triggers graceful restart)
   - GET `/api/cluster/{id}/servers` — list workspaces
     - Enriches each record with the machine identity when available by:
       - Listing pods with label `guildnet.io/workspace=<name>` to determine the node hosting the workspace.
@@ -222,7 +223,7 @@ Dev convenience: the router can detect a local `kubectl proxy` and rewrite clust
     - This requires that each device is a node in the same Kubernetes cluster and node names match the device hostnames (or that your nodes are labeled accordingly).
   - DELETE `/api/cluster/{id}/workspaces/{name}`
     - Deletes a single Workspace CR. This endpoint powers the UI "Shutdown" action available from the Servers list and Server detail page.
-  - Proxy: `/api/cluster/{id}/proxy/server/{name}/...` — proxy to workspace servers (sets `X-Forwarded-Prefix`)
+  - Proxy: `/api/cluster/{id}/proxy/server/{name}/...` — proxy to workspace servers (sets `X-Forwarded-Prefix`; base-path may return 302 to `./login` for apps like code-server)
 
 - Database API (per cluster)
   - GET/POST `/api/cluster/{id}/db` — list/create DBs
@@ -266,16 +267,23 @@ Recent fixes (2025-10-21):
 
 Note: The verifier `scripts/verify-e2e.sh` was recently updated to be more robust across Headscale CLI versions and to follow redirects when probing HostApp proxy endpoints.
 
+### Signals and graceful shutdown
+
+- The Host App now handles only SIGINT and SIGTERM for shutdown. SIGHUP and SIGQUIT are ignored to avoid accidental exits during log rotation or terminal events.
+- On Linux, the process requests a parent-death signal (SIGTERM) so if the supervising shell dies, the Host App exits cleanly instead of orphaning. When launching from ephemeral shells, you can disable this behavior with `GN_DISABLE_PDEATHSIG=1`.
+- Recommended: start via `scripts/run-hostapp.sh` or the editor task “Run server and tail logs” so a supervising shell remains alive and pdeathsig won’t trigger unexpectedly.
+
 ### Developer & deployment workflow
 
 - `scripts/k0s-node-up.sh` — provision k0s-in-Docker and write kubeconfig to `~/.guildnet/kubeconfig`.
-- `scripts/deploy-metallb.sh` — install MetalLB for LoadBalancer IPs in local clusters.
+- `scripts/deploy-metallb.sh` — install MetalLB for LoadBalancer IPs in local clusters; on fresh k0s-in-Docker it temporarily sets the validating webhook failurePolicy to Ignore and retries until admission is available.
 - `scripts/deploy-operator.sh` — apply CRDs, create `guildnet-system` namespace and deploy the in-cluster operator (image configurable via env/IMAGE).
 - `scripts/run-hostapp.sh` — recommended dev flow; sets `KUBECONFIG=~/.guildnet/kubeconfig` when present, stops any existing hostapp listening on the chosen port, and starts `bin/hostapp serve` with an embedded operator.
+- `scripts/deploy-tailscale-router.sh` — deploy a Tailscale subnet-router DaemonSet; it normalizes hex preauth keys to the canonical `tskey-...` form and keeps the pod running even if `tailscale up` initially fails so you can inspect logs and retry.
 
 ### Future small improvements (suggestions)
 
-- Add a short `README` snippet or `docs/bootstrap.md` showing the exact `POST /bootstrap` JSON and form upload shape and an example `guildnet.config`.
+- Add a short `README` snippet or `docs/bootstrap.md` showing the exact `POST /api/bootstrap` JSON and form upload shape and an example `guildnet.config`.
 - Add a `make recreate-dev` or `make dev-setup` target that wires `scripts/k0s-node-up.sh`, `scripts/deploy-metallb.sh` and `kubectl apply -f k8s/rethinkdb.yaml` for easier local setup.
 - Make `scripts/deploy-operator.sh` accept a `LOCAL_IMAGE` argument or provide instructions to import the operator image via DinD/registry when necessary for local operator image testing.
 

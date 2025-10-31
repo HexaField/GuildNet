@@ -69,10 +69,10 @@ if [[ "$MODE" == "host" ]]; then
   # Suggest HOSTAPP_URL candidates
   LAN_IP=$(hostname -I | awk '{print $1}') || true
   TS_IP=$(command -v tailscale >/dev/null 2>&1 && tailscale ip -4 2>/dev/null | head -n1 || true)
-  echo "[host] To attach this cluster from another device, POST guildnet.config to /bootstrap."
+  echo "[host] To attach this cluster from another device, POST guildnet.config to /api/bootstrap."
   if [[ -n "$TS_IP" ]]; then echo "[host] Tailscale URL candidate: https://$TS_IP:8090"; fi
   if [[ -n "$LAN_IP" ]]; then echo "[host] LAN URL candidate: https://$LAN_IP:8090"; fi
-  echo "[host] Example (from another device): curl -k -X POST 'https://<HOSTAPP_URL>/bootstrap' -F 'file=@guildnet.config'"
+  echo "[host] Example (from another device): curl -k -X POST 'https://<HOSTAPP_URL>/api/bootstrap' -F 'file=@guildnet.config'"
   exit 0
 fi
 
@@ -112,16 +112,16 @@ if [[ -z "${HOSTAPP_URL:-}" ]]; then
 fi
 
 if [[ -n "${HOSTAPP_URL:-}" ]]; then
-  echo "[joiner] attaching cluster to Host App at: $HOSTAPP_URL"
-  curl -k -X POST "$HOSTAPP_URL/bootstrap" -F "file=@guildnet.config" || {
+  echo "[joiner] attaching cluster to Host App at: $HOSTAPP_URL/api/bootstrap"
+  curl -k -X POST "$HOSTAPP_URL/api/bootstrap" -F "file=@guildnet.config" || {
     echo "[joiner] attach failed; you can retry manually with:" >&2
-    echo "curl -k -X POST '$HOSTAPP_URL/bootstrap' -F 'file=@guildnet.config'" >&2
+    echo "curl -k -X POST '$HOSTAPP_URL/api/bootstrap' -F 'file=@guildnet.config'" >&2
     exit 1
   }
   echo "[joiner] attach complete"
 else
   echo "[joiner] HOSTAPP_URL not set; to attach, run on this device:"
-  echo "  curl -k -X POST 'https://<deviceA-tailnet-ip>:8090/bootstrap' -F 'file=@guildnet.config'"
+  echo "  curl -k -X POST 'https://<deviceA-tailnet-ip>:8090/api/bootstrap' -F 'file=@guildnet.config'"
 fi
 
 echo "[joiner] done"

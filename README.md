@@ -86,19 +86,19 @@ Verification:
 ### Connect from another device
 
 
-From any device on the Tailnet open the Host App URL (https://localhost:8090), use the cluster Settings to "Download join config" and transfer that `guildnet.<cluster>.config` to another Host App instance or POST it to `/bootstrap` to register the cluster.
+From any device on the Tailnet open the Host App URL (https://localhost:8090), use the cluster Settings to "Download join config" and transfer that `guildnet.<cluster>.config` to another Host App instance or POST it to `/api/bootstrap` to register the cluster.
 
 Verification:
 
 - Generate a join config locally (same format the UI emits): `make generate-join-config` (writes `guildnet.config` by default)
-- Register a joiner by POSTing the config to the host app (server must be reachable): `curl -k -X POST https://<hostapp>:8090/bootstrap -H 'Content-Type: application/json' --data @guildnet.config`
+- Register a joiner by POSTing the config to the host app (server must be reachable): `curl -k -X POST https://<hostapp>:8090/api/bootstrap -H 'Content-Type: application/json' --data @guildnet.config`
 
 ### Participate in a cluster
 
 Short flow (federated / multi-device):
 
 - Device A (host): run the Host App and ensure Headscale + cluster/operator are set up (quick helpers: `make multi-device-host`).
-- Device B (joiner): generate a join config (`make generate-join-config`) and either use the Host App UI "Download join config" on Device A or POST the generated `guildnet.config` to Device A's `/bootstrap` endpoint to register the device. There is also a helper target `make multi-device-joiner` for an automated joiner flow.
+- Device B (joiner): generate a join config (`make generate-join-config`) and either use the Host App UI "Download join config" on Device A or POST the generated `guildnet.config` to Device A's `/api/bootstrap` endpoint to register the device. There is also a helper target `make multi-device-joiner` for an automated joiner flow.
 
 Notes:
 

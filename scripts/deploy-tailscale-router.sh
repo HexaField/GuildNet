@@ -18,6 +18,28 @@ if [ -z "${TS_AUTHKEY:-}" ]; then
   exit 0
 fi
 
+# Normalize TS_AUTHKEY to canonical tskey-<base64url-no-pad> if it looks like raw hex
+normalize_authkey() {
+  local k="$1"
+  k="${k## }"; k="${k%% }"
+  if [ -z "$k" ]; then printf "%s" "$k"; return; fi
+  case "$k" in
+    tskey-*) printf "%s" "$k"; return ;;
+  esac
+  # detect even-length hex
+  if echo "$k" | grep -Eq '^[0-9a-fA-F]+$' && [ $(( ${#k} % 2 )) -eq 0 ]; then
+    if command -v xxd >/dev/null 2>&1; then
+      local b64
+      b64=$(printf "%s" "$k" | xxd -r -p | base64 | tr '+/' '-_' | tr -d '=')
+      printf "tskey-%s" "$b64"
+      return
+    fi
+  fi
+  # Fallback: add tskey- prefix
+  printf "tskey-%s" "$k"
+}
+AUTH_NORM=$(normalize_authkey "$TS_AUTHKEY")
+
 # Local preflight: if running against a single-node local cluster, ensure host /dev/net/tun is available
 # If the host already has a tailscaled or other process holding /dev/net/tun, the DaemonSet pods will crash
 # with 'device or resource busy'. Detect that early and give the user a clear remediation path.
@@ -76,7 +98,7 @@ spec:
           privileged: true
         env:
         - name: TS_AUTHKEY
-          value: "${TS_AUTHKEY}"
+          value: "${AUTH_NORM}"
         - name: TS_LOGIN_SERVER
           value: "${TS_LOGIN_SERVER}"
         - name: TS_ROUTES
@@ -95,7 +117,14 @@ spec:
           set -e
           /usr/local/bin/tailscaled --state=/var/lib/tailscale/tailscaled.state &
           sleep 2
-          /usr/local/bin/tailscale up --authkey="${TS_AUTHKEY}" --login-server="${TS_LOGIN_SERVER}" --advertise-routes="${TS_ROUTES}" --hostname="${TS_HOSTNAME}" --accept-routes
+          # Allow headscale/Tailscale auth to be retried without crashing the pod
+          set +e
+          /usr/local/bin/tailscale up --authkey="${AUTH_NORM}" --login-server="${TS_LOGIN_SERVER}" --advertise-routes="${TS_ROUTES}" --hostname="${TS_HOSTNAME}" --accept-routes
+          rc=\$?
+          if [ \$rc -ne 0 ]; then
+            echo "tailscale up failed with exit \$rc; continuing to run to allow later retries/log inspection"
+          fi
+          set -e
           tail -f /dev/null
       volumes:
       - name: state

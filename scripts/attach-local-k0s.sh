@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # attach-local-k0s.sh
-# Read the locally emitted kubeconfig and attach the cluster to the Host App via /bootstrap.
+# Read the locally emitted kubeconfig and attach the cluster to the Host App via /api/bootstrap.
 # Requires the Host App to be reachable (typically https://127.0.0.1:8090 by default).
 
 GN_KUBECONFIG=${GN_KUBECONFIG:-"$HOME/.guildnet/kubeconfig"}

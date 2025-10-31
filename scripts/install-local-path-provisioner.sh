@@ -8,10 +8,20 @@ set -euo pipefail
 need(){ command -v "$1" >/dev/null 2>&1 || { echo "Missing: $1" >&2; exit 2; }; }
 need kubectl
 
-# If a default storageclass exists, exit quickly
+# If a default StorageClass exists AND the provisioner deployment is Available, skip; otherwise (repair) apply manifests
+DEF_OK=0
 if kubectl get storageclass -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.storageclass\.kubernetes\.io/is-default-class}{"\n"}{end}' 2>/dev/null | grep -q "\btrue$"; then
-  echo "[local-path] default StorageClass already present; skipping"
-  exit 0
+  if kubectl -n local-path-storage get deploy/local-path-provisioner >/dev/null 2>&1; then
+    AVAIL=$(kubectl -n local-path-storage get deploy/local-path-provisioner -o jsonpath='{.status.availableReplicas}' 2>/dev/null || echo 0)
+    if [ "${AVAIL:-0}" != "" ] && [ "${AVAIL:-0}" -ge 1 ]; then
+      echo "[local-path] default StorageClass and provisioner are present; skipping"
+      exit 0
+    else
+      echo "[local-path] default StorageClass present but provisioner not Available; repairing..."
+    fi
+  else
+    echo "[local-path] default StorageClass present but provisioner missing; installing..."
+  fi
 fi
 
 # Apply local-path-provisioner (Rancher)
@@ -108,9 +118,11 @@ spec:
         - name: setup
           hostPath:
             path: /opt/local-path-provisioner
+            type: DirectoryOrCreate
         - name: provisioner
           hostPath:
             path: /opt/local-path-provisioner
+            type: DirectoryOrCreate
 ---
 apiVersion: v1
 kind: ConfigMap

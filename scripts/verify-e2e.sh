@@ -20,7 +20,7 @@ if [ -z "$HS" ] && docker ps --format '{{.Names}}' | grep -q '^guildnet-headscal
 fi
 if [ -n "$HS" ]; then
   # consider any HTTP status as reachable; only fail if TCP connect fails
-  if curl -sS -o /dev/null -m 2 "$HS" || true; then echo ok; else echo fail; PASS=0; fi
+  if curl -sS -o /dev/null -m 2 "$HS"; then echo ok; else echo fail; PASS=0; fi
 else
   echo "skip (no headscale)"
 fi
@@ -45,8 +45,8 @@ elif [ ! -f "${KUBECONFIG}" ]; then
 elif ! kubectl version --request-timeout=3s >/dev/null 2>&1; then
   echo "skip (kube API unreachable)"
 elif kubectl -n kube-system get ds tailscale-subnet-router >/dev/null 2>&1; then
-  # First try rollout status (fast path)
-  if kubectl -n kube-system rollout status ds/tailscale-subnet-router --timeout=90s; then
+  # Tailscale is REQUIRED: ensure the daemonset is fully ready
+  if kubectl -n kube-system rollout status ds/tailscale-subnet-router --timeout=120s; then
     echo ok
   else
     # Fallback: compare desired vs ready with a short retry loop
@@ -124,6 +124,30 @@ if command -v kubectl >/dev/null && [ -f "${KUBECONFIG}" ] && kubectl version --
     WS_NAME="verify-code-server-e2e"
     CLUSTER_ID="default"
     HOSTAPP_URL="${GN_HOSTAPP_URL:-https://127.0.0.1:8090}"
+    # If CLUSTER_ID is the alias 'default', try to auto-discover a concrete id
+    # from the HostApp when possible. Prefer a cluster with state=ready.
+    if [ "$CLUSTER_ID" = "default" ]; then
+      # Discover a suitable cluster id by checking status for each known cluster.
+      # Prefer kubeconfigPresent && k8sReachable, otherwise any kubeconfigPresent.
+      IDS=$(curl -k -sS "$HOSTAPP_URL/api/deploy/clusters" | jq -r '.[] | .id' 2>/dev/null || true)
+      PICK=""
+      if [ -n "$IDS" ]; then
+        for id in $IDS; do
+          st=$(curl -k -sS "$HOSTAPP_URL/api/cluster/$id/status" 2>/dev/null || true)
+          kp=$(printf '%s' "$st" | jq -r '.kubeconfigPresent // false' 2>/dev/null || echo false)
+          kr=$(printf '%s' "$st" | jq -r '.k8sReachable // false' 2>/dev/null || echo false)
+          if [ "$kp" = "true" ] && [ "$kr" = "true" ]; then
+            PICK="$id"; break
+          fi
+          if [ -z "$PICK" ] && [ "$kp" = "true" ]; then
+            PICK="$id"
+          fi
+        done
+      fi
+      if [ -n "${PICK:-}" ]; then
+        CLUSTER_ID="$PICK"
+      fi
+    fi
     echo "Using HostApp at $HOSTAPP_URL to create and verify Workspace $WS_NAME on cluster $CLUSTER_ID"
     # Create workspace and wait for Running/proxyTarget via HostApp API (non-fatal)
     if ! HOSTAPP_URL="$HOSTAPP_URL" "$VERIFY_SCRIPT" "$CLUSTER_ID" "$WS_NAME" codercom/code-server:4.9.0 changeme; then
