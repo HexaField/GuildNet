@@ -800,3 +800,17 @@ Created by automation. Edit as needed to match your production layout and secret
 Related design docs:
 - ADR: `docs/adr/0001-multi-device-cluster.md`
 - Implementation plan: `docs/implementation/0001-multi-device-cluster-implementation.md`
+
+UI quick start (Join modal and Deployment Manager)
+--------------------------------------------------
+For operators who prefer UI-driven flows, the sidebar "Connect a cluster" modal now includes:
+
+- Attach existing cluster: import a `guildnet.config` join file (or paste kubeconfig) and click Save. The Host App computes the deterministic cluster ID and validates connectivity.
+- Deploy new local cluster: choose this mode to request a local cluster provisioning via the Host App (POST `/api/deploy/clusters`). After submitting, you can monitor progress and configure Headscale/Tailscale on the Deployment Manager page at `/deploy`.
+	This triggers an orchestration job that runs `scripts/k0s-node-up.sh` on the host and then automatically attaches the emitted kubeconfig under a deterministic cluster ID.
+
+Deployment Manager (`/deploy`) exposes:
+- Headscale management: create instance, set endpoint, rotate preauth keys, check health.
+- Cluster records: create cluster records, attach kubeconfigs, download kubeconfigs, check health.
+
+These UI flows use the production API endpoints documented in `API.md` and do not rely on dev-only or local-proxy fallbacks.

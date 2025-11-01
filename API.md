@@ -152,7 +152,8 @@ Multi-device automation: Use `make multi-device-host` on Device A and `make mult
 
 - GET/POST /api/deploy/clusters
   - GET: list clusters persisted in Host App DB.
-  - POST: create a cluster record (orchestration job for provisioning).
+  - POST: create a cluster record (orchestration job for provisioning). The Web UI exposes this under the Join modal ("Deploy new local cluster") and on the Deployment Manager page at `/deploy`.
+    - Current implementation (cluster.create job) attempts an automatic local bootstrap by executing `scripts/k0s-node-up.sh` and then reading the emitted kubeconfig from `~/.guildnet/kubeconfig`. The kubeconfig is persisted under the deterministic cluster ID (computed from the kubeconfig) and the record is updated to `ready` once attached.
 
 - GET/DELETE/POST /api/deploy/clusters/{id}
   - GET: cluster record (from Host App DB).

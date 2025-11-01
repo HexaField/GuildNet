@@ -70,6 +70,13 @@ Federation and remote visibility
 - Reverse proxying to services supports pod port-forwarding when Service endpoints are missing; when a tsnet connector is configured, the port can be published to the tailnet automatically.
 ---------------------------
 
+UI deployment flows
+--------------------
+- Cluster onboarding and provisioning are centralized on the Deployment Manager page at `/deploy` (the previous sidebar modal has been removed).
+  - Join existing cluster: import a join file and/or paste a kubeconfig; click "Create & Attach" to create a record and attach the kubeconfig. You can also download a per-cluster join file later.
+  - Deploy new local cluster: click Create to submit a provisioning job via `POST /api/deploy/clusters`. The job runs `scripts/k0s-node-up.sh` to start a local k0s-in-Docker control-plane, then persists the emitted kubeconfig under the deterministic cluster ID and marks the record ready.
+- The page also manages Headscale/Tailscale (create instance, set endpoint and preauth key, check health) using `/api/deploy/headscale`.
+
 For operator-driven federation the operator requires a couple of runtime artifacts to operate non-interactively in multi-device tests:
 
 - A valid `~/.guildnet/config.json` containing `login_server` and `auth_key` so tsnet can login to the headscale/tailscale server without interactive prompts. In-cluster operator deployments can mount this as a ConfigMap (we use `operator-config` in tests).
