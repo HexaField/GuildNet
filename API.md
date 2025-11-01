@@ -1,3 +1,47 @@
+# API
+
+This document describes the HostApp HTTP API and important behavior notes as of the strict production-only flow.
+
+Key changes (strict mode):
+ - No implicit kubectl/local-proxy fallbacks are performed by the server. All Kubernetes interactions must succeed via configured clients.
+ - Per-cluster API proxying is only applied when explicitly configured via cluster settings (APIProxyURL). No environment-based defaults are honored.
+
+Per-cluster settings
+ - GET /settings/cluster/{id}
+ - PUT /settings/cluster/{id}
+
+Request/response:
+ - Content-Type: application/json
+ - Body fields (subset):
+   - api_proxy_url (string): override rest.Config.Host for the cluster’s k8s clients. Useful when the kube-apiserver is reachable through a tunnel or a tsnet-published address.
+   - api_proxy_force_http (bool): when true, the scheme on the configured host is forced to http.
+   - prefer_pod_proxy (bool), use_port_forward (bool): hints used by reverse proxy endpoints to port-forward to pods when Services have no endpoints.
+
+Example PUT:
+  {"api_proxy_url":"https://127.0.0.1:16443"}
+
+Note: The route is served at /settings/cluster/{id}. Ensure you are running a recent hostapp binary built from this repository.
+
+Cluster-scoped endpoints
+ - GET /api/cluster/{id}/workspaces
+ - POST /api/cluster/{id}/workspaces
+ - GET /api/cluster/{id}/workspaces/{name}
+ - GET /api/cluster/{id}/workspaces/{name}/logs
+ - GET /api/cluster/{id}/servers
+
+Behavior notes:
+ - /api/cluster/{id}/servers lists Workspace resources via the CRD. When the CRD is not installed, an empty list is returned. Use GET /workspaces/{name} to obtain a synthesized view from Deployment/Service when CRD is absent.
+ - Workspace creation will attempt the CRD path first; if the operator is not installed or the CRD is missing, server will create a Deployment/Service fallback and synthesize a Workspace-like status. This keeps the API usable without requiring the operator for basic flows.
+
+Global settings
+ - GET /api/settings/tailscale
+ - PUT /api/settings/tailscale
+
+Cluster health
+ - GET /api/deploy/clusters/{id}?action=health: returns {status: ok|error}
+
+Bootstrap (import kubeconfig)
+ - POST /bootstrap with {cluster:{kubeconfig, ...}} persists kubeconfig under a deterministic ID and pre-warms clients. In strict mode, this endpoint validates reachability and will reject kubeconfigs that are not reachable from the HostApp.
 # GuildNet API Reference
 
 This document lists the Host App HTTP API endpoints, per-cluster services and endpoints, cluster infrastructure components, and configuration options for both the cluster and the Host App server.
@@ -128,6 +172,10 @@ Docker-only k0s node note
 -------------------------
 - The helper script `scripts/k0s-node-up.sh` emits a kubeconfig (default `~/.guildnet/kubeconfig`) for the containerized k0s control-plane running on the same device. This kubeconfig can be posted to `/api/bootstrap` exactly like any other cluster.
 - Initial defaults bind the API to `https://127.0.0.1:16443` (port auto-increments if busy). Tailnet-based access can be configured via Tailscale routing/serve (`TS_SERVE_KUBEAPI=1`) and the API cert may include the tailnet IP in SANs when `TS_ADD_SANS=1` is provided. The API surface and bootstrap semantics remain unchanged.
+
+Operational note on multi-device workers
+---------------------------------------
+- The remote worker bootstrap helper `scripts/k0s-worker-up.sh` now supports an optional `--host-network 0|1` flag (default: `1`). Use `--host-network 0` on devices that already have a kubelet/kube-proxy binding to ports 10250/10248 to avoid conflicts. This is an operational toggle and does not change any Host App API behavior.
 
 - GET /ui-config
   - UI runtime config placeholder (returns {} in current implementation).

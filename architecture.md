@@ -58,6 +58,16 @@ Note: see ADR and implementation plan for multi-device federated clusters:
 - Implementation plan: `docs/implementation/0001-multi-device-cluster-implementation.md`
 
 Multi-device operator notes
+
+Strict production posture (no fallbacks)
+- HostApp and scripts run in a production-only mode with no dev/local fallbacks. There is no implicit kubectl proxying in the server. Every request uses configured Kubernetes clients.
+- The Workspace CRD (config/crd) must be installed for list endpoints like /api/cluster/{id}/servers to return data. When the CRD is missing, the API returns an empty list for list endpoints; use GET /workspaces/{name} to obtain a synthesized view from Deployment/Service for a specific workspace.
+- The server will attempt CRD-based creation first. If the operator isn’t available, it creates Deployment/Service and synthesizes status. This keeps flows working without a dev mode.
+
+Federation and remote visibility
+- Each device runs HostApp locally. For remote devices to observe the cluster without fallbacks, the device must be able to reach the kube-apiserver for the target cluster.
+- Configure per-cluster APIProxyURL (via /settings/cluster/{id}) to point the client-go rest.Config.Host to an address reachable from that device (for example, via an SSH reverse-tunnel to 127.0.0.1:6443 or a tsnet-published endpoint). No automatic local-proxy is used.
+- Reverse proxying to services supports pod port-forwarding when Service endpoints are missing; when a tsnet connector is configured, the port can be published to the tailnet automatically.
 ---------------------------
 
 For operator-driven federation the operator requires a couple of runtime artifacts to operate non-interactively in multi-device tests:
@@ -75,10 +85,11 @@ Containerized node runtime (k0s in Docker)
 - Local image pipeline for single-node clusters: for fast inner-loop development without a registry, images can be built inside the DinD container and imported directly into the k0s node's containerd (`ctr -n k8s.io images import`). When the image tag is non-latest (e.g., `:local`), the default Kubernetes `imagePullPolicy: IfNotPresent` ensures the locally imported image is used without external pulls. See `scripts/image-pipeline-smoke.sh` and `make smoke-image-pipeline`.
  - When a registry is desired, the DinD daemon is exposed on localhost (2375 plain, 2376 TLS) with a helper env file at `~/.guildnet/dind-env.sh`. The helper `scripts/dind-registry-push.sh` tags and pushes images from DinD to a registry, with a Makefile wrapper `make dind-image-push`.
 
-E2E verification behavior with local-only API
-- When a device runs k0s with the kube-API bound to 127.0.0.1, other devices' HostApp instances cannot reach the API directly. The e2e verifier (`scripts/verify-federation-e2e.sh`) treats the local cluster state as authoritative and will skip remote-perspective visibility/log checks if the remote HostApp returns an empty server list. In genuine single-node clusters (<2 nodes), remote-perspective checks are always skipped.
-- Placement relies on the operator honoring the `guildnet.io/schedule-node` hint by setting a nodeSelector for `kubernetes.io/hostname`. If node labels/hostnames do not align or the scheduler cannot satisfy constraints, both workspaces may land on the same node; the e2e will warn and proceed in that case to prioritize end-to-end functionality over strict placement in constrained environments.
- - Tailscale is required. The repository-level `verify-e2e` script requires the subnet-router DaemonSet to be present and Ready; provide a valid `TS_AUTHKEY` (and `TS_LOGIN_SERVER` for Headscale) before running the verifier.
+E2E verification (strict multi-device)
+- The federation verifier is now strict: it requires at least two Ready nodes on different devices, requires the remote Host App perspective (server list and logs), and enforces placement on the creator's node via `guildnet.io/schedule-node=<hostname>`.
+- If the controller's kube-API is bound to localhost inside a container, use host-network mode for the controller (`K0S_HOST_NETWORK=1` in `scripts/k0s-node-up.sh`) so the remote worker and Host App can reach `https://<controller-host-ip>:6443`.
+- Remote workers default to host-networking for kube-router/CNI compatibility, but the helper supports `--host-network 0` to avoid port conflicts on hosts where ports 10248/10250 are already in use (e.g., MicroK8s). This does not change cluster semantics.
+- Tailscale/Headscale is required for production and for the repository verifier; provide `TS_AUTHKEY` (and `TS_LOGIN_SERVER` for Headscale). The subnet-router DaemonSet must be present and Ready.
 
 tsnet connectors and Headscale auth (implementation details)
 -----------------------------------------------------------

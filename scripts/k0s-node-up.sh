@@ -33,6 +33,8 @@ TS_ROUTES=${TS_ROUTES:-"$K0S_POD_CIDR,$K0S_SVC_CIDR"}
 TS_HOSTNAME=${TS_HOSTNAME:-"gn-node-$(hostname | tr '[:upper:]' '[:lower:]')"}
 
 mkdir -p "$GN_K0S_DIR" "$GN_K0S_DIR/kubelet" "$GN_K0S_DIR/containerd" "$GN_K0S_DIR/tailscale" "$GN_K0S_DIR/dind"
+# Ensure CNI directories exist so DaemonSets using hostPath can write configs/binaries
+mkdir -p "$GN_K0S_DIR/cni-conf" "$GN_K0S_DIR/cni-bin"
 mkdir -p "$(dirname "$GN_KUBECONFIG")"
 
 need() { command -v "$1" >/dev/null 2>&1; }
@@ -166,15 +168,24 @@ docker run -d $NET_ARGS \
   -v "$GN_K0S_DIR:/var/lib/k0s" \
   -v "$GN_K0S_DIR/kubelet:/var/lib/kubelet" \
   -v "$GN_K0S_DIR/containerd:/var/lib/containerd" \
+  -v "$GN_K0S_DIR/cni-conf:/etc/cni/net.d" \
+  -v "$GN_K0S_DIR/cni-bin:/opt/cni/bin" \
   -v /dev:/dev \
   -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
   $RESOLVE_MOUNT \
   $PORT_MAP_ARGS \
   --entrypoint /bin/sh \
   "$K0S_IMAGE" \
-  -c "set -e; mkdir -p /var/lib/k0s; touch /var/lib/k0s/k0s.log; \
-    echo '[entry] starting k0s controller --single' >>/var/lib/k0s/k0s.log; \
-    k0s controller --single --data-dir /var/lib/k0s ${CONFIG_ARG} >>/var/lib/k0s/k0s.log 2>&1 & \
+  -c "set -e; mkdir -p /var/lib/k0s /etc/cni/net.d /opt/cni/bin; touch /var/lib/k0s/k0s.log; \
+    # ensure xtables lock exists for kube-proxy and kube-router
+    mkdir -p /run; touch /run/xtables.lock; \
+    if [ \"${K0S_CONTROLLER_SINGLE:-1}\" != \"0\" ]; then \
+      echo '[entry] starting k0s controller --single' >>/var/lib/k0s/k0s.log; \
+      k0s controller --single --data-dir /var/lib/k0s ${CONFIG_ARG} >>/var/lib/k0s/k0s.log 2>&1 & \
+    else \
+      echo '[entry] starting k0s controller (multi-node)' >>/var/lib/k0s/k0s.log; \
+      k0s controller --data-dir /var/lib/k0s ${CONFIG_ARG} >>/var/lib/k0s/k0s.log 2>&1 & \
+    fi; \
     tail -F /var/lib/k0s/k0s.log" \
   >/dev/null
 

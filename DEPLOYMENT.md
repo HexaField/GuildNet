@@ -67,6 +67,33 @@ TS_AUTHKEY=tskey-... TS_LOGIN_SERVER=http://<headscale>:8081 TS_SERVE_KUBEAPI=1 
 ```
 This will start the `guildnet-tailscale` container, advertise Pod/Service CIDRs (`$K0S_POD_CIDR,$K0S_SVC_CIDR`), and run `tailscale serve tcp` to forward the local kube-API port to the same tailnet port. Tailscale must be configured on each device to participate in federation and to pass the verifier.
 
+Strict mode and remote visibility
+---------------------------------
+
+The project runs in strict production-only mode: there are no in-process kubectl or proxy fallbacks in the HostApp. Ensure the following when deploying across devices:
+
+- Apply CRDs to your cluster:
+	- `kubectl apply -f config/crd/`
+- Optional operator: `make deploy-operator` (or `scripts/deploy-operator.sh`) if you want in-cluster reconciliation; otherwise the HostApp will create Deployment/Service fallbacks and synthesize Workspace status for GET /workspaces/{name}.
+- Configure Headscale/Tailscale for HostApp on each device using `PUT /api/settings/tailscale` with `login_server` and `preauth_key`.
+- Ensure remote devices can reach the kube-apiserver for the target cluster. If direct reachability is not available, configure a per-cluster API proxy URL on the remote HostApp to point to a reachable address. Two common options:
+		- SSH reverse tunnel: from the local device to the remote device `ssh -f -N -R 16443:127.0.0.1:6443 user@remote`. Then on the remote HostApp: `PUT /api/settings/cluster/<clusterId> {"api_proxy_url":"https://127.0.0.1:16443"}`.
+	- Tailnet publishing: run a subnet router or publish the kube-API over Tailscale and set `api_proxy_url` to that address.
+
+E2E federation verification (no fallbacks)
+-----------------------------------------
+
+Use `scripts/verify-federation-e2e.sh` to validate a distributed, multi-device cluster. The script:
+
+- Ensures CRDs are applied.
+- Pushes the local kubeconfig to the remote HostApp so clients are consistent.
+- Optionally configures Tailscale settings for both devices if `tmp/cluster-*-headscale.json` is present.
+- Creates a code-server workspace locally and remotely via HostApp APIs only.
+- Waits for Running status via GET `/api/cluster/{id}/workspaces/{name}` (synthesized when operator/CRD are absent).
+- Asserts visibility through `/servers` and log endpoints and verifies device-aligned placement when CRD is present.
+
+If remote visibility fails, configure a per-cluster API proxy URL as described above.
+
 TLS SANs for remote kubectl
 ---------------------------
 When accessing the kube-API over tailnet by IP, your client will verify the server certificate against that IP. You can instruct `k0s-node-up.sh` to include the tailscale IP in the API certificate SANs by setting:
@@ -304,11 +331,14 @@ The `scripts/verify-federation-e2e.sh` performs cross-host checks:
 - Validates there is at least one common cluster id exposed by both HostApp instances.
 - Spawns code-server workspaces from both devices and verifies both are running and discoverable.
 
-E2E behavior notes (k0s-in-Docker, federated single- or multi-device):
+E2E behavior notes (strict multi-device federation)
 
-- When the kube-API is bound to localhost inside a k0s container, the remote HostApp may be unable to query cluster state directly. The e2e detects this and will skip “remote perspective” visibility/log checks when the remote server list is empty, treating the local cluster view as source of truth.
-- In true single-node clusters (<2 nodes), the e2e always skips remote-perspective checks.
-- Placement checks are strict when there are 2+ schedulable nodes and scheduling is deterministic. If both workspaces land on the same node (e.g., due to missing labels/taints or scheduler constraints), the e2e will warn and proceed instead of failing, since the primary goal is cross-device visibility and runtime health.
+- The verifier `scripts/verify-federation-e2e.sh` now enforces true multi-device federation. It requires:
+	- At least 2 Ready nodes in the same cluster, each on a different physical device.
+	- A remote perspective: the remote Host App must list servers for the shared cluster and fetch logs for both workspaces.
+	- Deterministic placement: each workspace must land on the node corresponding to the device that created it (the Host App injects `guildnet.io/schedule-node=<hostname>`; the operator sets a nodeSelector for `kubernetes.io/hostname`).
+- Single-node or same-machine multi-node setups are not accepted by the strict verifier and will fail with actionable messages.
+- If your kube-API is bound to localhost inside a container, run the controller in host-network mode (set `K0S_HOST_NETWORK=1` for `scripts/k0s-node-up.sh`) so remote devices can reach `https://<controller-host-ip>:6443`.
 
 RBAC: DeviceParticipant CRD
 
@@ -408,6 +438,49 @@ curl -k -X POST "https://<hostapp-host>:8090/api/bootstrap" -F "file=@guildnet.c
 ```
 
 The Host App will persist the kubeconfig and perform a bounded pre-warm check and will roll back on failure.
+
+Multi-device: add a remote worker (different device)
+----------------------------------------------------
+To form a true multi-device cluster, add a worker from a second device. These helpers assume you used `scripts/k0s-node-up.sh` on the controller with host networking enabled and you can SSH to the remote device.
+
+On the controller host, generate a worker token:
+
+```bash
+docker exec guildnet-k0s k0s token create --role=worker > /tmp/k0s-worker.token
+```
+
+Copy the token and the helper script to the remote and start the worker:
+
+```bash
+# Replace user@REMOTE with your remote SSH target
+base64 -w0 /tmp/k0s-worker.token | ssh user@REMOTE 'base64 -d >/tmp/k0s-worker.token'
+base64 -w0 scripts/k0s-worker-up.sh | ssh user@REMOTE 'base64 -d >/tmp/k0s-worker-up.sh && chmod +x /tmp/k0s-worker-up.sh'
+
+# Start the worker on the remote device (state under /tmp by default)
+ssh user@REMOTE '/tmp/k0s-worker-up.sh --token-file /tmp/k0s-worker.token --state-dir /tmp/guildnet/k0s-worker'
+
+If the remote host already has another Kubernetes distro or kubelet listening on ports 10250/10248 (common with MicroK8s or leftover services), run the worker without host networking to avoid port conflicts:
+
+```bash
+ssh user@REMOTE '/tmp/k0s-worker-up.sh --token-file /tmp/k0s-worker.token --state-dir /tmp/guildnet/k0s-worker --host-network 0'
+```
+```
+
+What the worker helper does (idempotent):
+- Runs a privileged k0s worker in a Docker container (default: host networking; pass `--host-network 0` to use container networking) and cgroupns=host; sets the container hostname to the remote host shortname.
+- Mounts the host `/lib/modules` read-only so kube-proxy/kube-router can load required kernel modules.
+- Mounts persistent directories into the container to satisfy kube-router and CNI hostPath expectations:
+	- `<state>/cni-bin` → `/opt/cni/bin`
+	- `<state>/cni-conf` → `/etc/cni/net.d`
+- Pre-creates `/run/xtables.lock` inside the container to avoid xtables lock mount issues.
+- Starts `k0s worker` detached and writes logs to `<state>/k0s.log` (inside the container at `/var/lib/k0s/k0s.log`).
+
+Recovery tip: If you accidentally started a worker once without host networking and it registered with a container ID node name (e.g., `abcdef123456`), delete the Node and restart the worker so it re-registers with the correct hostname/IP:
+
+```bash
+kubectl delete node <old-node-name>
+# then rerun the remote /tmp/k0s-worker-up.sh command above
+```
 
 6) Configure per-cluster proxy settings (only if required)
 

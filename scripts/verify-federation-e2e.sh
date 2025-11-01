@@ -33,6 +33,9 @@ require(){ command -v "$1" >/dev/null 2>&1 || { echo "ERROR: required tool '$1' 
 require curl
 require jq
 
+# Repo root for relative paths
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+
 # Determine local kubeconfig path
 LOCAL_KUBECONFIG="${LOCAL_KUBECONFIG:-}"
 if [ -z "$LOCAL_KUBECONFIG" ]; then
@@ -42,6 +45,17 @@ if [ -z "$LOCAL_KUBECONFIG" ]; then
 fi
 
 log "Local kubeconfig: $LOCAL_KUBECONFIG"
+
+# Ensure CRDs are installed so /servers and Workspace CRDs work in strict mode
+if command -v kubectl >/dev/null 2>&1; then
+  if [ -d "$ROOT/config/crd" ]; then
+    log "Applying CRDs from config/crd/"
+    kubectl apply -f "$ROOT/config/crd/" >/dev/null 2>&1 || true
+    # Wait briefly for CRDs to establish
+    kubectl wait --timeout=20s --for=condition=Established crd/workspaces.guildnet.io >/dev/null 2>&1 || true
+  fi
+fi
+
 
 # Fetch local cluster IDs
 LOCAL_IDS=$(curl -k -sS --max-time "$CURL_TIMEOUT" "$LOCAL_HOSTAPP_URL/api/deploy/clusters" | jq -r '.[].id')
@@ -58,20 +72,17 @@ log "Local deterministic cluster id: $LOCAL_DET"
 REMOTE_IDS=$(timeout "$SSH_TIMEOUT"s ssh $SSH_OPTS "$REMOTE_SSH" "curl -k -sS --max-time $CURL_TIMEOUT '$REMOTE_HOSTAPP_URL/api/deploy/clusters' | jq -r '.[].id'" 2>/dev/null) || true
 vv "REMOTE_IDS: $REMOTE_IDS"
 
-HAS_REMOTE_DET=$(echo "$REMOTE_IDS" | grep -c "^$LOCAL_DET$") || true
-if [ "$HAS_REMOTE_DET" -eq 0 ]; then
-  log "Remote missing cluster $LOCAL_DET — attaching local kubeconfig to remote..."
-  # Build JSON locally to avoid remote quoting pitfalls
-  TMPJSON="/tmp/kc.$$.json"
-  jq -n --rawfile kc "$LOCAL_KUBECONFIG" '{"kubeconfig":$kc}' > "$TMPJSON"
-  scp -q "$TMPJSON" "$REMOTE_SSH:/tmp/verify-kc.json"
-  rm -f "$TMPJSON"
-  # Attach on remote using action=attach-kubeconfig (supports deterministic id)
-  timeout "$SSH_TIMEOUT"s ssh $SSH_OPTS "$REMOTE_SSH" "curl -k -sS --max-time $CURL_TIMEOUT -X POST '$REMOTE_HOSTAPP_URL/api/deploy/clusters/placeholder?action=attach-kubeconfig' -H 'Content-Type: application/json' --data-binary @/tmp/verify-kc.json" >/tmp/e2e-attach.out 2>/dev/null || true
-  vv "remote attach response: $(cat /tmp/e2e-attach.out 2>/dev/null)"
-  # Re-fetch remote IDs
-  REMOTE_IDS=$(timeout "$SSH_TIMEOUT"s ssh $SSH_OPTS "$REMOTE_SSH" "curl -k -sS --max-time $CURL_TIMEOUT '$REMOTE_HOSTAPP_URL/api/deploy/clusters' | jq -r '.[].id'" 2>/dev/null) || true
-fi
+log "Pushing local kubeconfig to remote to ensure consistent client config..."
+# Build JSON locally to avoid remote quoting pitfalls
+TMPJSON="/tmp/kc.$$.json"
+jq -n --rawfile kc "$LOCAL_KUBECONFIG" '{"kubeconfig":$kc}' > "$TMPJSON"
+scp -q "$TMPJSON" "$REMOTE_SSH:/tmp/verify-kc.json"
+rm -f "$TMPJSON"
+# Attach on remote using action=attach-kubeconfig (supports deterministic id)
+timeout "$SSH_TIMEOUT"s ssh $SSH_OPTS "$REMOTE_SSH" "curl -k -sS --max-time $CURL_TIMEOUT -X POST '$REMOTE_HOSTAPP_URL/api/deploy/clusters/placeholder?action=attach-kubeconfig' -H 'Content-Type: application/json' --data-binary @/tmp/verify-kc.json" >/tmp/e2e-attach.out 2>/dev/null || true
+vv "remote attach response: $(cat /tmp/e2e-attach.out 2>/dev/null)"
+# Re-fetch remote IDs
+REMOTE_IDS=$(timeout "$SSH_TIMEOUT"s ssh $SSH_OPTS "$REMOTE_SSH" "curl -k -sS --max-time $CURL_TIMEOUT '$REMOTE_HOSTAPP_URL/api/deploy/clusters' | jq -r '.[].id'" 2>/dev/null) || true
 
 log "Remote cluster ids: $(echo "$REMOTE_IDS" | paste -sd ',' -)"
 
@@ -82,25 +93,71 @@ else
   exit 10
 fi
 
-# Optional: verify /v1/sites returns records with clusterId == LOCAL_DET (best-effort)
-LOCAL_SITES=$(curl -k -sS --max-time "$CURL_TIMEOUT" "$LOCAL_HOSTAPP_URL/api/v1/sites" | jq -r '.[] | .clusterId' 2>/dev/null | sort -u || true)
-vv "LOCAL_SITES clusterIds: $LOCAL_SITES"
-if echo "$LOCAL_SITES" | grep -q "^$LOCAL_DET$"; then
-  log "Local sites reflect cluster $LOCAL_DET"
-else
-  log "WARN: Local sites did not include clusterId $LOCAL_DET (may be transient)"
+# Configure HostApp Tailscale settings (local and remote) from tmp/cluster-*-headscale.json when available
+HS_JSON=$(ls -t "$(dirname "$0")/../tmp/cluster-"*-headscale.json 2>/dev/null | head -n1 || true)
+if [ -n "$HS_JSON" ] && [ -s "$HS_JSON" ]; then
+  TS_LOGIN=$(jq -r '.loginServer' "$HS_JSON")
+  TS_KEY=$(jq -r '.clientAuthKey' "$HS_JSON")
+  if [ -n "$TS_LOGIN" ] && [ -n "$TS_KEY" ] && [ "$TS_LOGIN" != "null" ] && [ "$TS_KEY" != "null" ]; then
+    log "Configuring local HostApp tailscale settings from $HS_JSON"
+    curl -k -sS --max-time "$CURL_TIMEOUT" -X PUT "$LOCAL_HOSTAPP_URL/api/settings/tailscale" -H 'Content-Type: application/json' -d '{"login_server":"'"$TS_LOGIN"'","preauth_key":"'"$TS_KEY"'"}' >/dev/null
+    log "Configuring remote HostApp tailscale settings from $HS_JSON"
+    timeout "$SSH_TIMEOUT"s ssh $SSH_OPTS "$REMOTE_SSH" \
+      "curl -k -sS --max-time $CURL_TIMEOUT -X PUT '$REMOTE_HOSTAPP_URL/api/settings/tailscale' -H 'Content-Type: application/json' -d '{\"login_server\":\"$TS_LOGIN\",\"preauth_key\":\"$TS_KEY\"}'" \
+      >/dev/null 2>&1 || true
+  fi
 fi
 
-timeout "$SSH_TIMEOUT"s ssh $SSH_OPTS "$REMOTE_SSH" "curl -k -sS --max-time $CURL_TIMEOUT '$REMOTE_HOSTAPP_URL/api/v1/sites' | jq -r '.[] | .clusterId' 2>/dev/null | sort -u" >/tmp/e2e-remote-sites.txt 2>/dev/null || true
-REMOTE_SITES=$(cat /tmp/e2e-remote-sites.txt 2>/dev/null || true)
-vv "REMOTE_SITES clusterIds: $REMOTE_SITES"
-if echo "$REMOTE_SITES" | grep -q "^$LOCAL_DET$"; then
-  log "Remote sites reflect cluster $LOCAL_DET"
-else
-  log "WARN: Remote sites did not include clusterId $LOCAL_DET (may be transient)"
+# Optional: configure a per-cluster API proxy URL on the remote, if provided via env.
+# Example use-cases:
+#  - REMOTE_API_PROXY_URL="http://127.0.0.1:16443" combined with an SSH reverse tunnel from remote->local
+#  - REMOTE_API_PROXY_URL="http://127.0.0.1:8001" when a remote-side kubectl proxy is running
+if [ -n "${REMOTE_API_PROXY_URL:-}" ]; then
+  log "Configuring remote per-cluster API proxy URL to ${REMOTE_API_PROXY_URL}"
+  # Build settings JSON dynamically; set api_proxy_force_http=true if URL is http://
+  APIFORCE=false
+  case "$REMOTE_API_PROXY_URL" in
+    http://*) APIFORCE=true ;;
+  esac
+  # Use a temp file to avoid SSH quoting issues
+  TMPJSON="/tmp/cluster-settings.$$.json"
+  jq -nc --arg url "$REMOTE_API_PROXY_URL" --argjson force "$APIFORCE" '{api_proxy_url:$url, api_proxy_force_http:$force}' > "$TMPJSON"
+  scp -q "$TMPJSON" "$REMOTE_SSH:/tmp/cluster-settings.json" || true
+  rm -f "$TMPJSON"
+  timeout "$SSH_TIMEOUT"s ssh $SSH_OPTS "$REMOTE_SSH" \
+    "curl -k -sS --max-time $CURL_TIMEOUT -X PUT '$REMOTE_HOSTAPP_URL/api/settings/cluster/$LOCAL_DET' -H 'Content-Type: application/json' --data-binary @/tmp/cluster-settings.json" \
+    >/dev/null 2>&1 || true
+  # Give the hostapp a moment to gracefully restart after settings change
+  sleep 1
+  # Re-wait for health to ensure the setting applied
+  timeout "$SSH_TIMEOUT"s ssh $SSH_OPTS "$REMOTE_SSH" "bash -lc 'for i in \$(seq 1 60); do curl -k -sS --max-time 2 \"$REMOTE_HOSTAPP_URL/api/health\" >/dev/null 2>&1 && echo OK && break; sleep 1; done'" | grep -q OK || { echo "FAIL: Remote HostApp did not recover after applying per-cluster settings" >&2; exit 14; }
 fi
 
-log "E2E federation verification completed"
+# Ensure remote HostApp is running (idempotent restart)
+timeout "$SSH_TIMEOUT"s ssh $SSH_OPTS "$REMOTE_SSH" "bash -lc 'cd ~/GuildNet 2>/dev/null || cd ~/guildnet 2>/dev/null || cd "$HOME"/GuildNet 2>/dev/null || true; ./scripts/stop-hostapp.sh >/dev/null 2>&1 || true; nohup ./scripts/run-hostapp.sh >/tmp/hostapp.log 2>&1 & disown || true'" >/dev/null 2>&1 || true
+
+# Wait for HostApp (local and remote) to be reachable after settings change/restart
+wait_hostapp() {
+  local url="$1"; local label="$2"; local deadline=$((SECONDS+60))
+  while :; do
+    if curl -k -sS --max-time 2 "$url/api/health" >/dev/null 2>&1; then
+      log "$label HostApp is reachable"
+      break
+    fi
+    if [ $SECONDS -ge $deadline ]; then
+      echo "FAIL: $label HostApp at $url not reachable after 60s" >&2; exit 12
+    fi
+    sleep 1
+  done
+}
+
+wait_hostapp "$LOCAL_HOSTAPP_URL" "Local"
+# Remote readiness: wait for port to be listening (does not require HTTP health)
+_rport=$(echo "$REMOTE_HOSTAPP_URL" | sed -n 's#.*:\([0-9][0-9]*\)/.*#\1#p')
+if [ -z "$_rport" ]; then _rport=8090; fi
+timeout "$SSH_TIMEOUT"s ssh $SSH_OPTS "$REMOTE_SSH" "bash -lc 'for i in \$(seq 1 60); do ss -ltnp 2>/dev/null | awk \"/LISTEN/ {print}\" | grep -E \":${_rport}\\\\b\" >/dev/null 2>&1 && echo OK && break; sleep 1; done'" | grep -q OK || { echo "FAIL: Remote HostApp port ${_rport} not listening after 60s" >&2; exit 13; }
+
+log "E2E federation verification: proceeding to workspace checks"
 
 # --- Distributed workspace verification: both devices spawn and see code-server ---
 
@@ -223,7 +280,7 @@ fetch_logs_remote(){
 wait_server_status_local(){
   local name="$1"; local want="${2:-running}"; local waited=0
   while [ $waited -lt $TIMEOUT_SEC ]; do
-    st=$(curl -k -s "$LOCAL_HOSTAPP_URL/api/cluster/$LOCAL_DET/servers" | jq -r ".[] | select(.name==\"$name\") | .status // \"\"")
+    st=$(curl -k -s "$LOCAL_HOSTAPP_URL/api/cluster/$LOCAL_DET/workspaces/$name" | jq -r '.status.phase // ""' 2>/dev/null | tr 'A-Z' 'a-z')
     if [ "$st" = "$want" ]; then return 0; fi
     sleep "$SLEEP_SEC"; waited=$((waited+SLEEP_SEC))
   done
@@ -234,7 +291,7 @@ wait_server_status_remote(){
   local name="$1"; local want="${2:-running}"; local waited=0
   while [ $waited -lt $TIMEOUT_SEC ]; do
     st=$(timeout "$SSH_TIMEOUT"s ssh $SSH_OPTS "$REMOTE_SSH" \
-      "curl -k -sS --max-time $CURL_TIMEOUT '$REMOTE_HOSTAPP_URL/api/cluster/$LOCAL_DET/servers' | jq -r '.[] | select(.name==\"$name\") | .status // \"\"'" \
+      "curl -k -sS --max-time $CURL_TIMEOUT '$REMOTE_HOSTAPP_URL/api/cluster/$LOCAL_DET/workspaces/$name' | jq -r '.status.phase // \"\"' | tr 'A-Z' 'a-z'" \
       2>/dev/null)
     if [ "$st" = "$want" ]; then return 0; fi
     sleep "$SLEEP_SEC"; waited=$((waited+SLEEP_SEC))
@@ -258,59 +315,24 @@ fi
 # Wait for pods to come up to avoid log flakiness
 log "Waiting for workspaces to reach running state before fetching logs"
 if ! wait_server_status_local "$WS_LOCAL_NAME" running; then
-  # Fallback: verify via kubectl directly in case API view lags
-  if command -v kubectl >/dev/null 2>&1; then
-    NS="${WS_NAMESPACE:-default}"
-    if kubectl --kubeconfig="$LOCAL_KUBECONFIG" get pods -n "$NS" -o custom-columns=NAME:.metadata.name,PHASE:.status.phase --no-headers 2>/dev/null | grep -E "^${WS_LOCAL_NAME}-.*\\s+Running$" >/dev/null; then
-      log "WARN: API server view did not reflect running state, but kubectl shows pod Running for $WS_LOCAL_NAME — proceeding."
-    else
-      echo "FAIL: Local workspace $WS_LOCAL_NAME did not reach running state within $TIMEOUT_SEC s" >&2; exit 33
-    fi
-  else
-    echo "FAIL: Local workspace $WS_LOCAL_NAME did not reach running state within $TIMEOUT_SEC s" >&2; exit 33
-  fi
+  echo "FAIL: Local workspace $WS_LOCAL_NAME did not reach running state within $TIMEOUT_SEC s" >&2; exit 33
 fi
 if ! wait_server_status_remote "$WS_REMOTE_NAME" running; then
   echo "FAIL: Remote did not observe running state for $WS_REMOTE_NAME within $TIMEOUT_SEC s." >&2
-  echo "Hint: ensure remote HostApp can query the cluster API (tailnet kube-API or HostApp port-forward path)." >&2
   exit 34
 fi
 
 # Visibility checks from local perspective
 LOCAL_SERVERS=$(list_servers_local)
 vv "Local sees servers: $LOCAL_SERVERS"
-if ! echo "$LOCAL_SERVERS" | grep -q "^$WS_LOCAL_NAME$"; then
-  # Fallback: trust kubectl if the API view lags
-  if command -v kubectl >/dev/null 2>&1; then
-    NS="${WS_NAMESPACE:-default}"
-    if kubectl --kubeconfig="$LOCAL_KUBECONFIG" get deploy "$WS_LOCAL_NAME" -n "$NS" >/dev/null 2>&1; then
-      log "WARN: /servers did not list $WS_LOCAL_NAME; kubectl shows Deployment exists — proceeding."
-    else
-      echo "FAIL: Local does not list its own workspace $WS_LOCAL_NAME" >&2; exit 23;
-    fi
-  else
-    echo "FAIL: Local does not list its own workspace $WS_LOCAL_NAME" >&2; exit 23;
-  fi
-fi
-if ! echo "$LOCAL_SERVERS" | grep -q "^$WS_REMOTE_NAME$"; then
-  if command -v kubectl >/dev/null 2>&1; then
-    NS="${WS_NAMESPACE:-default}"
-    if kubectl --kubeconfig="$LOCAL_KUBECONFIG" get deploy "$WS_REMOTE_NAME" -n "$NS" >/dev/null 2>&1; then
-      log "WARN: /servers did not list $WS_REMOTE_NAME; kubectl shows Deployment exists — proceeding."
-    else
-      echo "FAIL: Local does not list remote workspace $WS_REMOTE_NAME" >&2; exit 24
-    fi
-  else
-    echo "FAIL: Local does not list remote workspace $WS_REMOTE_NAME" >&2; exit 24
-  fi
-fi
+echo "$LOCAL_SERVERS" | grep -q "^$WS_LOCAL_NAME$" || { echo "FAIL: Local does not list its own workspace $WS_LOCAL_NAME" >&2; exit 23; }
+echo "$LOCAL_SERVERS" | grep -q "^$WS_REMOTE_NAME$" || { echo "FAIL: Local does not list remote workspace $WS_REMOTE_NAME" >&2; exit 24; }
 
 # Visibility checks from remote perspective (required)
 REMOTE_SERVERS=$(list_servers_remote)
 vv "Remote sees servers: $REMOTE_SERVERS"
 if [ -z "${REMOTE_SERVERS//\n/}" ]; then
-  echo "FAIL: Remote HostApp returned no servers; remote perspective unavailable. Ensure remote HostApp can reach kube-API (serve over tailnet or enable port-forward path)." >&2
-  echo "Hint: try 'make ts-serve-kubeapi' or enable port-forward path via per-cluster settings and restart HostApp on both devices." >&2
+  echo "FAIL: Remote HostApp returned no servers; remote perspective unavailable." >&2
   exit 24
 fi
 echo "$REMOTE_SERVERS" | grep -q "^$WS_LOCAL_NAME$" || { echo "FAIL: Remote does not list local workspace $WS_LOCAL_NAME" >&2; exit 25; }
@@ -319,14 +341,6 @@ echo "$REMOTE_SERVERS" | grep -q "^$WS_REMOTE_NAME$" || { echo "FAIL: Remote doe
 # Logs checks – app should be running now; fetch logs
 LOCAL_LOGS_SELF=$(fetch_logs_local "$WS_LOCAL_NAME")
 LOCAL_LOGS_PEER=$(fetch_logs_local "$WS_REMOTE_NAME")
-if [ -z "$LOCAL_LOGS_SELF" ] && command -v kubectl >/dev/null 2>&1; then
-  NS="${WS_NAMESPACE:-default}"
-  LOCAL_LOGS_SELF=$(kubectl --kubeconfig="$LOCAL_KUBECONFIG" logs deploy/"$WS_LOCAL_NAME" -n "$NS" --tail=50 2>/dev/null || true)
-fi
-if [ -z "$LOCAL_LOGS_PEER" ] && command -v kubectl >/dev/null 2>&1; then
-  NS="${WS_NAMESPACE:-default}"
-  LOCAL_LOGS_PEER=$(kubectl --kubeconfig="$LOCAL_KUBECONFIG" logs deploy/"$WS_REMOTE_NAME" -n "$NS" --tail=50 2>/dev/null || true)
-fi
 REMOTE_LOGS_SELF=$(fetch_logs_remote "$WS_REMOTE_NAME")
 REMOTE_LOGS_PEER=$(fetch_logs_remote "$WS_LOCAL_NAME")
 
@@ -337,41 +351,41 @@ if [ -z "$REMOTE_LOGS_PEER" ]; then echo "FAIL: Remote could not read logs for l
 
 log "PASS: Distributed cluster verified — both devices spawned code-server, see each other, and can read logs for both."
 
-"# Placement checks — verify each workspace is running on the device that launched it (strict)"
-  vv "Local hostname: $LOCAL_HOSTNAME, Remote hostname: $REMOTE_HOSTNAME"
+# Placement checks — verify each workspace is running on the device that launched it (strict)
+vv "Local hostname: $LOCAL_HOSTNAME, Remote hostname: $REMOTE_HOSTNAME"
 
-  # Fetch placement info
-  LOC_NODE=$(get_server_field_local "$WS_LOCAL_NAME" node)
-  LOC_MACHINE=$(get_server_field_local "$WS_LOCAL_NAME" machineName)
-  REM_NODE=$(get_server_field_local "$WS_REMOTE_NAME" node)
-  REM_MACHINE=$(get_server_field_local "$WS_REMOTE_NAME" machineName)
-  vv "Local workspace placement: node=$LOC_NODE machine=$LOC_MACHINE"
-  vv "Remote workspace placement: node=$REM_NODE machine=$REM_MACHINE"
+# Fetch placement info
+LOC_NODE=$(get_server_field_local "$WS_LOCAL_NAME" node)
+LOC_MACHINE=$(get_server_field_local "$WS_LOCAL_NAME" machineName)
+REM_NODE=$(get_server_field_local "$WS_REMOTE_NAME" node)
+REM_MACHINE=$(get_server_field_local "$WS_REMOTE_NAME" machineName)
+vv "Local workspace placement: node=$LOC_NODE machine=$LOC_MACHINE"
+vv "Remote workspace placement: node=$REM_NODE machine=$REM_MACHINE"
 
-  lc(){ echo "$1" | tr '[:upper:]' '[:lower:]'; }
+lc(){ echo "$1" | tr '[:upper:]' '[:lower:]'; }
 
-  EXPECT_LOCAL=$(lc "$LOCAL_HOSTNAME")
-  EXPECT_REMOTE=$(lc "$REMOTE_HOSTNAME")
+EXPECT_LOCAL=$(lc "$LOCAL_HOSTNAME")
+EXPECT_REMOTE=$(lc "$REMOTE_HOSTNAME")
 
-  PLACED_LOCAL=$(lc "$LOC_MACHINE")
-  if [ -z "$PLACED_LOCAL" ]; then PLACED_LOCAL=$(lc "$LOC_NODE"); fi
-  PLACED_REMOTE=$(lc "$REM_MACHINE")
-  if [ -z "$PLACED_REMOTE" ]; then PLACED_REMOTE=$(lc "$REM_NODE"); fi
+PLACED_LOCAL=$(lc "$LOC_MACHINE")
+if [ -z "$PLACED_LOCAL" ]; then PLACED_LOCAL=$(lc "$LOC_NODE"); fi
+PLACED_REMOTE=$(lc "$REM_MACHINE")
+if [ -z "$PLACED_REMOTE" ]; then PLACED_REMOTE=$(lc "$REM_NODE"); fi
 
-  if [ -z "$PLACED_LOCAL" ] || [ -z "$PLACED_REMOTE" ]; then
-    echo "FAIL: Could not determine placement for one or both workspaces (local=${PLACED_LOCAL:-<empty>}, remote=${PLACED_REMOTE:-<empty>})." >&2
-    exit 31
-  fi
-
-  if [ "$PLACED_LOCAL" != "$EXPECT_LOCAL" ] || [ "$PLACED_REMOTE" != "$EXPECT_REMOTE" ]; then
-    if [ "$PLACED_LOCAL" = "$PLACED_REMOTE" ]; then
-      log "WARN: Both workspaces scheduled on '$PLACED_LOCAL' instead of expected local='$EXPECT_LOCAL', remote='$EXPECT_REMOTE'. Proceeding (scheduler/labeling may constrain placement)."
-    else
-      echo "FAIL: Placement mismatch — local expected '$EXPECT_LOCAL' got '$PLACED_LOCAL'; remote expected '$EXPECT_REMOTE' got '$PLACED_REMOTE'." >&2
-      exit 32
-    fi
-  else
-    log "PASS: Placement verified — each workspace is running on the device that launched it."
-  fi
+if [ -z "$PLACED_LOCAL" ] || [ -z "$PLACED_REMOTE" ]; then
+  echo "FAIL: Could not determine placement for one or both workspaces (local=${PLACED_LOCAL:-<empty>}, remote=${PLACED_REMOTE:-<empty>})." >&2
+  exit 31
 fi
+
+if [ "$PLACED_LOCAL" != "$EXPECT_LOCAL" ] || [ "$PLACED_REMOTE" != "$EXPECT_REMOTE" ]; then
+  if [ "$PLACED_LOCAL" = "$PLACED_REMOTE" ]; then
+    log "WARN: Both workspaces scheduled on '$PLACED_LOCAL' instead of expected local='$EXPECT_LOCAL', remote='$EXPECT_REMOTE'. Proceeding (scheduler/labeling may constrain placement)."
+  else
+    echo "FAIL: Placement mismatch — local expected '$EXPECT_LOCAL' got '$PLACED_LOCAL'; remote expected '$EXPECT_REMOTE' got '$PLACED_REMOTE'." >&2
+    exit 32
+  fi
+else
+  log "PASS: Placement verified — each workspace is running on the device that launched it."
+fi
+
 exit 0

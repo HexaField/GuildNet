@@ -587,22 +587,9 @@ func Router(deps Deps) *http.ServeMux {
 							if err := healthyCluster(cfg); err == nil {
 								st["status"] = "ok"
 							} else {
-								// Auto-heal: on timeout, try enabling local proxy fallback then retry once
-								if isTimeoutErr(err) && ensureProxyFallbackOnTimeout(setMgr, id) {
-									applyClusterAPIProxy(cfg, setMgr, id)
-									if err2 := healthyCluster(cfg); err2 == nil {
-										st["status"] = "ok"
-										st["note"] = "proxy_fallback_enabled"
-									} else {
-										st["status"] = "error"
-										st["code"] = "cluster_unreachable"
-										st["error"] = err2.Error()
-									}
-								} else {
-									st["status"] = "error"
-									st["code"] = "cluster_unreachable"
-									st["error"] = err.Error()
-								}
+								st["status"] = "error"
+								st["code"] = "cluster_unreachable"
+								st["error"] = err.Error()
 							}
 						} else {
 							st["status"] = "error"
@@ -1039,22 +1026,11 @@ func Router(deps Deps) *http.ServeMux {
 					_ = json.NewEncoder(w).Encode(map[string]any{"status": "unknown", "code": "bad_kubeconfig", "error": err.Error()})
 					return
 				}
-				// Apply per-cluster overrides and fallback to local proxy
+				// Apply per-cluster overrides (no local-proxy fallbacks)
 				applyClusterAPIProxy(cfg, setMgr, id)
 				if err := healthyCluster(cfg); err == nil {
 					_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
 					return
-				}
-				// Auto-heal: on timeout, try enabling local proxy fallback then retry once
-				if ensureProxyFallbackOnTimeout(setMgr, id) {
-					applyClusterAPIProxy(cfg, setMgr, id)
-					if err2 := healthyCluster(cfg); err2 == nil {
-						_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "note": "proxy_fallback_enabled"})
-						return
-					} else {
-						_ = json.NewEncoder(w).Encode(map[string]any{"status": "error", "code": "cluster_unreachable", "error": err2.Error()})
-						return
-					}
 				}
 				_ = json.NewEncoder(w).Encode(map[string]any{"status": "error", "code": "cluster_unreachable"})
 				return
@@ -1263,28 +1239,7 @@ func Router(deps Deps) *http.ServeMux {
 						}
 						// remember effective rest config for downstream transports
 						restCfg = cfg2
-						// If initial health check times out, try enabling local kube-proxy fallback
-						// and rebuild clients once.
-						if cli == nil || dyn == nil {
-							// attempt to detect a timeout on the initial client creation/health
-							// and enable proxy fallback once to recover.
-							if isLocalKubeProxyAvailable() {
-								if ensureProxyFallbackOnTimeout(setMgrLocal, clusterID) {
-									// Re-apply proxy settings and try to rebuild clients using local proxy
-									applyClusterAPIProxy(cfg2, setMgrLocal, clusterID)
-									if c2, e2 := kubernetes.NewForConfig(cfg2); e2 == nil {
-										cli = c2
-										log.Printf("cluster: rebuilt kubernetes client after enabling proxy fallback for id=%s", clusterID)
-									}
-									if d2, e2 := dynamic.NewForConfig(cfg2); e2 == nil {
-										dyn = d2
-										log.Printf("cluster: rebuilt dynamic client after enabling proxy fallback for id=%s", clusterID)
-									}
-									// ensure restCfg is set
-									restCfg = cfg2
-								}
-							}
-						}
+						// Strict mode: no local proxy fallbacks; require direct connectivity
 					}
 				}
 			}
@@ -2441,27 +2396,7 @@ func resolveClusterIDAlias(db *localdb.DB, id string) string {
 }
 
 // isLocalKubeProxyAvailable returns true if a kubectl proxy is listening on 127.0.0.1:8001.
-func isLocalKubeProxyAvailable() bool {
-	addr := "127.0.0.1:8001"
-	if v := strings.TrimSpace(os.Getenv("KUBE_PROXY_ADDR")); v != "" {
-		// Accept either host:port or URL. If URL, extract host:port
-		if strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://") {
-			if u, err := url.Parse(v); err == nil {
-				addr = u.Host
-			} else {
-				addr = v
-			}
-		} else {
-			addr = v
-		}
-	}
-	c, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
-	if err == nil {
-		_ = c.Close()
-		return true
-	}
-	return false
-}
+// isLocalKubeProxyAvailable removed: local kubectl proxy is not used in production paths.
 
 // isTimeoutErr returns true if err looks like a client timeout/connection timeout to the API server.
 func isTimeoutErr(err error) bool {
@@ -2479,55 +2414,14 @@ func isTimeoutErr(err error) bool {
 	return false
 }
 
-// ensureProxyFallbackOnTimeout will enable per-cluster local proxy fallback when a timeout is detected.
-// Returns true if it modified settings.
-func ensureProxyFallbackOnTimeout(setMgr settings.Manager, clusterID string) bool {
-	// Do not auto-enable local kubectl proxy fallback by default.
-	// Only enable when an explicit env override `KUBE_PROXY_ADDR` is set to a host:port or URL.
-	if strings.TrimSpace(os.Getenv("KUBE_PROXY_ADDR")) == "" {
-		return false
-	}
-	var cs settings.Cluster
-	_ = setMgr.GetCluster(clusterID, &cs)
-	if cs.DisableAPIProxy {
-		return false
-	}
-	host := strings.TrimSpace(cs.APIProxyURL)
-	if host == "" {
-		if v := strings.TrimSpace(os.Getenv("KUBE_PROXY_ADDR")); v != "" {
-			// If env var is host:port, prefix with http:// for APIProxyURL
-			if strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://") {
-				cs.APIProxyURL = v
-			} else {
-				cs.APIProxyURL = "http://" + v
-			}
-		}
-		if !cs.APIProxyForceHTTP {
-			cs.APIProxyForceHTTP = true
-		}
-		_ = setMgr.PutCluster(clusterID, cs)
-		return true
-	}
-	return false
-}
+// ensureProxyFallbackOnTimeout removed: no local proxy fallback in production paths.
 
-// applyClusterAPIProxy applies per-cluster proxy overrides and a local proxy fallback.
-// If DisableAPIProxy is false and no explicit APIProxyURL is configured, a local
-// kubectl proxy at http://127.0.0.1:8001 will be used when available.
+// applyClusterAPIProxy applies only explicit per-cluster proxy overrides.
 func applyClusterAPIProxy(cfg *rest.Config, setMgr settings.Manager, clusterID string) {
 	var cs settings.Cluster
 	_ = setMgr.GetCluster(clusterID, &cs)
 	host := strings.TrimSpace(cs.APIProxyURL)
-	// Only apply APIProxyURL if explicitly configured for this cluster or via KUBE_PROXY_ADDR env.
-	if host == "" && !cs.DisableAPIProxy {
-		if v := strings.TrimSpace(os.Getenv("KUBE_PROXY_ADDR")); v != "" {
-			if strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://") {
-				host = v
-			} else {
-				host = "http://" + v
-			}
-		}
-	}
+	// Only apply APIProxyURL if explicitly configured for this cluster.
 	if host != "" {
 		cfg.Host = host
 		if strings.HasPrefix(strings.ToLower(host), "http://") {
