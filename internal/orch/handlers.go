@@ -44,8 +44,8 @@ func HandlerFor(kind string, deps Deps) func(ctx context.Context, j *jobs.Record
 			}
 			mgr := headscale.New(deps.DB, deps.Secrets)
 			if err := mgr.Create(ctx, id, logf); err != nil {
+				// log and persist headscale record error
 				logf("error", "headscale.create failed", map[string]any{"id": id, "err": err.Error()})
-				// persist error state on record if db available
 				if deps.DB != nil {
 					var rec map[string]any
 					if rerr := deps.DB.Get("headscales", id, &rec); rerr == nil {
@@ -55,6 +55,10 @@ func HandlerFor(kind string, deps Deps) func(ctx context.Context, j *jobs.Record
 						_ = deps.DB.Put("headscales", id, rec)
 					}
 				}
+				// mark job failed so Runner does not mark it succeeded
+				j.Status = jobs.Failed
+				j.Error = err.Error()
+				j.Updated = time.Now()
 			} else {
 				j.Progress = 1
 			}
@@ -79,6 +83,9 @@ func HandlerFor(kind string, deps Deps) func(ctx context.Context, j *jobs.Record
 						_ = deps.DB.Put("headscales", id, rec)
 					}
 				}
+				j.Status = jobs.Failed
+				j.Error = err.Error()
+				j.Updated = time.Now()
 			} else {
 				j.Progress = 1
 			}
@@ -104,6 +111,9 @@ func HandlerFor(kind string, deps Deps) func(ctx context.Context, j *jobs.Record
 						_ = deps.DB.Put("headscales", id, rec)
 					}
 				}
+				j.Status = jobs.Failed
+				j.Error = err.Error()
+				j.Updated = time.Now()
 			} else {
 				j.Progress = 1
 			}
@@ -123,6 +133,9 @@ func HandlerFor(kind string, deps Deps) func(ctx context.Context, j *jobs.Record
 				if deps.DB != nil {
 					_ = deps.DB.Delete("headscales", id)
 				}
+				j.Status = jobs.Failed
+				j.Error = err.Error()
+				j.Updated = time.Now()
 			} else {
 				j.Progress = 1
 			}

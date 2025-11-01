@@ -49,7 +49,25 @@ func (m *Manager) Create(ctx context.Context, id string, logf func(step, msg str
 		}
 	}
 
-	// If script exists, invoke with --json to get machine-parsable output
+	// If the docker socket exists, try a pragmatic docker CLI run. This
+	// is intentionally simple: create a container mapping 127.0.0.1:8082
+	// to the headscale port. If docker is not available or the command
+	// fails, continue to the script fallback below.
+	if _, err := os.Stat("/var/run/docker.sock"); err == nil {
+		img := "ghcr.io/juanfont/headscale:0.27.0"
+		name := "guildnet-headscale-" + id
+		args := []string{"run", "-d", "--rm", "--name", name, "-p", "127.0.0.1:8082:8082", "-e", "HEADSCALE_BIND_HOST=127.0.0.1", "-e", "HEADSCALE_PORT=8082", "-e", "HEADSCALE_SERVER_URL=http://127.0.0.1:8082", img}
+		if out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput(); err == nil {
+			cid := strings.TrimSpace(string(out))
+			if cid != "" {
+				rec["container"] = cid
+				rec["image"] = img
+				rec["port"] = 8082
+				rec["login_server"] = "http://127.0.0.1:8082"
+			}
+		}
+	}
+
 	if st, err := os.Stat(script); err == nil && st.Mode().IsRegular() {
 		cmd := exec.CommandContext(ctx, "/usr/bin/env", "bash", script, "up", "--json")
 		// Prefer binding Headscale to loopback for host-local development so
