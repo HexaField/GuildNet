@@ -25,12 +25,13 @@ set -euo pipefail
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing: $1" >&2; exit 1; }; }
 need docker
+need jq
 
 STATE_DIR=${HEADSCALE_STATE_DIR:-"$HOME/.guildnet/headscale"}
 CONF_DIR="$STATE_DIR/config"
 DATA_DIR="$STATE_DIR/data"
 CONFIG="$CONF_DIR/config.yaml"
-IMAGE=${HEADSCALE_IMAGE:-"ghcr.io/juanfont/headscale:0.27.0"}
+IMAGE=${HEADSCALE_IMAGE:-"ghcr.io/juanfont/headscale:0.26.0"}
 CONTAINER=${HEADSCALE_CONTAINER_NAME:-"guildnet-headscale"}
 
 # Choose host bind address and port (auto-detect LAN IP; auto-bump port if busy when not explicitly set)
@@ -87,7 +88,7 @@ fi
 mkdir -p "$CONF_DIR" "$DATA_DIR"
 
 write_default_config() {
-  cat >"$CONFIG" <<'EOF'
+  cat >"$CONFIG" <<EOF
 server_url: ${SERVER_URL}
 listen_addr: 0.0.0.0:8080
 metrics_listen_addr: 127.0.0.1:9090
@@ -110,7 +111,10 @@ log:
   format: text
 
 dns:
+  magic_dns: false
   override_local_dns: false
+  nameservers:
+    global: []
 
 noise:
   private_key_path: /var/lib/headscale/noise_private.key
@@ -121,6 +125,13 @@ ensure_config() {
   CONFIG_CHANGED=0
   if [ ! -f "$CONFIG" ]; then
     echo "[headscale] Writing default config: $CONFIG"
+    write_default_config
+    CONFIG_CHANGED=1
+  fi
+  # If the config exists but doesn't include modern DNS keys, overwrite with defaults
+  if [ -f "$CONFIG" ] && ! grep -q '^\s*magic_dns:' "$CONFIG" 2>/dev/null; then
+    echo "[headscale] Existing config missing magic_dns; backing up and writing default config"
+    cp "$CONFIG" "$CONFIG.bak" || true
     write_default_config
     CONFIG_CHANGED=1
   fi
@@ -231,10 +242,34 @@ preauth_key() {
     echo "[headscale] ERROR: could not resolve user id for $user" >&2
     exit 1
   fi
-  # Create preauth key and print the tskey- value
-  local line
-  line=$(docker exec -i "$CONTAINER" headscale preauthkeys create --reusable --ephemeral=false --expiration 24h --user "$uid" | tail -n1)
-  echo "$line" | awk '{ for (i=1;i<=NF;i++) if ($i ~ /^tskey-/) { print $i; found=1 } } END { if (!found) print $0 }' | tee "$STATE_DIR/preauth-${user}.txt"
+  # Create preauth key and print both the raw hex and the tskey- value
+  # Use JSON output from headscale and jq to reliably extract the key field (raw hex)
+  local pout
+  pout=$(docker exec -i "$CONTAINER" headscale preauthkeys create --reusable --ephemeral=false --expiration 24h --user "$uid" -o json 2>/dev/null || true)
+  if [ -z "$pout" ]; then
+    echo "[headscale] ERROR: failed to create preauth key" >&2
+    exit 1
+  fi
+  local hex
+  hex=$(printf '%s' "$pout" | jq -r '.key // empty')
+  if [ -z "$hex" ] || [ "$hex" = "null" ]; then
+    echo "[headscale] ERROR: unexpected headscale output: $pout" >&2
+    exit 1
+  fi
+  # convert raw hex to tskey-<base64url-no-pad>
+  local tsb
+  tsb=$(printf '%s' "$hex" | xxd -r -p | base64 | tr '+/' '-_' | tr -d '=')
+  local tskey
+  tskey="tskey-$tsb"
+  # Persist both forms for callers and debugging
+  printf '%s' "$hex" > "$STATE_DIR/preauth-${user}.txt"
+  printf '%s' "$tskey" > "$STATE_DIR/preauth-${user}.tskey"
+  # Emit a machine-readable JSON object when appropriate (or print tskey on stdout)
+  if [ "${JSON_MODE:-0}" -eq 1 ]; then
+    printf '{"hex":"%s","tskey":"%s"}\n' "$hex" "$tskey"
+  else
+    printf '%s\n' "$tskey"
+  fi
 }
 
 JSON_MODE=0

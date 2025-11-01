@@ -14,6 +14,7 @@ import (
 	"github.com/your/module/internal/audit"
 	"github.com/your/module/internal/localdb"
 	"github.com/your/module/internal/secrets"
+	"github.com/your/module/internal/settings"
 )
 
 // Manager coordinates lifecycle operations for Headscale instances.
@@ -51,7 +52,13 @@ func (m *Manager) Create(ctx context.Context, id string, logf func(step, msg str
 	// If script exists, invoke with --json to get machine-parsable output
 	if st, err := os.Stat(script); err == nil && st.Mode().IsRegular() {
 		cmd := exec.CommandContext(ctx, "/usr/bin/env", "bash", script, "up", "--json")
-		cmd.Env = os.Environ()
+		// Prefer binding Headscale to loopback for host-local development so
+		// that tsnet and connectors can reach the control plane reliably.
+		env := os.Environ()
+		env = append(env, "HEADSCALE_BIND_HOST=127.0.0.1")
+		env = append(env, "HEADSCALE_PORT=8082")
+		env = append(env, "HEADSCALE_SERVER_URL=http://127.0.0.1:8082")
+		cmd.Env = env
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			logf("error", "headscale script failed", map[string]any{"error": err.Error(), "output": string(out)})
@@ -88,20 +95,44 @@ func (m *Manager) Create(ctx context.Context, id string, logf func(step, msg str
 		}
 		// attempt to create a reusable preauth key for hostapp usage
 		preauthUser := "hostapp"
-		pCmd := exec.CommandContext(ctx, "/usr/bin/env", "bash", script, "preauth-key", preauthUser)
-		pCmd.Env = os.Environ()
+		pCmd := exec.CommandContext(ctx, "/usr/bin/env", "bash", script, "preauth-key", preauthUser, "--json")
+		// reuse the same HEADSCALE_* env so preauth-key targets the chosen server
+		pCmd.Env = env
 		pout, _ := pCmd.CombinedOutput()
-		// find tskey-like token in output
-		key := ""
-		re := regexp.MustCompile(`tskey-[A-Za-z0-9_\-]+`)
-		if m := re.FindString(string(pout)); m != "" {
-			key = m
+		// Parse JSON output which should contain both the raw hex and the tskey form
+		keyHex := ""
+		keyTS := ""
+		var pk struct {
+			Hex   string `json:"hex"`
+			Tskey string `json:"tskey"`
+		}
+		if err := json.Unmarshal(bytesTrim(pout), &pk); err == nil {
+			keyHex = strings.TrimSpace(pk.Hex)
+			keyTS = strings.TrimSpace(pk.Tskey)
+		} else {
+			// Fallback: try to extract a tskey-like token or hex from plain output
+			s := string(pout)
+			reTs := regexp.MustCompile(`tskey-[A-Za-z0-9_\-]+`)
+			if m := reTs.FindString(s); m != "" {
+				keyTS = m
+			}
+			// try hex-like token
+			reHex := regexp.MustCompile(`\b[0-9a-fA-F]{32,}\b`)
+			if h := reHex.FindString(s); h != "" {
+				keyHex = h
+			}
 		}
 
 		encrypted := false
-		encVal := key
-		if key != "" && m.Secrets != nil {
-			if sEnc, err := m.Secrets.Encrypt(key); err == nil {
+		// Prefer storing the raw hex in credentials (Headscale expects raw hex)
+		storeVal := keyHex
+		if storeVal == "" {
+			// Fallback: if no hex available, attempt to derive from tskey
+			storeVal = keyTS
+		}
+		encVal := storeVal
+		if storeVal != "" && m.Secrets != nil {
+			if sEnc, err := m.Secrets.Encrypt(storeVal); err == nil {
 				encVal = sEnc
 				encrypted = true
 			}
@@ -123,6 +154,68 @@ func (m *Manager) Create(ctx context.Context, id string, logf func(step, msg str
 			_ = m.DB.Put("credentials", credKey, cred)
 			// reference from headscale record
 			rec["admin_token_secret_id"] = credId
+		}
+
+		// Also, update global Tailscale settings so connectors and agents
+		// default to this Headscale login server and preauth key. Be careful
+		// not to overwrite existing settings with empty or stale values — the
+		// manager may be invoked multiple times while the helper script is
+		// still converging. Persist only when we have a canonical preauth
+		// token (tskey form) or when no LoginServer exists yet.
+		if m.DB != nil {
+			// attempt to read back the stored credential (may be encrypted)
+			var stored map[string]any
+			val := ""
+			if err := m.DB.Get("credentials", credKey, &stored); err == nil {
+				if v, ok := stored["value"].(string); ok {
+					val = v
+				}
+				if enc, ok := stored["encrypted"].(bool); ok && enc && val != "" && m.Secrets != nil {
+					if dec, derr := m.Secrets.Decrypt(val); derr == nil {
+						val = dec
+					}
+				}
+			}
+
+			mgr := settings.Manager{DB: m.DB}
+			// read current settings so we don't clobber them
+			var cur settings.Tailscale
+			_ = mgr.GetTailscale(&cur)
+
+			// Build candidate settings but only set fields we can confidently
+			// provide. Prefer the explicit tskey returned by the helper script.
+			cand := settings.Tailscale{}
+			// Only set LoginServer if there is no existing one — avoid
+			// replacing a working value with a transient one from the helper.
+			if strings.TrimSpace(cur.LoginServer) == "" {
+				cand.LoginServer = fmt.Sprint(rec["login_server"])
+			}
+
+			// Prefer tskey from script output; fall back to stored value only
+			// if it already appears to be a tskey. We will not persist raw hex
+			// here to avoid confusion — tsnet normalization will handle hex if
+			// necessary elsewhere.
+			if keyTS != "" {
+				cand.PreauthKey = keyTS
+			} else if val != "" && strings.HasPrefix(val, "tskey-") {
+				cand.PreauthKey = val
+			}
+
+			// Persist only if we have at least a preauth key (preferred) or
+			// we are filling an empty LoginServer. This avoids accidental
+			// clearing or overwriting with incomplete data.
+			if (cand.PreauthKey != "") || (cand.LoginServer != "") {
+				// merge with existing settings so we only change provided fields
+				out := settings.Tailscale{}
+				out = cur
+				if cand.LoginServer != "" {
+					out.LoginServer = cand.LoginServer
+				}
+				if cand.PreauthKey != "" {
+					out.PreauthKey = cand.PreauthKey
+				}
+				_ = mgr.PutTailscale(out)
+			}
 		}
 
 		rec["state"] = "ready"
