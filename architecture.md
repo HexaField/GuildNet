@@ -79,11 +79,13 @@ UI deployment flows
     - Install local-path-provisioner (default StorageClass)
     - Install MetalLB (L2)
     The backend accepts these via an `addons` object in the create request and runs idempotent scripts to ensure they're present.
-  - A live job console streams orchestration logs using `WS /ws/jobs?id=<jobId>` as soon as a create request is submitted.
+  - Live job consoles stream orchestration logs using `WS /ws/jobs?id=<jobId>` as soon as a create request is submitted. Multiple job consoles can be opened concurrently; each maintains a short in-memory buffer and can be closed independently.
+  - Each headscale/cluster row shows inline job status (queued/running/done with % progress) using the record's `lastJobId`, with a quick "Tail logs" action.
 - The page also manages Headscale/Tailscale (create instance, set endpoint and preauth key, check health) using `/api/deploy/headscale`.
 
 Per-cluster Settings UX
 - The Cluster Settings page adds a one-click "API proxy" action to set `api_proxy_url` to the device's tailnet-served kube-API (default `https://<tailnet-ip>:16443`). The UI discovers the tailnet IP from `/api/v1/sites` for the selected cluster and updates `/settings/cluster/{id}`.
+- A "Verify via proxy" action calls the cluster health endpoint using the configured proxy URL to confirm kube‑API reachability from this device.
 
 For operator-driven federation the operator requires a couple of runtime artifacts to operate non-interactively in multi-device tests:
 

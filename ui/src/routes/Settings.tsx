@@ -10,7 +10,8 @@ import {
   getClusterOverview,
   listSites,
   getClusterSettings,
-  putClusterSettings
+  putClusterSettings,
+  clusterHealth
 } from '../lib/api'
 import PublishedServices from '../components/PublishedServices'
 import MultiDevice from './MultiDevice'
@@ -247,9 +248,32 @@ export default function Settings() {
                     Set to the local kube-API served over tailnet (defaults to port 16443)
                   </div>
                 </div>
-                <button class="btn" disabled={settingBusy()} onClick={setAPIProxyToTailnet}>
-                  Set to tailnet endpoint
-                </button>
+                <div class="flex items-center gap-2">
+                  <button class="btn" disabled={settingBusy()} onClick={setAPIProxyToTailnet}>
+                    Set to tailnet endpoint
+                  </button>
+                  <button
+                    class="btn"
+                    onClick={async () => {
+                      const st = await getClusterSettings(clusterId())
+                      const url = st?.api_proxy_url
+                      if (!url) {
+                        pushToast({ type: 'error', message: 'api_proxy_url not set' })
+                        return
+                      }
+                      const status = await clusterHealth(clusterId())
+                      if (status === 'ok') {
+                        pushToast({ type: 'success', message: 'Proxy OK: kube-API reachable' })
+                      } else if (status === 'error') {
+                        pushToast({ type: 'error', message: 'Proxy error: kube-API unreachable' })
+                      } else {
+                        pushToast({ type: 'info', message: 'Proxy unknown: try again shortly' })
+                      }
+                    }}
+                  >
+                    Verify via proxy
+                  </button>
+                </div>
               </div>
             </div>
 

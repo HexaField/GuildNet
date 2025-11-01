@@ -638,6 +638,12 @@ func Router(deps Deps) *http.ServeMux {
 			}
 			h := orch.HandlerFor("headscale.create", orch.Deps{DB: deps.DB, Secrets: deps.Secrets})
 			jobID, _ := deps.Runner.Submit("headscale.create", rec, h)
+			if deps.DB != nil {
+				// persist last job id for inline UI status
+				rec["lastJobId"] = jobID
+				rec["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+				_ = deps.DB.Put("headscales", id, rec)
+			}
 			w.WriteHeader(http.StatusAccepted)
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "jobId": jobID})
 			return
@@ -813,6 +819,12 @@ func Router(deps Deps) *http.ServeMux {
 			}
 			h := orch.HandlerFor("cluster.create", orch.Deps{DB: deps.DB, Secrets: deps.Secrets})
 			jobID, _ := deps.Runner.Submit("cluster.create", rec, h)
+			if deps.DB != nil {
+				// persist last job id for inline UI status
+				rec["lastJobId"] = jobID
+				rec["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+				_ = deps.DB.Put("clusters", id, rec)
+			}
 			w.WriteHeader(http.StatusAccepted)
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "jobId": jobID})
 			return

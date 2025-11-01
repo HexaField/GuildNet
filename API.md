@@ -140,6 +140,7 @@ Multi-device automation: Use `make multi-device-host` on Device A and `make mult
   - Return NDJSON job logs from local DB.
 - WS /ws/jobs?id={jobId}
   - Subscribe to job logs via WebSocket.
+  - UI notes: The Deploy page now opens per-job WebSocket streams for multiple jobs concurrently and persists short ring buffers per console. Entities (headscale/cluster records) also store `lastJobId` to enable inline status chips and quick log tails per row.
 
 - GET /api/audit
   - List audit records (read-only).
@@ -149,6 +150,7 @@ Multi-device automation: Use `make multi-device-host` on Device A and `make mult
 
 - POST/GET/DELETE /api/deploy/headscale and /api/deploy/headscale/{id}
   - Create/manage in-host headscale deployment records and orchestrate creation via jobs. Supports sub-actions via POST `?action=endpoint|preauth-key|health`.
+  - POST response: `{ id, jobId }`. The created headscale record also persists `lastJobId` to facilitate inline job status in UIs.
 
  - GET/POST /api/deploy/clusters
   - GET: list clusters persisted in Host App DB.
@@ -158,6 +160,7 @@ Multi-device automation: Use `make multi-device-host` on Device A and `make mult
         - `addons.localpath` (bool, default true): ensure a default StorageClass by installing local-path-provisioner (idempotent).
         - `addons.metallb` (bool, default true): deploy MetalLB in L2 mode (idempotent).
       - Response shape: `{ id: string, jobId: string }`. You can subscribe to the job logs via `WS /ws/jobs?id=<jobId>` or fetch the accumulated NDJSON once via `GET /api/jobs-logs/<jobId>`.
+      - The created cluster record also persists `lastJobId` so UIs can display inline job status while the orchestration runs.
 
 - GET/DELETE/POST /api/deploy/clusters/{id}
   - GET: cluster record (from Host App DB).
@@ -165,6 +168,10 @@ Multi-device automation: Use `make multi-device-host` on Device A and `make mult
   - POST actions (query param `action`) include:
     - attach-kubeconfig: body { kubeconfig: string } (validates kubeconfig and persists it under `credentials:cl:{id}:kubeconfig`)
     - health: check cluster reachability
+UI Settings: Verify kube‑API via proxy
+-------------------------------------
+- The Settings page includes a "Verify via proxy" action that first checks `GET /settings/cluster/{id}` for `api_proxy_url` and then calls `POST /api/deploy/clusters/{id}?action=health` to validate that the kube‑API is reachable using the configured proxy URL. Responses are surfaced as OK / error / unknown.
+
     - kubeconfig: returns the persisted kubeconfig as YAML
     - other actions delegated as `cluster.<action>` jobs
 

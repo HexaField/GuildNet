@@ -76,9 +76,9 @@ The Web UI consolidates cluster onboarding and provisioning under the `/deploy` 
 	- local-path-provisioner (default StorageClass)
 	- MetalLB (L2)
 	You can toggle these addons before creating the cluster.
-- A live console streams orchestration logs (WebSocket `/ws/jobs?id=<jobId>`) as the job runs.
+- Live consoles stream orchestration logs (WebSocket `/ws/jobs?id=<jobId>`) as jobs run. You can open multiple job consoles and close them independently; each console retains a short scrollback.
 
-After saving Headscale/Tailscale settings and bringing the cluster up, open the cluster Settings page and use the one-click "API proxy" action to set `api_proxy_url` to the device's tailnet-served kube-API (default `https://<tailnet-ip>:16443`). This ensures other devices can reach the kube-API without ad-hoc tunnels.
+After saving Headscale/Tailscale settings and bringing the cluster up, open the cluster Settings page and use the one-click "API proxy" action to set `api_proxy_url` to the device's tailnet-served kube-API (default `https://<tailnet-ip>:16443`). Then click "Verify via proxy" to confirm the kube‑API is reachable using that address. This ensures other devices can reach the kube-API without ad‑hoc tunnels.
 
 Strict mode and remote visibility
 ---------------------------------
