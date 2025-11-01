@@ -58,6 +58,7 @@ import (
 	// New imports
 	"github.com/your/module/internal/api"
 	"github.com/your/module/internal/cluster"
+	"github.com/your/module/internal/headscale"
 
 	hostapppkg "github.com/your/module/internal/hostapp"
 	hostappapi "github.com/your/module/internal/hostapp/api"
@@ -621,6 +622,32 @@ func main() {
 	mux.Handle("/ws/jobs", apiMux)
 	// Mount API router for all /api/ paths so bootstrap and other endpoints are handled
 	mux.Handle("/api/", http.StripPrefix("/api", apiMux))
+
+	// Periodic Headscale reconciler: keep DB state in sync with container/runtime.
+	go func() {
+		mgr := headscale.New(ldb, sec)
+		interval := 30 * time.Second
+		if v := strings.TrimSpace(os.Getenv("GN_HEADSCALE_RECONCILE_INTERVAL")); v != "" {
+			if d, err := time.ParseDuration(v); err == nil {
+				interval = d
+			}
+		}
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				log.Printf("headscale: running reconcile")
+				if err := mgr.Reconcile(ctx, func(typ, msg string, meta map[string]any) {
+					log.Printf("headscale.reconcile: %s %s %v", typ, msg, meta)
+				}); err != nil {
+					log.Printf("headscale reconcile error: %v", err)
+				}
+			}
+		}
+	}()
 	// Mount additional API groups served by router
 	mux.Handle("/api/cluster/", apiMux)
 	mux.Handle("/sse/cluster/", apiMux)
@@ -662,6 +689,25 @@ func main() {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
+	})
+
+	// Headscale reconcile endpoint (manual trigger)
+	mux.HandleFunc("/api/deploy/headscale/reconcile", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		mgr := headscale.New(ldb, sec)
+		ctx2, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
+		if err := mgr.Reconcile(ctx2, func(typ, msg string, meta map[string]any) {
+			// keep simple: log during manual reconcile
+			log.Printf("headscale.reconcile: %s %s %v", typ, msg, meta)
+		}); err != nil {
+			httpx.JSONError(w, http.StatusInternalServerError, "reconcile failed", "reconcile_failed")
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]any{"status": "ok"})
 	})
 
 	// internal shutdown endpoint for graceful stop from local tooling

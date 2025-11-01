@@ -71,6 +71,12 @@ Tailscale/Headscale authentication and tsnet connectors
 - The connector normalizes the configured login server and may rewrite to `127.0.0.1:<port>` when it detects the target host is bound on the local machine and loopback is listening on the same port; this avoids hairpin surprises for local Headscale.
 - Device IPs and Headscale machine IDs are verified against Headscale and persisted into the per-cluster DB.
 
+Headscale reconciliation
+------------------------
+- HostApp runs a periodic, best-effort reconciler that compares persisted `headscales` records in the DB with the local runtime/container state and repairs or marks records accordingly. This helps HostApp recover after restarts and surfaces container errors in the UI.
+- Interval is configurable via the `GN_HEADSCALE_RECONCILE_INTERVAL` environment variable (Go duration string, default `30s`).
+- You can trigger a manual reconcile via the API: POST `/api/deploy/headscale/reconcile`. The endpoint returns `{"status":"ok"}` on success or a 500 on error.
+
 
 ## Host App server API endpoints
 

@@ -358,3 +358,78 @@ func bytesTrim(b []byte) []byte {
 	s := strings.TrimSpace(string(b))
 	return []byte(s)
 }
+
+// Reconcile inspects headscale records in the DB and attempts to reconcile
+// their observed state with actual runtime resources (docker containers).
+// It is best-effort and will update the headscale record state and
+// `updatedAt` field. This helps recover from hostapp restarts or external
+// changes to containers.
+func (m *Manager) Reconcile(ctx context.Context, logf func(step, msg string, kv map[string]any)) error {
+	if m.DB == nil {
+		return fmt.Errorf("no db")
+	}
+	var list []map[string]any
+	if err := m.DB.List("headscales", &list); err != nil {
+		return err
+	}
+	for _, rec := range list {
+		id := fmt.Sprint(rec["id"])
+		if id == "" {
+			continue
+		}
+		// determine container identifier if present
+		cid := fmt.Sprint(rec["container"])
+		// if no container recorded, nothing to reconcile here
+		if strings.TrimSpace(cid) == "" {
+			continue
+		}
+		// Inspect the container via docker CLI; if docker not present treat as unknown
+		running := false
+		inspectErr := ""
+		if _, err := os.Stat("/var/run/docker.sock"); err == nil {
+			// docker is available; attempt to inspect container
+			cmd := exec.CommandContext(ctx, "docker", "inspect", "-f", "{{.State.Running}}", cid)
+			out, err := cmd.CombinedOutput()
+			if err == nil {
+				s := strings.TrimSpace(string(out))
+				if s == "true" || s == "True" {
+					running = true
+				}
+			} else {
+				inspectErr = err.Error()
+			}
+		} else {
+			inspectErr = "docker-socket-missing"
+		}
+
+		// load the canonical record and update its state accordingly
+		var cur map[string]any
+		if err := m.DB.Get("headscales", id, &cur); err != nil {
+			// skip if we cannot load the canonical record
+			continue
+		}
+		prev := fmt.Sprint(cur["state"])
+		if running {
+			cur["state"] = "ready"
+			cur["lastSeen"] = time.Now().UTC().Format(time.RFC3339)
+		} else {
+			// if we failed to inspect, leave state unchanged but record the error
+			if inspectErr != "" {
+				cur["lastError"] = inspectErr
+				cur["state"] = "error"
+			} else {
+				cur["state"] = "stopped"
+			}
+		}
+		cur["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+		_ = m.DB.Put("headscales", id, cur)
+		// audit and log if state changed
+		if prev != fmt.Sprint(cur["state"]) {
+			audit.Append(m.DB, "system", "reconcile", "headscale", id, fmt.Sprint(cur["lastError"]))
+			if logf != nil {
+				logf("reconcile", "state-changed", map[string]any{"id": id, "from": prev, "to": cur["state"]})
+			}
+		}
+	}
+	return nil
+}

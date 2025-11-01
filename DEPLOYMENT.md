@@ -93,6 +93,12 @@ Ensure the following when deploying across devices:
 	- `kubectl apply -f config/crd/`
 - Optional operator: `make deploy-operator` (or `scripts/deploy-operator.sh`) if you want in-cluster reconciliation; otherwise the HostApp will create Deployment/Service fallbacks and synthesize Workspace status for GET /workspaces/{name}.
 - Configure Headscale/Tailscale for HostApp on each device using `PUT /api/settings/tailscale` with `login_server` and `preauth_key`.
+
+Headscale reconciliation and observability
+-----------------------------------------
+- HostApp includes a best-effort, periodic Headscale reconciler that inspects the `headscales` records in the local DB and compares them to the runtime/container state (via the helper script or `docker inspect`). This updates `state`, `lastSeen`, `lastError` and emits audit records so the UI can surface accurate status.
+- The reconcilier runs every `30s` by default. Override with `GN_HEADSCALE_RECONCILE_INTERVAL` (Go duration string, e.g. `1m`).
+- A manual reconcile endpoint is available: `POST /api/deploy/headscale/reconcile`. Use this to force an immediate reconciliation during troubleshooting.
 - Ensure remote devices can reach the kube-apiserver for the target cluster. If direct reachability is not available, configure a per-cluster API proxy URL on the remote HostApp to point to a reachable address. Two common options:
 		- SSH reverse tunnel: from the local device to the remote device `ssh -f -N -R 16443:127.0.0.1:6443 user@remote`. Then on the remote HostApp: `PUT /api/settings/cluster/<clusterId> {"api_proxy_url":"https://127.0.0.1:16443"}`.
 	- Tailnet publishing: run a subnet router or publish the kube-API over Tailscale and set `api_proxy_url` to that address.
