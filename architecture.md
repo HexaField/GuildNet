@@ -75,7 +75,15 @@ UI deployment flows
 - Cluster onboarding and provisioning are centralized on the Deployment Manager page at `/deploy` (the previous sidebar modal has been removed).
   - Join existing cluster: import a join file and/or paste a kubeconfig; click "Create & Attach" to create a record and attach the kubeconfig. You can also download a per-cluster join file later.
   - Deploy new local cluster: click Create to submit a provisioning job via `POST /api/deploy/clusters`. The job runs `scripts/k0s-node-up.sh` to start a local k0s-in-Docker control-plane, then persists the emitted kubeconfig under the deterministic cluster ID and marks the record ready.
+  - Safe defaults for cluster addons are exposed as toggles (enabled by default):
+    - Install local-path-provisioner (default StorageClass)
+    - Install MetalLB (L2)
+    The backend accepts these via an `addons` object in the create request and runs idempotent scripts to ensure they're present.
+  - A live job console streams orchestration logs using `WS /ws/jobs?id=<jobId>` as soon as a create request is submitted.
 - The page also manages Headscale/Tailscale (create instance, set endpoint and preauth key, check health) using `/api/deploy/headscale`.
+
+Per-cluster Settings UX
+- The Cluster Settings page adds a one-click "API proxy" action to set `api_proxy_url` to the device's tailnet-served kube-API (default `https://<tailnet-ip>:16443`). The UI discovers the tailnet IP from `/api/v1/sites` for the selected cluster and updates `/settings/cluster/{id}`.
 
 For operator-driven federation the operator requires a couple of runtime artifacts to operate non-interactively in multi-device tests:
 

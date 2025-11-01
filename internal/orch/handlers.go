@@ -23,6 +23,14 @@ type Deps struct {
 	Secrets *secrets.Manager
 }
 
+// tail2k returns the last up to 2000 bytes of the provided string.
+func tail2k(s string) string {
+	if len(s) <= 2000 {
+		return s
+	}
+	return s[len(s)-2000:]
+}
+
 // HandlerFor returns a jobs handler function for a given kind.
 func HandlerFor(kind string, deps Deps) func(ctx context.Context, j *jobs.Record, logf func(step, msg string, kv map[string]any)) {
 	switch kind {
@@ -80,6 +88,18 @@ func HandlerFor(kind string, deps Deps) func(ctx context.Context, j *jobs.Record
 			_ = json.Unmarshal([]byte(j.SpecJSON), &spec)
 			tmpId := fmt.Sprint(spec["id"])
 			name := fmt.Sprint(spec["name"])
+			// Optional addons map: { metallb: bool, localpath: bool }
+			addons := map[string]bool{"metallb": true, "localpath": true}
+			if raw, ok := spec["addons"]; ok {
+				if m, ok2 := raw.(map[string]any); ok2 {
+					if v, ok3 := m["metallb"]; ok3 {
+						addons["metallb"] = strings.EqualFold(fmt.Sprint(v), "true") || fmt.Sprint(v) == "1"
+					}
+					if v, ok3 := m["localpath"]; ok3 {
+						addons["localpath"] = strings.EqualFold(fmt.Sprint(v), "true") || fmt.Sprint(v) == "1"
+					}
+				}
+			}
 			if tmpId == "" {
 				return
 			}
@@ -180,6 +200,41 @@ func HandlerFor(kind string, deps Deps) func(ctx context.Context, j *jobs.Record
 					_ = deps.DB.Put("clusters", detID, rec)
 					if detID != tmpId {
 						_ = deps.DB.Delete("clusters", tmpId)
+					}
+				}
+			}
+
+			// 3) Install requested addons (best-effort, idempotent scripts)
+			// Ensure kubectl targets the new cluster by setting KUBECONFIG
+			envBase := os.Environ()
+			envWithKC := append(envBase, fmt.Sprintf("KUBECONFIG=%s", kcPath))
+			if addons["localpath"] {
+				logf("addon", "ensuring local-path-provisioner (default StorageClass)", map[string]any{"cluster": detID})
+				cmd := exec.CommandContext(ctx, "/usr/bin/env", "bash", "scripts/install-local-path-provisioner.sh")
+				cmd.Env = envWithKC
+				if out, err := cmd.CombinedOutput(); err != nil {
+					logf("warn", "local-path-provisioner install returned non-zero", map[string]any{"error": err.Error()})
+					if s := string(out); strings.TrimSpace(s) != "" {
+						logf("info", "local-path install output", map[string]any{"tail": tail2k(s)})
+					}
+				} else {
+					if s := string(out); strings.TrimSpace(s) != "" {
+						logf("info", "local-path install output", map[string]any{"tail": tail2k(s)})
+					}
+				}
+			}
+			if addons["metallb"] {
+				logf("addon", "deploying MetalLB (L2 mode)", map[string]any{"cluster": detID})
+				cmd := exec.CommandContext(ctx, "/usr/bin/env", "bash", "scripts/deploy-metallb.sh")
+				cmd.Env = envWithKC
+				if out, err := cmd.CombinedOutput(); err != nil {
+					logf("warn", "metallb deploy returned non-zero", map[string]any{"error": err.Error()})
+					if s := string(out); strings.TrimSpace(s) != "" {
+						logf("info", "metallb deploy output", map[string]any{"tail": tail2k(s)})
+					}
+				} else {
+					if s := string(out); strings.TrimSpace(s) != "" {
+						logf("info", "metallb deploy output", map[string]any{"tail": tail2k(s)})
 					}
 				}
 			}

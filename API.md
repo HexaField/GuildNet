@@ -150,10 +150,14 @@ Multi-device automation: Use `make multi-device-host` on Device A and `make mult
 - POST/GET/DELETE /api/deploy/headscale and /api/deploy/headscale/{id}
   - Create/manage in-host headscale deployment records and orchestrate creation via jobs. Supports sub-actions via POST `?action=endpoint|preauth-key|health`.
 
-- GET/POST /api/deploy/clusters
+ - GET/POST /api/deploy/clusters
   - GET: list clusters persisted in Host App DB.
-  - POST: create a cluster record (orchestration job for provisioning). The Web UI exposes this under the Join modal ("Deploy new local cluster") and on the Deployment Manager page at `/deploy`.
+  - POST: create a cluster record (orchestration job for provisioning). The Web UI exposes this on the Deployment Manager page at `/deploy` (the previous sidebar modal has been removed).
     - Current implementation (cluster.create job) attempts an automatic local bootstrap by executing `scripts/k0s-node-up.sh` and then reading the emitted kubeconfig from `~/.guildnet/kubeconfig`. The kubeconfig is persisted under the deterministic cluster ID (computed from the kubeconfig) and the record is updated to `ready` once attached.
+      - Request body supports an optional `addons` object to control post-provision installs. Defaults are safe and enabled when omitted:
+        - `addons.localpath` (bool, default true): ensure a default StorageClass by installing local-path-provisioner (idempotent).
+        - `addons.metallb` (bool, default true): deploy MetalLB in L2 mode (idempotent).
+      - Response shape: `{ id: string, jobId: string }`. You can subscribe to the job logs via `WS /ws/jobs?id=<jobId>` or fetch the accumulated NDJSON once via `GET /api/jobs-logs/<jobId>`.
 
 - GET/DELETE/POST /api/deploy/clusters/{id}
   - GET: cluster record (from Host App DB).

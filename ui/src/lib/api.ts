@@ -276,6 +276,35 @@ export async function getClusterOverview(id: string): Promise<any | null> {
   }
 }
 
+// Per-cluster settings APIs
+export async function getClusterSettings(
+  id: string
+): Promise<any | null> {
+  try {
+    const res = await fetch(apiUrl(`/settings/cluster/${encodeURIComponent(id)}`))
+    if (!res.ok) return null
+    return await res.json()
+  } catch {
+    return null
+  }
+}
+
+export async function putClusterSettings(
+  id: string,
+  payload: any
+): Promise<boolean> {
+  try {
+    const res = await fetch(apiUrl(`/settings/cluster/${encodeURIComponent(id)}`), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
 export async function listClusterServers(clusterId: string): Promise<Server[]> {
   try {
     const res = await fetch(

@@ -67,6 +67,19 @@ TS_AUTHKEY=tskey-... TS_LOGIN_SERVER=http://<headscale>:8081 TS_SERVE_KUBEAPI=1 
 ```
 This will start the `guildnet-tailscale` container, advertise Pod/Service CIDRs (`$K0S_POD_CIDR,$K0S_SVC_CIDR`), and run `tailscale serve tcp` to forward the local kube-API port to the same tailnet port. Tailscale must be configured on each device to participate in federation and to pass the verifier.
 
+UI quick start (/deploy and Settings)
+------------------------------------
+The Web UI consolidates cluster onboarding and provisioning under the `/deploy` page:
+
+- Join existing cluster: import a `guildnet.config` or paste a kubeconfig; click "Create & Attach".
+- Create new local cluster: enter a name and click Create. Safe defaults install:
+	- local-path-provisioner (default StorageClass)
+	- MetalLB (L2)
+	You can toggle these addons before creating the cluster.
+- A live console streams orchestration logs (WebSocket `/ws/jobs?id=<jobId>`) as the job runs.
+
+After saving Headscale/Tailscale settings and bringing the cluster up, open the cluster Settings page and use the one-click "API proxy" action to set `api_proxy_url` to the device's tailnet-served kube-API (default `https://<tailnet-ip>:16443`). This ensures other devices can reach the kube-API without ad-hoc tunnels.
+
 Strict mode and remote visibility
 ---------------------------------
 
@@ -801,16 +814,15 @@ Related design docs:
 - ADR: `docs/adr/0001-multi-device-cluster.md`
 - Implementation plan: `docs/implementation/0001-multi-device-cluster-implementation.md`
 
-UI quick start (Join modal and Deployment Manager)
---------------------------------------------------
-For operators who prefer UI-driven flows, the sidebar "Connect a cluster" modal now includes:
+UI quick start (Deployment Manager)
+-----------------------------------
+All cluster onboarding and provisioning is handled on the Deployment Manager page at `/deploy`:
 
-- Attach existing cluster: import a `guildnet.config` join file (or paste kubeconfig) and click Save. The Host App computes the deterministic cluster ID and validates connectivity.
-- Deploy new local cluster: choose this mode to request a local cluster provisioning via the Host App (POST `/api/deploy/clusters`). After submitting, you can monitor progress and configure Headscale/Tailscale on the Deployment Manager page at `/deploy`.
-	This triggers an orchestration job that runs `scripts/k0s-node-up.sh` on the host and then automatically attaches the emitted kubeconfig under a deterministic cluster ID.
+- Join existing cluster: import a `guildnet.config` join file (or paste kubeconfig) and click "Create & Attach". The Host App computes the deterministic cluster ID and validates connectivity.
+- Deploy new local cluster: click Create to request local provisioning via the Host App (POST `/api/deploy/clusters`). This triggers an orchestration job that runs `scripts/k0s-node-up.sh` on the host and then automatically attaches the emitted kubeconfig under a deterministic cluster ID.
 
-Deployment Manager (`/deploy`) exposes:
+Deployment Manager (`/deploy`) also exposes:
 - Headscale management: create instance, set endpoint, rotate preauth keys, check health.
-- Cluster records: create cluster records, attach kubeconfigs, download kubeconfigs, check health.
+- Cluster records: attach/download kubeconfigs, download join files, check health.
 
 These UI flows use the production API endpoints documented in `API.md` and do not rely on dev-only or local-proxy fallbacks.

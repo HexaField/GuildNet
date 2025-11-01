@@ -1,4 +1,4 @@
-import { createEffect, createResource, createSignal, For, Show } from 'solid-js'
+import { createEffect, createResource, createSignal, For, Show, onCleanup } from 'solid-js'
 import { A, useNavigate } from '@solidjs/router'
 
 async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
@@ -19,27 +19,92 @@ export default function Deploy() {
   const { jobs, refetch } = useJobs()
   const [hsName, setHsName] = createSignal('')
   const [clName, setClName] = createSignal('')
+  const [addonLocalPath, setAddonLocalPath] = createSignal(true)
+  const [addonMetalLB, setAddonMetalLB] = createSignal(true)
   const [endpoint, setEndpoint] = createSignal('')
   const [preauth, setPreauth] = createSignal('')
   const [kubeconfig, setKubeconfig] = createSignal('')
   const [joinKc, setJoinKc] = createSignal('')
   const [joinName, setJoinName] = createSignal('')
   const [busyJoin, setBusyJoin] = createSignal(false)
+  const [liveJobId, setLiveJobId] = createSignal<string | null>(null)
+  const [liveLines, setLiveLines] = createSignal<string[]>([])
+  let ws: WebSocket | null = null
+
+  const openJobStream = (jobId: string) => {
+    try {
+      if (!jobId) return
+      setLiveJobId(jobId)
+      setLiveLines([])
+      // Build ws/wss URL against current origin
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws'
+      const url = `${proto}://${location.host}/ws/jobs?id=${encodeURIComponent(jobId)}`
+      try { ws?.close() } catch {}
+      ws = new WebSocket(url)
+      ws.onopen = () => {
+        // no-op
+      }
+      ws.onmessage = (ev) => {
+        try {
+          const obj = JSON.parse(String(ev.data))
+          const step = obj.step || obj.s || '-'
+          const msg = obj.msg || obj.message || ''
+          const line = `[${step}] ${msg}`
+          setLiveLines((prev) => {
+            const next = prev.slice()
+            next.push(line)
+            if (next.length > 200) next.shift()
+            return next
+          })
+        } catch {
+          // raw text fallback
+          setLiveLines((prev) => {
+            const next = prev.slice()
+            next.push(String(ev.data))
+            if (next.length > 200) next.shift()
+            return next
+          })
+        }
+      }
+      ws.onerror = () => {
+        // best-effort: keep existing lines
+      }
+      ws.onclose = () => {
+        ws = null
+      }
+    } catch {}
+  }
+
+  onCleanup(() => {
+    try { ws?.close() } catch {}
+    ws = null
+  })
 
   const createHeadscale = async () => {
-    await fetchJSON('/api/deploy/headscale', {
+    const resp = await fetchJSON<{ id: string; jobId?: string }>(
+      '/api/deploy/headscale',
+      {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: hsName() || undefined })
-    })
+        body: JSON.stringify({ name: hsName() || undefined })
+      }
+    )
+    if (resp?.jobId) openJobStream(resp.jobId)
     refetch()
   }
   const createCluster = async () => {
-    await fetchJSON('/api/deploy/clusters', {
+    const resp = await fetchJSON<{ id: string; jobId?: string }>(
+      '/api/deploy/clusters',
+      {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: clName() || undefined })
-    })
+        body: JSON.stringify({
+          name: clName() || undefined,
+          addons: { localpath: addonLocalPath(), metallb: addonMetalLB() }
+        })
+      }
+    )
+    if (resp?.jobId) openJobStream(resp.jobId)
     refetch()
   }
 
@@ -125,15 +190,19 @@ export default function Deploy() {
     }
     setBusyJoin(true)
     try {
-      const rec = await fetchJSON<{ id: string }>(
+      const rec = await fetchJSON<{ id: string; jobId?: string }>(
         '/api/deploy/clusters',
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: joinName() || undefined })
+          body: JSON.stringify({
+            name: joinName() || undefined,
+            addons: { localpath: addonLocalPath(), metallb: addonMetalLB() }
+          })
         }
       )
       if (!rec?.id) throw new Error('create cluster failed')
+      if (rec?.jobId) openJobStream(rec.jobId)
       await fetchJSON(`/api/deploy/clusters/${rec.id}?action=attach-kubeconfig`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -267,6 +336,16 @@ export default function Deploy() {
             Create
           </button>
         </div>
+        <div class="flex items-center gap-4 text-sm">
+          <label class="inline-flex items-center gap-2">
+            <input type="checkbox" checked={addonLocalPath()} onChange={(e) => setAddonLocalPath((e.currentTarget as HTMLInputElement).checked)} />
+            Install local-path (default StorageClass)
+          </label>
+          <label class="inline-flex items-center gap-2">
+            <input type="checkbox" checked={addonMetalLB()} onChange={(e) => setAddonMetalLB((e.currentTarget as HTMLInputElement).checked)} />
+            Install MetalLB (L2)
+          </label>
+        </div>
         <div class="flex gap-2">
           <textarea
             placeholder="Paste kubeconfig here"
@@ -320,6 +399,14 @@ export default function Deploy() {
 
       <section class="md:col-span-2">
         <h2 class="text-lg font-semibold">Jobs</h2>
+        <Show when={liveJobId()}>
+          <div class="mb-3 p-2 border rounded bg-neutral-50 dark:bg-neutral-800">
+            <div class="text-sm mb-2">Live job: {liveJobId()}</div>
+            <pre class="text-xs h-40 overflow-auto whitespace-pre-wrap">
+              {liveLines().join('\n')}
+            </pre>
+          </div>
+        </Show>
         <div class="border rounded divide-y">
           <For each={jobs()?.slice().reverse()}>
             {(j) => (

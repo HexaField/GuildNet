@@ -7,7 +7,10 @@ import {
   deleteClusterRecord,
   getClusterKubeconfig,
   getClusterJoinConfig,
-  getClusterOverview
+  getClusterOverview,
+  listSites,
+  getClusterSettings,
+  putClusterSettings
 } from '../lib/api'
 import PublishedServices from '../components/PublishedServices'
 import MultiDevice from './MultiDevice'
@@ -29,6 +32,7 @@ export default function Settings() {
     code?: string
     error?: string
   } | null>(null)
+  const [settingBusy, setSettingBusy] = createSignal(false)
 
   const fetchHealthDetail = async () => {
     // If overview contains health info in future, use it; otherwise fall back
@@ -109,6 +113,52 @@ export default function Settings() {
     }
   }
 
+  const setAPIProxyToTailnet = async () => {
+    if (settingBusy()) return
+    setSettingBusy(true)
+    try {
+      const sites = await listSites()
+      const cid = clusterId()
+      // Prefer self device for this cluster, else any device with tailnet IPs
+      const candidates = sites.filter(
+        (s) => (s.clusterId === cid || (s as any).cluster === cid)
+      )
+      const pickIP = (arr?: string[]) =>
+        (arr || []).find((x) => /^100\./.test(x)) || (arr || [])[0]
+      let ip = ''
+      // First, prefer self:true
+      for (const s of candidates) {
+        if (s.self && s.tailnetIPs && s.tailnetIPs.length > 0) {
+          ip = pickIP(s.tailnetIPs) || ''
+          if (ip) break
+        }
+      }
+      // Then, any candidate with IPs
+      if (!ip) {
+        for (const s of candidates) {
+          if (s.tailnetIPs && s.tailnetIPs.length > 0) {
+            ip = pickIP(s.tailnetIPs) || ''
+            if (ip) break
+          }
+        }
+      }
+      if (!ip) {
+        pushToast({ type: 'error', message: 'No tailnet IPs available yet' })
+        return
+      }
+      const url = `https://${ip}:16443`
+      const ok = await putClusterSettings(cid, { api_proxy_url: url })
+      if (ok) {
+        pushToast({ type: 'success', message: `API proxy set to ${url}` })
+        refetchOverview()
+      } else {
+        pushToast({ type: 'error', message: 'Failed to update settings' })
+      }
+    } finally {
+      setSettingBusy(false)
+    }
+  }
+
   return (
     <div class="flex flex-col gap-4">
       <Card title="Cluster Settings">
@@ -185,6 +235,20 @@ export default function Settings() {
                 </button>
                 <button class="btn" onClick={downloadJoinConfig}>
                   Download join config
+                </button>
+              </div>
+            </div>
+
+            <div class="space-y-2 pt-2 border-t">
+              <div class="flex items-center justify-between">
+                <div>
+                  <div class="text-sm font-medium">API proxy</div>
+                  <div class="text-xs text-neutral-500">
+                    Set to the local kube-API served over tailnet (defaults to port 16443)
+                  </div>
+                </div>
+                <button class="btn" disabled={settingBusy()} onClick={setAPIProxyToTailnet}>
+                  Set to tailnet endpoint
                 </button>
               </div>
             </div>
