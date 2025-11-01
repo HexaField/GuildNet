@@ -574,22 +574,28 @@ func Router(deps Deps) *http.ServeMux {
 					if deps.Registry != nil {
 						if inst, err := deps.Registry.Get(r.Context(), id); err == nil && inst != nil && inst.K8s != nil {
 							cfg2 := inst.K8s.Config()
-							if err2 := healthyCluster(cfg2); err2 == nil {
+							if err2, fallback := healthyClusterWithFallback(cfg2); err2 == nil {
 								st["status"] = "ok"
+								if fallback {
+									st["note"] = "proxy_fallback_enabled"
+								}
 								usedRegistry = true
 							}
 						}
 					}
 					if !usedRegistry {
 						if cfg, err := kubeconfigFrom(kc); err == nil {
-							// Apply per-cluster overrides and fallback to local proxy
+							// Apply per-cluster overrides and allow fallback to local proxy
 							applyClusterAPIProxy(cfg, setMgr, id)
-							if err := healthyCluster(cfg); err == nil {
+							if err2, fallback := healthyClusterWithFallback(cfg); err2 == nil {
 								st["status"] = "ok"
+								if fallback {
+									st["note"] = "proxy_fallback_enabled"
+								}
 							} else {
 								st["status"] = "error"
 								st["code"] = "cluster_unreachable"
-								st["error"] = err.Error()
+								st["error"] = err2.Error()
 							}
 						} else {
 							st["status"] = "error"
@@ -920,13 +926,16 @@ func Router(deps Deps) *http.ServeMux {
 				if deps.DB != nil {
 					_ = deps.DB.Put("credentials", fmt.Sprintf("cl:%s:kubeconfig", id), cred)
 				}
-				// Mark cluster ready if reachable
+				// Mark cluster ready if reachable (allow fallback to local proxy)
 				if cfg, err := kubeconfigFrom(body.Kubeconfig); err == nil {
-					if healthyCluster(cfg) == nil {
+					if err2, fallback := healthyClusterWithFallback(cfg); err2 == nil {
 						var rec map[string]any
 						if deps.DB.Get("clusters", id, &rec) == nil {
 							rec["state"] = "ready"
 							rec["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+							if fallback {
+								rec["note"] = "proxy_fallback_enabled"
+							}
 							_ = deps.DB.Put("clusters", id, rec)
 						}
 					}
@@ -1038,10 +1047,14 @@ func Router(deps Deps) *http.ServeMux {
 					_ = json.NewEncoder(w).Encode(map[string]any{"status": "unknown", "code": "bad_kubeconfig", "error": err.Error()})
 					return
 				}
-				// Apply per-cluster overrides (no local-proxy fallbacks)
+				// Apply per-cluster overrides and allow local-proxy fallback
 				applyClusterAPIProxy(cfg, setMgr, id)
-				if err := healthyCluster(cfg); err == nil {
-					_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+				if err2, fallback := healthyClusterWithFallback(cfg); err2 == nil {
+					resp := map[string]any{"status": "ok"}
+					if fallback {
+						resp["note"] = "proxy_fallback_enabled"
+					}
+					_ = json.NewEncoder(w).Encode(resp)
 					return
 				}
 				_ = json.NewEncoder(w).Encode(map[string]any{"status": "error", "code": "cluster_unreachable"})
@@ -2312,6 +2325,38 @@ func healthyCluster(cfg *rest.Config) error {
 	return err
 }
 
+// healthyClusterWithFallback attempts a normal healthyCluster check and, on
+// timeout-like errors, will try a fallback via KUBE_PROXY_ADDR if set. It
+// returns (err, fallbackUsed).
+func healthyClusterWithFallback(cfg *rest.Config) (error, bool) {
+	if err := healthyCluster(cfg); err == nil {
+		return nil, false
+	} else {
+		// only consider fallback for timeout-like errors
+		if !isTimeoutErr(err) {
+			return err, false
+		}
+		proxy := strings.TrimSpace(os.Getenv("KUBE_PROXY_ADDR"))
+		if proxy == "" {
+			return err, false
+		}
+		// Ensure scheme
+		if !strings.HasPrefix(strings.ToLower(proxy), "http://") && !strings.HasPrefix(strings.ToLower(proxy), "https://") {
+			proxy = "http://" + proxy
+		}
+		// Try using proxy as host
+		ncfg := rest.CopyConfig(cfg)
+		ncfg.Host = proxy
+		if strings.HasPrefix(strings.ToLower(proxy), "http://") {
+			ncfg.TLSClientConfig = rest.TLSClientConfig{}
+		}
+		if err2 := healthyCluster(ncfg); err2 == nil {
+			return nil, true
+		}
+		return err, false
+	}
+}
+
 func readClusterKubeconfig(db *localdb.DB, sec *secrets.Manager, id string) (string, bool) {
 	if db == nil {
 		return "", false
@@ -2425,8 +2470,6 @@ func isTimeoutErr(err error) bool {
 	}
 	return false
 }
-
-// ensureProxyFallbackOnTimeout removed: no local proxy fallback in production paths.
 
 // applyClusterAPIProxy applies only explicit per-cluster proxy overrides.
 func applyClusterAPIProxy(cfg *rest.Config, setMgr settings.Manager, clusterID string) {

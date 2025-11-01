@@ -237,17 +237,47 @@ preauth_key() {
   echo "$line" | awk '{ for (i=1;i<=NF;i++) if ($i ~ /^tskey-/) { print $i; found=1 } } END { if (!found) print $0 }' | tee "$STATE_DIR/preauth-${user}.txt"
 }
 
+JSON_MODE=0
+# support: scripts/headscale-run.sh <cmd> [--json]
 cmd="${1:-up}"; shift || true
+for a in "$@"; do
+  if [ "$a" = "--json" ]; then JSON_MODE=1; fi
+done
+
 case "$cmd" in
-  up) up ;;
-  down) down ;;
-  status) status ;;
-  create-user) create_user "$@" ;;
-  preauth-key) preauth_key "$@" ;;
-  *) echo "Unknown command: $cmd" >&2; exit 2 ;;
+  up)
+    up
+    ;;
+  down)
+    down
+    ;;
+  status)
+    status
+    ;;
+  create-user)
+    create_user "$@"
+    ;;
+  preauth-key)
+    preauth_key "$@"
+    ;;
+  *)
+    if [ "$JSON_MODE" -eq 1 ]; then
+      printf '{"error":"unknown_command","command":"%s"}\n' "$cmd"
+    else
+      echo "Unknown command: $cmd" >&2
+    fi
+    exit 2
+    ;;
 esac
 
-cat <<INFO
+if [ "$JSON_MODE" -eq 1 ]; then
+  # In JSON mode, emit the minimal machine-parsable state and exit
+  # Determine host port (try MAPPED_PORT then HOST_PORT)
+  if [ -z "${MAPPED_PORT:-}" ]; then MAPPED_PORT="$HOST_PORT"; fi
+  HOSTVAL="${MAPPED_HOST:-127.0.0.1}"
+  printf '{"action":"%s","server_url":"%s","container":"%s","image":"%s","port":%s,"data_dir":"%s"}\n' "${cmd}" "${SERVER_URL}" "${CONTAINER}" "${IMAGE}" "${MAPPED_PORT}" "${STATE_DIR}"
+else
+  cat <<INFO
 
 Next steps:
 - Create a user:    scripts/headscale-run.sh create-user myuser
@@ -262,3 +292,4 @@ Notes:
   localhost for convenience; if you need HTTPS locally, front it with a proxy
   you trust and set login_server to that https:// URL.
 INFO
+fi

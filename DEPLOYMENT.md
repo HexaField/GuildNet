@@ -83,7 +83,11 @@ After saving Headscale/Tailscale settings and bringing the cluster up, open the 
 Strict mode and remote visibility
 ---------------------------------
 
-The project runs in strict production-only mode: there are no in-process kubectl or proxy fallbacks in the HostApp. Ensure the following when deploying across devices:
+The project runs in a production-first posture: Host App interactions should rely on explicitly configured kubeconfigs and per-cluster proxy settings (`api_proxy_url`). In addition, the Host App implements a limited, bounded fallback used for verification and health checks:
+
+- KUBE_PROXY_ADDR fallback: when `KUBE_PROXY_ADDR` is set in the Host App process environment, certain health/verification checks will attempt a short, permissive fallback to that address on timeout-like failures. This is intended to support local `kubectl proxy` or forwarded ports for verification during setup or CI, not as a primary production transport.
+
+Ensure the following when deploying across devices:
 
 - Apply CRDs to your cluster:
 	- `kubectl apply -f config/crd/`

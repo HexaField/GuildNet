@@ -43,8 +43,21 @@ func HandlerFor(kind string, deps Deps) func(ctx context.Context, j *jobs.Record
 				return
 			}
 			mgr := headscale.New(deps.DB, deps.Secrets)
-			_ = mgr.Create(ctx, id, logf)
-			j.Progress = 1
+			if err := mgr.Create(ctx, id, logf); err != nil {
+				logf("error", "headscale.create failed", map[string]any{"id": id, "err": err.Error()})
+				// persist error state on record if db available
+				if deps.DB != nil {
+					var rec map[string]any
+					if rerr := deps.DB.Get("headscales", id, &rec); rerr == nil {
+						rec["state"] = "error"
+						rec["lastError"] = err.Error()
+						rec["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+						_ = deps.DB.Put("headscales", id, rec)
+					}
+				}
+			} else {
+				j.Progress = 1
+			}
 		}
 	case "headscale.start":
 		return func(ctx context.Context, j *jobs.Record, logf func(step, msg string, kv map[string]any)) {
@@ -55,8 +68,20 @@ func HandlerFor(kind string, deps Deps) func(ctx context.Context, j *jobs.Record
 				return
 			}
 			mgr := headscale.New(deps.DB, deps.Secrets)
-			_ = mgr.Start(ctx, id, logf)
-			j.Progress = 1
+			if err := mgr.Start(ctx, id, logf); err != nil {
+				logf("error", "headscale.start failed", map[string]any{"id": id, "err": err.Error()})
+				if deps.DB != nil {
+					var rec map[string]any
+					if rerr := deps.DB.Get("headscales", id, &rec); rerr == nil {
+						rec["state"] = "error"
+						rec["lastError"] = err.Error()
+						rec["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+						_ = deps.DB.Put("headscales", id, rec)
+					}
+				}
+			} else {
+				j.Progress = 1
+			}
 		}
 	case "headscale.stop":
 		return func(ctx context.Context, j *jobs.Record, logf func(step, msg string, kv map[string]any)) {
@@ -67,8 +92,21 @@ func HandlerFor(kind string, deps Deps) func(ctx context.Context, j *jobs.Record
 				return
 			}
 			mgr := headscale.New(deps.DB, deps.Secrets)
-			_ = mgr.Stop(ctx, id, logf)
-			j.Progress = 1
+			if err := mgr.Stop(ctx, id, logf); err != nil {
+				logf("warn", "headscale.stop returned error", map[string]any{"id": id, "err": err.Error()})
+				// best-effort persist
+				if deps.DB != nil {
+					var rec map[string]any
+					if rerr := deps.DB.Get("headscales", id, &rec); rerr == nil {
+						rec["state"] = "error"
+						rec["lastError"] = err.Error()
+						rec["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+						_ = deps.DB.Put("headscales", id, rec)
+					}
+				}
+			} else {
+				j.Progress = 1
+			}
 		}
 	case "headscale.destroy":
 		return func(ctx context.Context, j *jobs.Record, logf func(step, msg string, kv map[string]any)) {
@@ -79,8 +117,15 @@ func HandlerFor(kind string, deps Deps) func(ctx context.Context, j *jobs.Record
 				return
 			}
 			mgr := headscale.New(deps.DB, deps.Secrets)
-			_ = mgr.Destroy(ctx, id, logf)
-			j.Progress = 1
+			if err := mgr.Destroy(ctx, id, logf); err != nil {
+				logf("warn", "headscale.destroy returned error", map[string]any{"id": id, "err": err.Error()})
+				// try to mark record deleted or errored
+				if deps.DB != nil {
+					_ = deps.DB.Delete("headscales", id)
+				}
+			} else {
+				j.Progress = 1
+			}
 		}
 	case "cluster.create":
 		return func(ctx context.Context, j *jobs.Record, logf func(step, msg string, kv map[string]any)) {
@@ -162,6 +207,25 @@ func HandlerFor(kind string, deps Deps) func(ctx context.Context, j *jobs.Record
 			}
 
 			kc := string(data)
+			// quick validation: ensure kubectl can talk to the API before marking ready
+			{
+				cmd := exec.CommandContext(ctx, "/usr/bin/env", "kubectl", "--kubeconfig", kcPath, "get", "nodes", "--request-timeout=5s")
+				cmd.Env = os.Environ()
+				if out, err := cmd.CombinedOutput(); err != nil {
+					logf("warn", "kubeconfig present but kubectl cannot reach API yet", map[string]any{"path": kcPath, "error": err.Error(), "output": string(out)})
+					// Leave the record in creating state; UI can attach later
+					if deps.DB != nil {
+						var rec map[string]any
+						if err := deps.DB.Get("clusters", tmpId, &rec); err == nil {
+							rec["state"] = "creating"
+							rec["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+							_ = deps.DB.Put("clusters", tmpId, rec)
+						}
+					}
+					j.Progress = 1
+					return
+				}
+			}
 			// Compute deterministic id to normalize the record across devices
 			detID, derr := cluster.DeterministicIDFromKubeconfig(kc)
 			if derr != nil || strings.TrimSpace(detID) == "" {

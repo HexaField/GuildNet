@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -377,6 +378,119 @@ func main() {
 	}
 	sec, _ := secrets.New(masterKey)
 	_ = sec
+
+	// Reconciliation: compare DB state to actual resources and repair/mark errors.
+	func() {
+		// headscales
+		var hs []map[string]any
+		if err := ldb.List("headscales", &hs); err == nil {
+			for _, h := range hs {
+				id := fmt.Sprint(h["id"])
+				st := fmt.Sprint(h["state"])
+				// only validate currently ready/creating entries
+				if st == "ready" || st == "creating" {
+					script := "scripts/headscale-run.sh"
+					if ex, e := os.Executable(); e == nil {
+						dir := filepath.Dir(ex)
+						candidate := filepath.Join(dir, "..", "scripts", "headscale-run.sh")
+						if stt, e2 := os.Stat(candidate); e2 == nil && stt.Mode().IsRegular() {
+							script = candidate
+						}
+					}
+					if stt, err := os.Stat(script); err == nil && stt.Mode().IsRegular() {
+						cmd := exec.CommandContext(ctx, "/usr/bin/env", "bash", script, "status", "--json")
+						cmd.Env = os.Environ()
+						out, err := cmd.CombinedOutput()
+						if err != nil {
+							// mark stopped
+							var rec map[string]any
+							if rerr := ldb.Get("headscales", id, &rec); rerr == nil {
+								rec["state"] = "stopped"
+								rec["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+								_ = ldb.Put("headscales", id, rec)
+							}
+							continue
+						}
+						// try parse JSON last line
+						var js map[string]any
+						lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+						if len(lines) > 0 {
+							_ = json.Unmarshal([]byte(lines[len(lines)-1]), &js)
+						}
+						if v, ok := js["server_url"].(string); ok && v != "" {
+							var rec map[string]any
+							if rerr := ldb.Get("headscales", id, &rec); rerr == nil {
+								rec["login_server"] = v
+								rec["state"] = "ready"
+								rec["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+								_ = ldb.Put("headscales", id, rec)
+							}
+						}
+					}
+				}
+			}
+		}
+
+		// clusters: ensure kubeconfigs are reachable, otherwise mark creating
+		var cls []map[string]any
+		if err := ldb.List("clusters", &cls); err == nil {
+			for _, c := range cls {
+				id := fmt.Sprint(c["id"])
+				// fetch credential
+				var cred map[string]any
+				if err := ldb.Get("credentials", fmt.Sprintf("cl:%s:kubeconfig", id), &cred); err != nil {
+					continue
+				}
+				val := fmt.Sprint(cred["value"])
+				if encFlag, _ := cred["encrypted"].(bool); encFlag {
+					if sec == nil {
+						// cannot decrypt; mark creating
+						var rec map[string]any
+						if rerr := ldb.Get("clusters", id, &rec); rerr == nil {
+							rec["state"] = "creating"
+							rec["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+							_ = ldb.Put("clusters", id, rec)
+						}
+						continue
+					}
+					if v, derr := sec.Decrypt(val); derr == nil {
+						val = v
+					} else {
+						var rec map[string]any
+						if rerr := ldb.Get("clusters", id, &rec); rerr == nil {
+							rec["state"] = "creating"
+							rec["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+							_ = ldb.Put("clusters", id, rec)
+						}
+						continue
+					}
+				}
+				// write temp file
+				tmp, _ := os.CreateTemp("", "guildnet-kc-*")
+				_ = os.WriteFile(tmp.Name(), []byte(val), 0o600)
+				cmd := exec.CommandContext(ctx, "/usr/bin/env", "kubectl", "--kubeconfig", tmp.Name(), "get", "nodes", "--request-timeout=5s")
+				cmd.Env = os.Environ()
+				out, err := cmd.CombinedOutput()
+				_ = os.Remove(tmp.Name())
+				if err != nil {
+					var rec map[string]any
+					if rerr := ldb.Get("clusters", id, &rec); rerr == nil {
+						rec["state"] = "creating"
+						rec["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+						_ = ldb.Put("clusters", id, rec)
+					}
+					log.Printf("cluster %s unreachable: %v %s", id, err, string(out))
+				} else {
+					var rec map[string]any
+					if rerr := ldb.Get("clusters", id, &rec); rerr == nil {
+						rec["state"] = "ready"
+						rec["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+						_ = ldb.Put("clusters", id, rec)
+					}
+				}
+			}
+		}
+	}()
 
 	// Read runtime settings
 	setMgr := settings.Manager{DB: ldb}

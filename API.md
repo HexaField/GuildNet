@@ -2,9 +2,9 @@
 
 This document describes the HostApp HTTP API and important behavior notes as of the strict production-only flow.
 
-Key changes (strict mode):
- - No implicit kubectl/local-proxy fallbacks are performed by the server. All Kubernetes interactions must succeed via configured clients.
- - Per-cluster API proxying is only applied when explicitly configured via cluster settings (APIProxyURL). No environment-based defaults are honored.
+Key changes (health checks & proxy behavior):
+ - The server performs lightweight, bounded health checks against configured kubeconfigs and per-cluster API proxy settings. For certain timeout-like failures the server will attempt a short, permissive fallback to a locally-configured proxy address when the environment variable `KUBE_PROXY_ADDR` is set (for example, a locally-running `kubectl proxy` or a forwarded port). This fallback is limited to health/verification flows and does not replace normal per-cluster client configuration.
+ - Per-cluster API proxying is honored when configured via per-cluster settings (APIProxyURL / `api_proxy_url`). Use that setting for stable, device-specific proxying in production. The `KUBE_PROXY_ADDR` fallback is intended as a pragmatic, limited fallback for verification and reachability checks only.
 
 Per-cluster settings
  - GET /settings/cluster/{id}

@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# support --json to emit machine-parsable output on stdout
+JSON_MODE=0
+for a in "$@"; do
+  if [ "$a" = "--json" ]; then JSON_MODE=1; fi
+done
+
 # k0s-node-up.sh
 # Bring up a Docker-only node stack for GuildNet:
 # - k0s (controller+worker) inside a privileged container (single-node)
@@ -272,11 +278,18 @@ DINDF="$GN_STATE_DIR/dind-env.sh"
 chmod 600 "$DINDF"
 echo "[k0s-node-up] wrote DinD env helper: $DINDF" | tee -a "$LOG"
 
-echo "[k0s-node-up] done. kubectl context: $GN_KUBECONFIG" | tee -a "$LOG"
-if [ "$READY" -eq 1 ]; then
-  echo "[k0s-node-up] kube-apiserver is Ready" | tee -a "$LOG"
+if [ "$JSON_MODE" -eq 1 ]; then
+  READY_BOOL="false"
+  if [ "$READY" -eq 1 ]; then READY_BOOL="true"; fi
+  # Emit compact machine-parsable summary (as last line)
+  printf '{"kubeconfig":"%s","k0s_container":"%s","dind_container":"%s","tailscale_container":"%s","ready":%s}\n' "$GN_KUBECONFIG" "guildnet-k0s" "guildnet-dind" "guildnet-tailscale" "$READY_BOOL"
 else
-  echo "[k0s-node-up] kube-apiserver readiness not confirmed; it may still be starting" | tee -a "$LOG"
+  echo "[k0s-node-up] done. kubectl context: $GN_KUBECONFIG" | tee -a "$LOG"
+  if [ "$READY" -eq 1 ]; then
+    echo "[k0s-node-up] kube-apiserver is Ready" | tee -a "$LOG"
+  else
+    echo "[k0s-node-up] kube-apiserver readiness not confirmed; it may still be starting" | tee -a "$LOG"
+  fi
 fi
 
 exit 0

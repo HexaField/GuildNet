@@ -59,9 +59,10 @@ Note: see ADR and implementation plan for multi-device federated clusters:
 
 Multi-device operator notes
 
-Strict production posture (no fallbacks)
-- HostApp and scripts run in a production-only mode with no dev/local fallbacks. There is no implicit kubectl proxying in the server. Every request uses configured Kubernetes clients.
-- The Workspace CRD (config/crd) must be installed for list endpoints like /api/cluster/{id}/servers to return data. When the CRD is missing, the API returns an empty list for list endpoints; use GET /workspaces/{name} to obtain a synthesized view from Deployment/Service for a specific workspace.
+Strict production posture (primary behaviors)
+- HostApp and scripts are production-focused: most API flows rely on configured kubeconfigs and per-cluster proxy settings. The server prefers explicit client configurations and per-cluster `api_proxy_url` for stable cross-device reachability.
+- Limited verification fallback: to aid setup and verification (and to support local `kubectl proxy` or CI forwarded ports), HostApp health/verification checks include a bounded fallback that will try a configured local proxy when `KUBE_PROXY_ADDR` is present and the primary check fails with timeout-like errors. This fallback is limited to health/verification flows and is not a general substitute for per-cluster configuration.
+- The Workspace CRD (config/crd) should be installed for list endpoints like /api/cluster/{id}/servers to return rich data. When the CRD is missing, the API returns an empty list for list endpoints; use GET /workspaces/{name} to obtain a synthesized view from Deployment/Service for a specific workspace.
 - The server will attempt CRD-based creation first. If the operator isn’t available, it creates Deployment/Service and synthesizes status. This keeps flows working without a dev mode.
 
 Federation and remote visibility
