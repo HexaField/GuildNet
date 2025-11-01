@@ -1,97 +1,97 @@
-## ADR: HostApp manages Headscale and k0s (DinD) clusters
+## ADR: HostApp manages Headscale and k0s (DinD)
 
 Status: proposed
 
 Date: 2025-11-01
 
-Context
--------
-- The GuildNet hostapp currently expects external Headscale (Tailscale control/login) servers and k0s clusters to be provisioned and running. Local helper scripts (e.g. `scripts/headscale-run.sh`, `scripts/k0s-node-up.sh`) exist to assist developers, but hostapp does not manage lifecycle of those services.
+## Context
+
+- The GuildNet hostapp currently expects external Headscale (Tailscale control/login) servers and k0s clusters to be provisioned and running. Local helper scripts (e.g. `scripts/headscale-run.sh`, `scripts/k0s-node-up.sh`) exist, but hostapp does not manage lifecycle of those services.
 - During development we observed frequent misconfiguration and poor DX when headscale containers fail to start (image/config mismatch) and hostapp's tsnet components repeatedly log "connection refused" because the login server at `tailscale.login_server` is not running.
 - The codebase contains orchestration hooks and stubs: `internal/orch/handlers.go` already calls bootstrap scripts and persists kubeconfigs; `internal/headscale/manager.go` exists with TODOs. This indicates an intended design where hostapp coordinates these services.
 
-Decision
---------
-HostApp will become the primary lifecycle manager for local Headscale instances and for developer k0s-in-Docker (DinD) clusters. HostApp will provide APIs, jobs, and UI controls to create, start, stop, destroy, and monitor Headscale instances and k0s clusters. The change will be implemented incrementally:
+## Decision
 
-- MVP (shell-out): implement managers that invoke existing scripts programmatically (non-interactive), parse their outputs, and persist metadata and credentials in the local DB/secrets store.
-- Medium-term: replace fragile shell-outs with direct orchestration via Docker SDK for local Docker-backed instances and client-go for k8s-backed Headscale deployments (operator/CRDs) when requested.
-- Long-term: add reconciliation on startup to bring DB state in sync with running containers/resources, add log streaming, health checks, RBAC, and extend the UI.
+HostApp will become the primary lifecycle manager for local Headscale instances and for k0s-in-Docker (DinD) clusters. HostApp will provide APIs, jobs, and UI controls to create, start, stop, destroy, and monitor Headscale instances and k0s clusters. The implementation below describes the work required to meet these requirements.
 
-Rationale
----------
-- Better developer experience: hostapp can ensure required dependencies (Headscale, kubeconfigs) are available and healthy without asking users to run separate scripts manually.
+## Rationale
+
+- Better experience: hostapp can ensure required dependencies (Headscale, kubeconfigs) are available and healthy without asking users to run separate scripts manually.
 - Single control plane: users can operate clusters and Headscale instances from the hostapp UI and API, improving discoverability and reducing setup friction.
-- Reuse and safety: initial shell-out approach leverages existing tested scripts and avoids a large up-front rewrite. Later transitions to SDKs improve robustness.
+- Reuse and safety: leveraging existing tested scripts and transitioning to SDK-based orchestration where appropriate balances speed and robustness.
 
-Consequences
-------------
+## Consequences
+
 - HostApp will need permissions to manage local Docker (or a remote Docker endpoint) if using Docker-based Headscale and k0s DinD. This requires documentation and clear opt-in.
 - Sensitive credentials (preauth keys, kubeconfigs) must be stored securely. HostApp will use `internal/secrets.Manager` and respect `GUILDNET_MASTER_KEY` for encryption; fallback to plaintext only with explicit warnings.
 - On macOS and Docker Desktop, port binding behavior can vary; hostapp must choose bind addresses carefully (prefer 127.0.0.1 for local-only services) and persist chosen ports.
 
-Alternatives considered
----------------------
-1) Leave responsibilities external (no change)
-   - Pros: minimal code changes.
-   - Cons: poor DX, repeated support burden, user error.
+## Implementation plan (concrete)
 
-2) Immediate full SDK implementation (Docker + client-go) for v1
-   - Pros: more robust and production-quality.
-   - Cons: much larger implementation surface, more risk and time.
+The implementation will deliver the functionality required for hostapp to manage Headscale and k0s DinD clusters. The plan below lists the concrete tasks and expectations; these should be completed as part of the implementation rather than left as separate phases.
 
-We choose the staged approach: MVP shell-out, then SDK replacement.
+- Programmatic lifecycle manager
 
-Implementation Plan (concrete)
------------------------------
-Step 1 — MVP (quick, low-risk)
-- Edit `internal/headscale/manager.go` to call `scripts/headscale-run.sh up|down|status` programmatically (non-interactive). Parse the script output for server URL (the helper prints "Server URL:") and persist to the `headscales` DB record (fields: login_server, port, container, image, state, updatedAt).
-- Edit `internal/orch/handlers.go` (already wired) to ensure job handlers call the manager and properly log progress. Harden error handling and persist state transitions.
-- Persist preauth keys and kubeconfigs in `internal/secrets.Manager` (encrypted when GUILDNET_MASTER_KEY is present).
-- Add small integration test that runs headscale via script and probes `/key` endpoint.
+  - Implement `internal/headscale/manager.go` to run the helper scripts programmatically (non-interactive) where appropriate, and parse their output robustly (prefer machine-parsable output such as JSON from scripts when possible).
+  - Persist metadata to the `headscales` DB record (fields: login_server, port, container id/name, image, state, updatedAt).
+  - Ensure `internal/orch/handlers.go` job handlers call the manager and persist state transitions with clear error handling and logging.
 
-Step 2 — Robust manager
-- Replace shell-outs with Docker client calls for local developer flow. Create containers with deterministic port mapping and healthchecks. Record container IDs and attach log streaming via the Docker API.
-- Add a k8s client mode that applies manifests/CRDs for Headscale operator when managing Headscale in a k8s cluster.
+- Secrets and credentials
 
-Step 3 — k0s DinD cluster improvements
-- Harden `scripts/k0s-node-up.sh` or reimplement provisioning using Docker SDK so kubeconfig is emitted deterministically and safely. Persist the kubeconfig (encrypted) and mark cluster as `ready` when kubeconfig is reachable.
-- Add cluster lifecycle APIs for scaling, addons (MetalLB/localpath), and deletion.
+  - Store preauth keys and kubeconfigs using `internal/secrets.Manager` and encrypt them when `GUILDNET_MASTER_KEY` is present.
+  - Ensure any exported kubeconfigs are emitted deterministically and validated before marking a cluster as ready.
 
-Step 4 — UX, security, and reconciliation
-- Add UI pages/buttons to the `ui/` to create/manage instances and show logs and status.
-- Add audit logging (the code already uses `audit.Append`) and RBAC for management actions.
-- Implement state reconciliation on hostapp start: reconcile DB entries with actual resources and repair or mark as `error`.
+- Replace fragile shell-outs with SDK usage where it increases reliability
 
-Data shapes
------------
+  - Use Docker SDK (where available) to create and manage containers deterministically (port mappings, healthchecks, logs) and record container IDs.
+  - Provide an option to manage Headscale via k8s manifests/operator when requested, using client-go to apply resources.
+
+- k0s DinD cluster provisioning
+
+  - Harden or reimplement `scripts/k0s-node-up.sh` to reliably produce kubeconfigs and deterministic artifacts when used from hostapp, or reimplement provisioning using the Docker SDK for stronger control.
+  - Persist kubeconfigs securely and mark cluster state appropriately when reachable.
+  - Provide cluster lifecycle APIs for create/start/stop/destroy and for managing addons (MetalLB, local-path storage).
+
+- Observability, UX and reconciliation
+
+  - Add API endpoints and UI controls (in `ui/`) to create/manage instances and to view logs and status.
+  - Add audit logging for management actions and RBAC enforcement for sensitive operations.
+  - Implement reconciliation on hostapp startup to compare DB state with actual running resources and repair or mark entries as `error` when mismatches are found.
+
+- Testing and validation
+  - Unit tests for `internal/headscale.Manager` (fake DB, fake secrets manager).
+  - Integration tests that can run the helper scripts (configurable image tags) and probe the Headscale endpoints (e.g. `http://127.0.0.1:<port>/key?v=1`) to assert basic liveness/response.
+
+## Data shapes
+
 - Headscale record (bucket `headscales`):
   - id, name, login_server, port, container (id/name), image, admin_token_secret_id, state, createdAt, updatedAt
 - Cluster record (bucket `clusters`):
   - id, name, state, kubeconfig_secret_id, addons, createdAt, updatedAt
 
-Testing
--------
+## Testing
+
 - Unit tests for `internal/headscale.Manager` using a fake DB and fake secrets manager.
-- Integration test (dev-only) to run `scripts/headscale-run.sh up` with configurable image tag and assert that `http://127.0.0.1:<port>/key?v=1` returns non-404.
+- Integration test to run `scripts/headscale-run.sh up` (or the SDK-managed equivalent) with configurable image tag and assert that `http://127.0.0.1:<port>/key?v=1` returns non-404.
 
-Rollback / Migration
---------------------
-- If hostapp changes cause problems, operators can disable automatic management by setting environment flags (documented) or reverting to the previous behavior (jobs not scheduled). The DB will retain records; a destroy operation will attempt to remove containers/resources.
+## Rollback / Migration
 
-Security considerations
------------------------
+- If hostapp changes cause problems, operators can disable automatic management by setting environment flags (documented) or reverting to previous behavior (jobs not scheduled). The DB will retain records; a destroy operation will attempt to remove containers/resources.
+
+## Security considerations
+
 - Store secrets encrypted (when possible). Document that hostapp requires access to the Docker socket to manage containers; running hostapp with such access is an explicit security choice.
 
-Notes / Next steps
-------------------
-- Implement MVP wiring in `internal/headscale/manager.go` and add tests. Add a `--json` or machine-parsable output mode to `scripts/headscale-run.sh` for robust parsing (optional but recommended).
-- Update `API.md`, `architecture.md`, and `DEPLOYMENT.md` with summary of changes and the new operational requirements (Docker access, GUILDNET_MASTER_KEY, ports used).
+## Notes / Next steps
 
-References
-----------
-- `internal/orch/handlers.go` (cluster.create and headscale.* handlers)
-- `scripts/headscale-run.sh` (helper used by the MVP)
+- Implement the manager wiring in `internal/headscale/manager.go` and corresponding handler updates in `internal/orch/handlers.go`.
+- Add or extend `scripts/headscale-run.sh` and `scripts/k0s-node-up.sh` to support machine-parsable output where it simplifies robust parsing (JSON flags are recommended).
+- Update `API.md`, `architecture.md`, and `DEPLOYMENT.md` with the new operational requirements (Docker access, `GUILDNET_MASTER_KEY`, ports used) and the changed responsibilities of hostapp.
+
+## References
+
+- `internal/orch/handlers.go` (cluster.create and headscale.\* handlers)
+- `scripts/headscale-run.sh` and `scripts/k0s-node-up.sh` (helpers used by hostapp)
 - `guildnet.config` sample that contains `tailscale.login_server` and `preauth_key`
 
 Decision made-by: maintainers
