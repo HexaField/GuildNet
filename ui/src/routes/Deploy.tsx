@@ -1,5 +1,5 @@
-import { createEffect, createResource, createSignal, For, Show } from 'solid-js'
-import { A } from '@solidjs/router'
+import { createEffect, createResource, createSignal, For, Show, onCleanup } from 'solid-js'
+import { A, useNavigate } from '@solidjs/router'
 
 async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init)
@@ -15,27 +15,108 @@ function useJobs() {
 }
 
 export default function Deploy() {
+  const navigate = useNavigate()
   const { jobs, refetch } = useJobs()
   const [hsName, setHsName] = createSignal('')
   const [clName, setClName] = createSignal('')
+  const [addonLocalPath, setAddonLocalPath] = createSignal(true)
+  const [addonMetalLB, setAddonMetalLB] = createSignal(true)
   const [endpoint, setEndpoint] = createSignal('')
   const [preauth, setPreauth] = createSignal('')
   const [kubeconfig, setKubeconfig] = createSignal('')
+  const [joinKc, setJoinKc] = createSignal('')
+  const [joinName, setJoinName] = createSignal('')
+  const [busyJoin, setBusyJoin] = createSignal(false)
+  type ConsoleEntry = { id: string; lines: string[]; status?: string }
+  const [consoles, setConsoles] = createSignal<ConsoleEntry[]>([])
+  const sockets = new Map<string, WebSocket>()
+
+  const openJobStream = (jobId: string) => {
+    try {
+      if (!jobId) return
+      if (sockets.has(jobId)) return // already streaming
+      setConsoles((prev) => {
+        if (prev.find((c) => c.id === jobId)) return prev
+        return [...prev, { id: jobId, lines: [] }]
+      })
+      // Build ws/wss URL against current origin
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws'
+      const url = `${proto}://${location.host}/ws/jobs?id=${encodeURIComponent(jobId)}`
+      const ws = new WebSocket(url)
+      sockets.set(jobId, ws)
+      ws.onmessage = (ev) => {
+        try {
+          const obj = JSON.parse(String(ev.data))
+          const step = obj.step || obj.s || '-'
+          const msg = obj.msg || obj.message || ''
+          const line = `[${step}] ${msg}`
+          setConsoles((prev) =>
+            prev.map((c) =>
+              c.id === jobId
+                ? {
+                    ...c,
+                    lines: [...c.lines.slice(-199), line]
+                  }
+                : c
+            )
+          )
+        } catch {
+          setConsoles((prev) =>
+            prev.map((c) =>
+              c.id === jobId
+                ? {
+                    ...c,
+                    lines: [...c.lines.slice(-199), String(ev.data)]
+                  }
+                : c
+            )
+          )
+        }
+      }
+      ws.onerror = () => {}
+      ws.onclose = () => {
+        sockets.delete(jobId)
+        setConsoles((prev) =>
+          prev.map((c) => (c.id === jobId ? { ...c, status: 'closed' } : c))
+        )
+      }
+    } catch {}
+  }
+
+  onCleanup(() => {
+    sockets.forEach((s) => {
+      try {
+        s.close()
+      } catch {}
+    })
+    sockets.clear()
+  })
 
   const createHeadscale = async () => {
-    await fetchJSON('/api/deploy/headscale', {
+    const resp = await fetchJSON<{ id: string; jobId?: string }>(
+      '/api/deploy/headscale',
+      {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: hsName() || undefined })
-    })
+        body: JSON.stringify({ name: hsName() || undefined })
+      }
+    )
+    if (resp?.jobId) openJobStream(resp.jobId)
     refetch()
   }
   const createCluster = async () => {
-    await fetchJSON('/api/deploy/clusters', {
+    const resp = await fetchJSON<{ id: string; jobId?: string }>(
+      '/api/deploy/clusters',
+      {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: clName() || undefined })
-    })
+        body: JSON.stringify({
+          name: clName() || undefined,
+          addons: { localpath: addonLocalPath(), metallb: addonMetalLB() }
+        })
+      }
+    )
+    if (resp?.jobId) openJobStream(resp.jobId)
     refetch()
   }
 
@@ -82,11 +163,119 @@ export default function Deploy() {
   const clDownloadKubeconfig = (id: string) => {
     window.open(`/api/deploy/clusters/${id}?action=kubeconfig`, '_blank')
   }
+  const clDownloadJoinConfig = (id: string) => {
+    window.open(`/api/deploy/clusters/${id}?action=join-config`, '_blank')
+  }
+
+  const importJoinFile = async (file: File) => {
+    try {
+      const txt = await file.text()
+      const obj = JSON.parse(txt)
+      if (obj?.cluster?.name) setJoinName(String(obj.cluster.name))
+      if (obj?.cluster?.kubeconfig) setJoinKc(String(obj.cluster.kubeconfig))
+      if (obj?.ui?.vite_api_base) {
+        const base = String(obj.ui.vite_api_base)
+        const current = sessionStorage.getItem('GN_VITE_API_BASE') || ''
+        if (base && current !== base) {
+          const ok = confirm('Use API base from join file and reload now?')
+          if (ok) {
+            sessionStorage.setItem('GN_VITE_API_BASE', base)
+            location.reload()
+            return
+          } else {
+            sessionStorage.setItem('GN_VITE_API_BASE', base)
+          }
+        }
+      }
+      alert('Join file imported')
+    } catch (e) {
+      alert('Invalid join file')
+    }
+  }
+
+  const createAndAttach = async () => {
+    if (busyJoin()) return
+    const kc = joinKc().trim()
+    if (!kc) {
+      alert('Paste a kubeconfig or import a join file that includes one')
+      return
+    }
+    setBusyJoin(true)
+    try {
+      const rec = await fetchJSON<{ id: string; jobId?: string }>(
+        '/api/deploy/clusters',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: joinName() || undefined,
+            addons: { localpath: addonLocalPath(), metallb: addonMetalLB() }
+          })
+        }
+      )
+      if (!rec?.id) throw new Error('create cluster failed')
+  if (rec?.jobId) openJobStream(rec.jobId)
+      await fetchJSON(`/api/deploy/clusters/${rec.id}?action=attach-kubeconfig`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kubeconfig: kc })
+      })
+      refetchCl()
+      navigate(`/c/${encodeURIComponent(rec.id)}/servers`)
+    } catch (e) {
+      alert((e as Error).message || 'Attach failed')
+    } finally {
+      setBusyJoin(false)
+    }
+  }
 
   return (
     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-      <section class="space-y-3">
-        <h2 class="text-lg font-semibold">Headscale</h2>
+      <section class="space-y-3 md:col-span-2">
+        <h2 class="text-lg font-semibold">Join an existing cluster</h2>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div class="space-y-2">
+            <div class="text-sm">Join file</div>
+            <label class="inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium border bg-neutral-50 dark:bg-neutral-800 hover:bg-neutral-100 dark:hover:bg-neutral-700 cursor-pointer w-max">
+              <input
+                type="file"
+                accept=".json,.config,application/json"
+                class="hidden"
+                onChange={(e) => {
+                  const f = e.currentTarget.files?.[0]
+                  if (f) importJoinFile(f)
+                }}
+              />
+              Import…
+            </label>
+          </div>
+          <div class="space-y-1">
+            <div class="text-sm">Name (optional)</div>
+            <input
+              placeholder="Cluster name"
+              value={joinName()}
+              onInput={(e) => setJoinName(e.currentTarget.value)}
+              class="border rounded px-2 py-1 w-full"
+            />
+          </div>
+          <div class="space-y-1 md:col-span-3">
+            <div class="text-sm">Paste kubeconfig</div>
+            <textarea
+              placeholder="Paste kubeconfig YAML"
+              value={joinKc()}
+              onInput={(e) => setJoinKc(e.currentTarget.value)}
+              class="border rounded px-2 py-2 w-full h-36 font-mono text-xs"
+            />
+          </div>
+          <div class="md:col-span-3">
+            <button class="btn" onClick={createAndAttach} disabled={busyJoin()}>
+              {busyJoin() ? 'Attaching…' : 'Create & Attach'}
+            </button>
+          </div>
+        </div>
+      </section>
+    <section class="space-y-3">
+  <h2 class="text-lg font-semibold">Headscale</h2>
         <div class="flex gap-2">
           <input
             placeholder="Name"
@@ -121,7 +310,22 @@ export default function Deploy() {
                     <div class="font-medium">{h.name}</div>
                     <div class="text-xs text-neutral-500">{h.id}</div>
                   </div>
-                  <div class="text-xs">{h.state}</div>
+                  <div class="text-xs flex items-center gap-2">
+                    <span>{h.state}</span>
+                    <Show when={h.lastJobId}>
+                      {(jid: any) => {
+                        const job = () => (jobs() || []).find((j: any) => j.id === jid())
+                        return (
+                          <button class="btn" onClick={() => openJobStream(jid())}>
+                            {job()?.status || 'queued'}
+                            <Show when={job()}>
+                              {(jj: any) => <span class="ml-1">{Math.round((jj().progress || 0) * 100)}%</span>}
+                            </Show>
+                          </button>
+                        )
+                      }}
+                    </Show>
+                  </div>
                 </div>
                 <div class="flex gap-2">
                   <button class="btn" onClick={() => setHsEndpoint(h.id)}>
@@ -130,6 +334,13 @@ export default function Deploy() {
                   <button class="btn" onClick={() => setHsPreauth(h.id)}>
                     Save preauth
                   </button>
+                  <Show when={h.lastJobId}>
+                    {(jid: any) => (
+                      <button class="btn" onClick={() => openJobStream(jid())}>
+                        Tail logs
+                      </button>
+                    )}
+                  </Show>
                   <button
                     class="btn"
                     onClick={async () => {
@@ -147,7 +358,7 @@ export default function Deploy() {
       </section>
 
       <section class="space-y-3">
-        <h2 class="text-lg font-semibold">Clusters</h2>
+  <h2 class="text-lg font-semibold">Clusters</h2>
         <div class="flex gap-2">
           <input
             placeholder="Name"
@@ -158,6 +369,16 @@ export default function Deploy() {
           <button class="btn" onClick={createCluster}>
             Create
           </button>
+        </div>
+        <div class="flex items-center gap-4 text-sm">
+          <label class="inline-flex items-center gap-2">
+            <input type="checkbox" checked={addonLocalPath()} onChange={(e) => setAddonLocalPath((e.currentTarget as HTMLInputElement).checked)} />
+            Install local-path (default StorageClass)
+          </label>
+          <label class="inline-flex items-center gap-2">
+            <input type="checkbox" checked={addonMetalLB()} onChange={(e) => setAddonMetalLB((e.currentTarget as HTMLInputElement).checked)} />
+            Install MetalLB (L2)
+          </label>
         </div>
         <div class="flex gap-2">
           <textarea
@@ -176,9 +397,24 @@ export default function Deploy() {
                     <div class="font-medium">{c.name}</div>
                     <div class="text-xs text-neutral-500">{c.id}</div>
                   </div>
-                  <div class="text-xs">{c.state}</div>
+                  <div class="text-xs flex items-center gap-2">
+                    <span>{c.state}</span>
+                    <Show when={c.lastJobId}>
+                      {(jid: any) => {
+                        const job = () => (jobs() || []).find((j: any) => j.id === jid())
+                        return (
+                          <button class="btn" onClick={() => openJobStream(jid())}>
+                            {job()?.status || 'queued'}
+                            <Show when={job()}>
+                              {(jj: any) => <span class="ml-1">{Math.round((jj().progress || 0) * 100)}%</span>}
+                            </Show>
+                          </button>
+                        )
+                      }}
+                    </Show>
+                  </div>
                 </div>
-                <div class="flex gap-2">
+                <div class="flex gap-2 flex-wrap">
                   <button class="btn" onClick={() => attachKubeconfig(c.id)}>
                     Attach kubeconfig
                   </button>
@@ -187,6 +423,9 @@ export default function Deploy() {
                     onClick={() => clDownloadKubeconfig(c.id)}
                   >
                     Download kubeconfig
+                  </button>
+                  <button class="btn" onClick={() => clDownloadJoinConfig(c.id)}>
+                    Download join file
                   </button>
                   <button
                     class="btn"
@@ -197,6 +436,16 @@ export default function Deploy() {
                   >
                     Health
                   </button>
+                  <Show when={c.lastJobId}>
+                    {(jid: any) => (
+                      <button class="btn" onClick={() => openJobStream(jid())}>
+                        Tail logs
+                      </button>
+                    )}
+                  </Show>
+                  <button class="btn" onClick={() => navigate(`/c/${encodeURIComponent(c.id)}/servers`)}>
+                    Open
+                  </button>
                 </div>
               </div>
             )}
@@ -206,6 +455,36 @@ export default function Deploy() {
 
       <section class="md:col-span-2">
         <h2 class="text-lg font-semibold">Jobs</h2>
+        <Show when={(consoles().length || 0) > 0}>
+          <div class="mb-3 grid md:grid-cols-2 gap-3">
+            <For each={consoles()}>
+              {(c) => (
+                <div class="p-2 border rounded bg-neutral-50 dark:bg-neutral-800">
+                  <div class="flex items-center justify-between mb-1 text-sm">
+                    <div class="font-mono truncate">{c.id}</div>
+                    <div class="flex items-center gap-2">
+                      <span class="text-xs">{c.status || 'streaming'}</span>
+                      <button
+                        class="btn"
+                        onClick={() => {
+                          const s = sockets.get(c.id)
+                          try { s?.close() } catch {}
+                          sockets.delete(c.id)
+                          setConsoles((prev) => prev.filter((x) => x.id !== c.id))
+                        }}
+                      >
+                        Close
+                      </button>
+                    </div>
+                  </div>
+                  <pre class="text-[11px] h-40 overflow-auto whitespace-pre-wrap">
+                    {c.lines.join('\n')}
+                  </pre>
+                </div>
+              )}
+            </For>
+          </div>
+        </Show>
         <div class="border rounded divide-y">
           <For each={jobs()?.slice().reverse()}>
             {(j) => (
@@ -214,6 +493,9 @@ export default function Deploy() {
                 <div class="w-40">{j.kind}</div>
                 <div class="w-32">{j.status}</div>
                 <div class="w-32">{Math.round((j.progress || 0) * 100)}%</div>
+                <div class="flex-1 text-right">
+                  <button class="btn" onClick={() => openJobStream(j.id)}>Tail logs</button>
+                </div>
               </div>
             )}
           </For>

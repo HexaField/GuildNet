@@ -3,17 +3,23 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"math/big"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -57,6 +63,8 @@ import (
 	// New imports
 	"github.com/your/module/internal/api"
 	"github.com/your/module/internal/cluster"
+	"github.com/your/module/internal/headscale"
+	"tailscale.com/tsnet"
 
 	hostapppkg "github.com/your/module/internal/hostapp"
 	hostappapi "github.com/your/module/internal/hostapp/api"
@@ -180,13 +188,51 @@ func startOperator(ctx context.Context, restCfg *rest.Config, reg *cluster.Regis
 
 // ensureSelfSigned creates a minimal self-signed certificate if not present.
 func ensureSelfSigned(dir, certPath, keyPath string) error {
-	// Production mode: do not generate self-signed certificates. Require valid cert and key to exist.
+	// If cert and key already exist, nothing to do.
 	if _, err := os.Stat(certPath); err == nil {
 		if _, err2 := os.Stat(keyPath); err2 == nil {
 			return nil
 		}
 	}
-	return fmt.Errorf("tls cert or key not found: %s and %s; place valid certs in ./certs/ or %s", certPath, keyPath, dir)
+	// Generate a self-signed certificate for localhost and loopback addresses.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create cert dir: %w", err)
+	}
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return fmt.Errorf("generate key: %w", err)
+	}
+	serial, err := rand.Int(rand.Reader, big.NewInt(1<<62))
+	if err != nil {
+		return fmt.Errorf("serial: %w", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: "GuildNet Local"},
+		NotBefore:             time.Now().Add(-1 * time.Hour),
+		NotAfter:              time.Now().Add(3650 * 24 * time.Hour), // ~10 years
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:              []string{"localhost", "127.0.0.1", "::1"},
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
+	if err != nil {
+		return fmt.Errorf("create cert: %w", err)
+	}
+	// Write cert
+	if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		return fmt.Errorf("write cert: %w", err)
+	}
+	// Write key
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(priv)})
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		return fmt.Errorf("write key: %w", err)
+	}
+	log.Printf("generated self-signed TLS cert at %s", dir)
+	return nil
 }
 
 // dns1123Name converts an arbitrary string into a DNS-1123 compliant name:
@@ -343,14 +389,27 @@ func main() {
 
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		// Allow first-run without ~/.guildnet/config.json so settings can be
+		// configured at runtime via the API. Seed sensible defaults.
+		if errors.Is(err, os.ErrNotExist) {
+			cfg = &config.Config{ListenLocal: "127.0.0.1:8090", DialTimeoutMS: 5000}
+		} else {
+			log.Fatalf("load config: %v", err)
+		}
 	}
-	if err := cfg.Validate(); err != nil {
-		log.Fatalf("invalid config: %v", err)
+	// Do not require Tailscale settings at startup; allow dynamic runtime config.
+	// Ensure minimal defaults for local listener and dial timeout.
+	if strings.TrimSpace(cfg.ListenLocal) == "" {
+		cfg.ListenLocal = "127.0.0.1:8090"
+	}
+	if cfg.DialTimeoutMS <= 0 {
+		cfg.DialTimeoutMS = 5000
 	}
 
-	// Create cancellation context for the serve lifecycle; include HUP/QUIT so closing the terminal also stops the server
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
+	// Create cancellation context for the serve lifecycle; handle only SIGINT and SIGTERM.
+	// Avoid reacting to SIGHUP/QUIT which can be delivered by terminals, log rotation, or parent process events
+	// and cause unintended shutdowns during active requests.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	// On Linux, ask the kernel to send us SIGTERM if the parent dies (e.g., terminal closed).
@@ -375,6 +434,119 @@ func main() {
 	}
 	sec, _ := secrets.New(masterKey)
 	_ = sec
+
+	// Reconciliation: compare DB state to actual resources and repair/mark errors.
+	func() {
+		// headscales
+		var hs []map[string]any
+		if err := ldb.List("headscales", &hs); err == nil {
+			for _, h := range hs {
+				id := fmt.Sprint(h["id"])
+				st := fmt.Sprint(h["state"])
+				// only validate currently ready/creating entries
+				if st == "ready" || st == "creating" {
+					script := "scripts/headscale-run.sh"
+					if ex, e := os.Executable(); e == nil {
+						dir := filepath.Dir(ex)
+						candidate := filepath.Join(dir, "..", "scripts", "headscale-run.sh")
+						if stt, e2 := os.Stat(candidate); e2 == nil && stt.Mode().IsRegular() {
+							script = candidate
+						}
+					}
+					if stt, err := os.Stat(script); err == nil && stt.Mode().IsRegular() {
+						cmd := exec.CommandContext(ctx, "/usr/bin/env", "bash", script, "status", "--json")
+						cmd.Env = os.Environ()
+						out, err := cmd.CombinedOutput()
+						if err != nil {
+							// mark stopped
+							var rec map[string]any
+							if rerr := ldb.Get("headscales", id, &rec); rerr == nil {
+								rec["state"] = "stopped"
+								rec["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+								_ = ldb.Put("headscales", id, rec)
+							}
+							continue
+						}
+						// try parse JSON last line
+						var js map[string]any
+						lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+						if len(lines) > 0 {
+							_ = json.Unmarshal([]byte(lines[len(lines)-1]), &js)
+						}
+						if v, ok := js["server_url"].(string); ok && v != "" {
+							var rec map[string]any
+							if rerr := ldb.Get("headscales", id, &rec); rerr == nil {
+								rec["login_server"] = v
+								rec["state"] = "ready"
+								rec["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+								_ = ldb.Put("headscales", id, rec)
+							}
+						}
+					}
+				}
+			}
+		}
+
+		// clusters: ensure kubeconfigs are reachable, otherwise mark creating
+		var cls []map[string]any
+		if err := ldb.List("clusters", &cls); err == nil {
+			for _, c := range cls {
+				id := fmt.Sprint(c["id"])
+				// fetch credential
+				var cred map[string]any
+				if err := ldb.Get("credentials", fmt.Sprintf("cl:%s:kubeconfig", id), &cred); err != nil {
+					continue
+				}
+				val := fmt.Sprint(cred["value"])
+				if encFlag, _ := cred["encrypted"].(bool); encFlag {
+					if sec == nil {
+						// cannot decrypt; mark creating
+						var rec map[string]any
+						if rerr := ldb.Get("clusters", id, &rec); rerr == nil {
+							rec["state"] = "creating"
+							rec["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+							_ = ldb.Put("clusters", id, rec)
+						}
+						continue
+					}
+					if v, derr := sec.Decrypt(val); derr == nil {
+						val = v
+					} else {
+						var rec map[string]any
+						if rerr := ldb.Get("clusters", id, &rec); rerr == nil {
+							rec["state"] = "creating"
+							rec["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+							_ = ldb.Put("clusters", id, rec)
+						}
+						continue
+					}
+				}
+				// write temp file
+				tmp, _ := os.CreateTemp("", "guildnet-kc-*")
+				_ = os.WriteFile(tmp.Name(), []byte(val), 0o600)
+				cmd := exec.CommandContext(ctx, "/usr/bin/env", "kubectl", "--kubeconfig", tmp.Name(), "get", "nodes", "--request-timeout=5s")
+				cmd.Env = os.Environ()
+				out, err := cmd.CombinedOutput()
+				_ = os.Remove(tmp.Name())
+				if err != nil {
+					var rec map[string]any
+					if rerr := ldb.Get("clusters", id, &rec); rerr == nil {
+						rec["state"] = "creating"
+						rec["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+						_ = ldb.Put("clusters", id, rec)
+					}
+					log.Printf("cluster %s unreachable: %v %s", id, err, string(out))
+				} else {
+					var rec map[string]any
+					if rerr := ldb.Get("clusters", id, &rec); rerr == nil {
+						rec["state"] = "ready"
+						rec["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+						_ = ldb.Put("clusters", id, rec)
+					}
+				}
+			}
+		}
+	}()
 
 	// Read runtime settings
 	setMgr := settings.Manager{DB: ldb}
@@ -453,16 +625,19 @@ func main() {
 		_ = os.Remove(lockPath)
 	}()
 
-	// Start tsnet from settings
-	s, err := ts.StartServer(ctx, ts.Options{StateDir: config.StateDir(), Hostname: tsSet.Hostname, LoginURL: tsSet.LoginServer, AuthKey: tsSet.PreauthKey})
-	if err != nil {
-		log.Fatalf("tsnet start: %v", err)
+	// Start tsnet only when sufficient settings are present. Otherwise, run local TLS only.
+	var tsServer *tsnet.Server
+	if strings.TrimSpace(tsSet.LoginServer) != "" && strings.TrimSpace(tsSet.PreauthKey) != "" && strings.TrimSpace(tsSet.Hostname) != "" {
+		s, err := ts.StartServer(ctx, ts.Options{StateDir: config.StateDir(), Hostname: tsSet.Hostname, LoginURL: tsSet.LoginServer, AuthKey: tsSet.PreauthKey})
+		if err != nil {
+			log.Fatalf("tsnet start: %v", err)
+		}
+		tsServer = s
+		// Ensure tsnet server is closed on exit to avoid lingering background activity
+		defer func() { _ = tsServer.Close() }()
+	} else {
+		log.Printf("tsnet disabled: missing login_server/auth_key/hostname; serving local TLS only")
 	}
-	tsServer := s
-	// Ensure tsnet server is closed on exit to avoid lingering background activity
-	defer func() {
-		_ = tsServer.Close()
-	}()
 
 	mux := http.NewServeMux()
 
@@ -505,6 +680,32 @@ func main() {
 	mux.Handle("/ws/jobs", apiMux)
 	// Mount API router for all /api/ paths so bootstrap and other endpoints are handled
 	mux.Handle("/api/", http.StripPrefix("/api", apiMux))
+
+	// Periodic Headscale reconciler: keep DB state in sync with container/runtime.
+	go func() {
+		mgr := headscale.New(ldb, sec)
+		interval := 30 * time.Second
+		if v := strings.TrimSpace(os.Getenv("GN_HEADSCALE_RECONCILE_INTERVAL")); v != "" {
+			if d, err := time.ParseDuration(v); err == nil {
+				interval = d
+			}
+		}
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				log.Printf("headscale: running reconcile")
+				if err := mgr.Reconcile(ctx, func(typ, msg string, meta map[string]any) {
+					log.Printf("headscale.reconcile: %s %s %v", typ, msg, meta)
+				}); err != nil {
+					log.Printf("headscale reconcile error: %v", err)
+				}
+			}
+		}
+	}()
 	// Mount additional API groups served by router
 	mux.Handle("/api/cluster/", apiMux)
 	mux.Handle("/sse/cluster/", apiMux)
@@ -546,6 +747,25 @@ func main() {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
+	})
+
+	// Headscale reconcile endpoint (manual trigger)
+	mux.HandleFunc("/api/deploy/headscale/reconcile", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		mgr := headscale.New(ldb, sec)
+		ctx2, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
+		if err := mgr.Reconcile(ctx2, func(typ, msg string, meta map[string]any) {
+			// keep simple: log during manual reconcile
+			log.Printf("headscale.reconcile: %s %s %v", typ, msg, meta)
+		}); err != nil {
+			httpx.JSONError(w, http.StatusInternalServerError, "reconcile failed", "reconcile_failed")
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]any{"status": "ok"})
 	})
 
 	// internal shutdown endpoint for graceful stop from local tooling
@@ -698,7 +918,10 @@ func main() {
 
 	// Register hostapp presence (type=gateway) to local in-memory registry
 	go func() {
-		info, _ := ts.Info(ctx, tsServer)
+		var info *ts.InfoResult
+		if tsServer != nil {
+			info, _ = ts.Info(ctx, tsServer)
+		}
 		rec := &model.AgentRecord{
 			ID:       cfg.Hostname,
 			Org:      "", // deprecated; tenants handled per-cluster
@@ -761,13 +984,15 @@ func main() {
 				// Try to obtain tailscale/tsnet info with a few retries; tsnet may be still starting.
 				var info *ts.InfoResult
 				var ierr error
-				for i := 0; i < 3; i++ {
-					info, ierr = ts.Info(context.Background(), tsServer)
-					if ierr == nil && info != nil && (info.IP != "" || info.FQDN != "") {
-						break
+				if tsServer != nil {
+					for i := 0; i < 3; i++ {
+						info, ierr = ts.Info(context.Background(), tsServer)
+						if ierr == nil && info != nil && (info.IP != "" || info.FQDN != "") {
+							break
+						}
+						// small backoff
+						time.Sleep(250 * time.Millisecond)
 					}
-					// small backoff
-					time.Sleep(250 * time.Millisecond)
 				}
 				if ierr != nil {
 					log.Printf("ts.Info() failed while building heartbeat: %v", ierr)
@@ -1799,10 +2024,10 @@ func main() {
 		}
 	}
 
-	// tsnet server remains on :443
+	// Optional tsnet listener on :443 when tsServer is enabled
 	var tsSrv *http.Server
 	var ln net.Listener
-	{
+	if tsServer != nil {
 		var err error
 		ln, err = ts.Listen(ctx, tsServer, "tcp", ":443")
 		if err != nil {
@@ -1822,8 +2047,12 @@ func main() {
 	if v6Srv != nil && lnLocalV6 != nil {
 		go func() { errCh <- v6Srv.ServeTLS(lnLocalV6, certFile, keyFile) }()
 	}
-	go func() { errCh <- tsSrv.ServeTLS(ln, certFile, keyFile) }()
-	log.Printf("serving TLS on local %s and tailscale listener :443", bindAddr)
+	if tsSrv != nil && ln != nil {
+		go func() { errCh <- tsSrv.ServeTLS(ln, certFile, keyFile) }()
+		log.Printf("serving TLS on local %s and tailscale listener :443", bindAddr)
+	} else {
+		log.Printf("serving TLS on local %s (tsnet disabled)", bindAddr)
+	}
 
 	select {
 	case <-ctx.Done():
@@ -1844,12 +2073,16 @@ func main() {
 				log.Printf("v6Srv.Shutdown error: %v", err)
 			}
 		}
-		if err := tsSrv.Shutdown(shutdownCtx); err != nil {
-			log.Printf("tsSrv.Shutdown error: %v", err)
+		if tsSrv != nil {
+			if err := tsSrv.Shutdown(shutdownCtx); err != nil {
+				log.Printf("tsSrv.Shutdown error: %v", err)
+			}
 		}
-		// Close tsnet server explicitly and the ts listener
-		if err := tsServer.Close(); err != nil {
-			log.Printf("tsServer.Close error: %v", err)
+		// Close tsnet server explicitly and the ts listener if enabled
+		if tsServer != nil {
+			if err := tsServer.Close(); err != nil {
+				log.Printf("tsServer.Close error: %v", err)
+			}
 		}
 		if ln != nil {
 			_ = ln.Close()

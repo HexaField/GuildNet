@@ -1,13 +1,4 @@
-import {
-  lazy,
-  createResource,
-  createSignal,
-  For,
-  Show,
-  createEffect,
-  onCleanup,
-  createMemo
-} from 'solid-js'
+import { lazy, createResource, For, Show, createEffect, onCleanup, createMemo, createSignal } from 'solid-js'
 import {
   A,
   Route,
@@ -16,15 +7,8 @@ import {
   useParams,
   type RouteSectionProps
 } from '@solidjs/router'
-import Toaster, { pushToast } from './components/Toaster'
-import {
-  listClusters,
-  createClusterRecord,
-  attachClusterKubeconfig,
-  getHealthSummary,
-  clusterHealth
-} from './lib/api'
-import Modal from './components/Modal'
+import Toaster from './components/Toaster'
+import { listClusters, getHealthSummary } from './lib/api'
 import { apiUrl } from './lib/config'
 
 const Servers = lazy(() => import('./routes/Servers'))
@@ -32,6 +16,7 @@ const ServerDetail = lazy(() => import('./routes/ServerDetail'))
 const Launch = lazy(() => import('./routes/Launch'))
 const Databases = lazy(() => import('./routes/Databases'))
 const Settings = lazy(() => import('./routes/Settings'))
+const Deploy = lazy(() => import('./routes/Deploy'))
 // Add missing database detail + table routes
 const DatabaseDetail = lazy(() => import('./routes/DatabaseDetail'))
 const TableView = lazy(() => import('./routes/TableView'))
@@ -51,106 +36,10 @@ function Sidebar() {
   const navigate = useNavigate()
   const [clusters, { refetch }] = createResource(listClusters)
   const [health, { refetch: refetchHealth }] = createResource(getHealthSummary)
-  const [busy, setBusy] = createSignal(false)
-  const [kc, setKc] = createSignal('')
-  const [open, setOpen] = createSignal(false)
-  const [name, setName] = createSignal('')
   const [healthTs, setHealthTs] = createSignal<number | null>(null)
 
-  const importJoinFile = async (file: File) => {
-    try {
-      const txt = await file.text()
-      const obj = JSON.parse(txt)
-      if (obj?.cluster?.name) setName(String(obj.cluster.name))
-      if (obj?.cluster?.kubeconfig) setKc(String(obj.cluster.kubeconfig))
-      if (obj?.ui?.vite_api_base) {
-        const base = String(obj.ui.vite_api_base)
-        if (base && typeof window !== 'undefined') {
-          const current = sessionStorage.getItem('GN_VITE_API_BASE') || ''
-          if (current !== base) {
-            const ok = confirm('Use API base from join file and reload now?')
-            if (ok) {
-              sessionStorage.setItem('GN_VITE_API_BASE', base)
-              // Reload to pick up new base for all requests
-              location.reload()
-              return
-            } else {
-              // Store it for later, but do not reload
-              sessionStorage.setItem('GN_VITE_API_BASE', base)
-            }
-          }
-        }
-      }
-      pushToast({ type: 'success', message: 'Join file imported' })
-    } catch (e) {
-      pushToast({ type: 'error', message: 'Invalid join file' })
-    }
-  }
+  const startWizard = () => navigate('/deploy')
 
-  const looksLikeKubeconfig = (s: string) => {
-    const t = s.trim()
-    if (!t) return false
-    // Very light heuristic to avoid obvious paste mistakes
-    return /apiVersion:\s*v1/i.test(t) && /(clusters|contexts|users):/i.test(t)
-  }
-
-  const canSave = createMemo(() => {
-    const pasted = kc().trim()
-    if (!pasted) return true
-    return looksLikeKubeconfig(pasted)
-  })
-
-  const startWizard = () => {
-    setOpen(true)
-  }
-
-  const submitWizard = async () => {
-    if (busy()) return
-    const pasted = kc().trim()
-    if (pasted && !looksLikeKubeconfig(pasted)) {
-      pushToast({ type: 'error', message: 'Kubeconfig does not look valid' })
-      return
-    }
-    setBusy(true)
-    try {
-      const rec = await createClusterRecord(name().trim() || undefined)
-      if (!rec?.id) {
-        pushToast({ type: 'error', message: 'Failed to create cluster record' })
-        return
-      }
-      if (pasted) {
-        const ok = await attachClusterKubeconfig(rec.id, pasted)
-        if (!ok) {
-          pushToast({
-            type: 'error',
-            message: 'Attach failed. Fix the kubeconfig and try again.'
-          })
-          return
-        }
-        // Check health immediately and inform the user
-        try {
-          const st = await clusterHealth(rec.id)
-          if (st !== 'ok') {
-            pushToast({
-              type: 'info',
-              message: `Cluster not reachable yet (${st}). You can attach a different kubeconfig in Settings.`
-            })
-          } else {
-            pushToast({ type: 'success', message: 'Cluster connected' })
-          }
-        } catch {}
-      }
-      setKc('')
-      setName('')
-      setOpen(false)
-      refetch()
-      navigate(`/c/${encodeURIComponent(rec.id)}/servers`)
-    } catch (e) {
-      pushToast({ type: 'error', message: (e as Error).message || 'Error' })
-    } finally {
-      setBusy(false)
-    }
-  }
 
   const ClusterRow = (props: { id: string; name?: string }) => {
     const status = () => {
@@ -234,69 +123,7 @@ function Sidebar() {
         </For>
       </div>
       <div class="text-[10px] text-neutral-500">Health: {lastUpdated()}</div>
-      <Modal
-        title="Connect a cluster"
-        open={open()}
-        onClose={() => {
-          if (!busy()) setOpen(false)
-        }}
-        footer={
-          <>
-            <button
-              class="btn"
-              onClick={() => setOpen(false)}
-              disabled={busy()}
-            >
-              Cancel
-            </button>
-            <button
-              class="btn"
-              onClick={submitWizard}
-              disabled={busy() || !canSave()}
-            >
-              {busy() ? 'Connecting…' : 'Save'}
-            </button>
-          </>
-        }
-      >
-        <div class="space-y-3">
-          <label class="block text-sm">
-            Name (optional)
-            <input
-              class="mt-1 w-full rounded-md border px-3 py-2"
-              value={name()}
-              onInput={(e) => setName(e.currentTarget.value)}
-            />
-          </label>
-          <div class="flex items-center justify-between gap-2">
-            <div class="text-sm font-medium">Join file</div>
-            <label class="inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium border bg-neutral-50 dark:bg-neutral-800 hover:bg-neutral-100 dark:hover:bg-neutral-700 cursor-pointer">
-              <input
-                type="file"
-                accept=".json,.config,application/json"
-                class="hidden"
-                onChange={(e) => {
-                  const f = e.currentTarget.files?.[0]
-                  if (f) importJoinFile(f)
-                }}
-              />
-              Import…
-            </label>
-          </div>
-          <label class="block text-sm">
-            Paste kubeconfig (optional)
-            <textarea
-              class="mt-1 w-full h-40 rounded-md border px-3 py-2 font-mono text-xs"
-              placeholder="Paste kubeconfig YAML"
-              value={kc()}
-              onInput={(e) => setKc(e.currentTarget.value)}
-            />
-            <div class="text-xs text-neutral-500 mt-1">
-              If omitted, you can attach later in Settings.
-            </div>
-          </label>
-        </div>
-      </Modal>
+      {/* Modal removed; use the Deployment Manager page instead */}
     </aside>
   )
 }
@@ -429,6 +256,7 @@ export default function App() {
           component={TableImportExport}
         />
         <Route path="/c/:clusterId/settings" component={Settings} />
+        <Route path="/deploy" component={Deploy} />
         {/* Home when no cluster */}
         <Route path="/" component={Home} />
       </Route>

@@ -4,8 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/your/module/internal/cluster"
 	"github.com/your/module/internal/headscale"
 	"github.com/your/module/internal/jobs"
 	"github.com/your/module/internal/localdb"
@@ -16,6 +21,14 @@ import (
 type Deps struct {
 	DB      *localdb.DB
 	Secrets *secrets.Manager
+}
+
+// tail2k returns the last up to 2000 bytes of the provided string.
+func tail2k(s string) string {
+	if len(s) <= 2000 {
+		return s
+	}
+	return s[len(s)-2000:]
 }
 
 // HandlerFor returns a jobs handler function for a given kind.
@@ -30,8 +43,25 @@ func HandlerFor(kind string, deps Deps) func(ctx context.Context, j *jobs.Record
 				return
 			}
 			mgr := headscale.New(deps.DB, deps.Secrets)
-			_ = mgr.Create(ctx, id, logf)
-			j.Progress = 1
+			if err := mgr.Create(ctx, id, logf); err != nil {
+				// log and persist headscale record error
+				logf("error", "headscale.create failed", map[string]any{"id": id, "err": err.Error()})
+				if deps.DB != nil {
+					var rec map[string]any
+					if rerr := deps.DB.Get("headscales", id, &rec); rerr == nil {
+						rec["state"] = "error"
+						rec["lastError"] = err.Error()
+						rec["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+						_ = deps.DB.Put("headscales", id, rec)
+					}
+				}
+				// mark job failed so Runner does not mark it succeeded
+				j.Status = jobs.Failed
+				j.Error = err.Error()
+				j.Updated = time.Now()
+			} else {
+				j.Progress = 1
+			}
 		}
 	case "headscale.start":
 		return func(ctx context.Context, j *jobs.Record, logf func(step, msg string, kv map[string]any)) {
@@ -42,8 +72,23 @@ func HandlerFor(kind string, deps Deps) func(ctx context.Context, j *jobs.Record
 				return
 			}
 			mgr := headscale.New(deps.DB, deps.Secrets)
-			_ = mgr.Start(ctx, id, logf)
-			j.Progress = 1
+			if err := mgr.Start(ctx, id, logf); err != nil {
+				logf("error", "headscale.start failed", map[string]any{"id": id, "err": err.Error()})
+				if deps.DB != nil {
+					var rec map[string]any
+					if rerr := deps.DB.Get("headscales", id, &rec); rerr == nil {
+						rec["state"] = "error"
+						rec["lastError"] = err.Error()
+						rec["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+						_ = deps.DB.Put("headscales", id, rec)
+					}
+				}
+				j.Status = jobs.Failed
+				j.Error = err.Error()
+				j.Updated = time.Now()
+			} else {
+				j.Progress = 1
+			}
 		}
 	case "headscale.stop":
 		return func(ctx context.Context, j *jobs.Record, logf func(step, msg string, kv map[string]any)) {
@@ -54,8 +99,24 @@ func HandlerFor(kind string, deps Deps) func(ctx context.Context, j *jobs.Record
 				return
 			}
 			mgr := headscale.New(deps.DB, deps.Secrets)
-			_ = mgr.Stop(ctx, id, logf)
-			j.Progress = 1
+			if err := mgr.Stop(ctx, id, logf); err != nil {
+				logf("warn", "headscale.stop returned error", map[string]any{"id": id, "err": err.Error()})
+				// best-effort persist
+				if deps.DB != nil {
+					var rec map[string]any
+					if rerr := deps.DB.Get("headscales", id, &rec); rerr == nil {
+						rec["state"] = "error"
+						rec["lastError"] = err.Error()
+						rec["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+						_ = deps.DB.Put("headscales", id, rec)
+					}
+				}
+				j.Status = jobs.Failed
+				j.Error = err.Error()
+				j.Updated = time.Now()
+			} else {
+				j.Progress = 1
+			}
 		}
 	case "headscale.destroy":
 		return func(ctx context.Context, j *jobs.Record, logf func(step, msg string, kv map[string]any)) {
@@ -66,27 +127,195 @@ func HandlerFor(kind string, deps Deps) func(ctx context.Context, j *jobs.Record
 				return
 			}
 			mgr := headscale.New(deps.DB, deps.Secrets)
-			_ = mgr.Destroy(ctx, id, logf)
-			j.Progress = 1
+			if err := mgr.Destroy(ctx, id, logf); err != nil {
+				logf("warn", "headscale.destroy returned error", map[string]any{"id": id, "err": err.Error()})
+				// try to mark record deleted or errored
+				if deps.DB != nil {
+					_ = deps.DB.Delete("headscales", id)
+				}
+				j.Status = jobs.Failed
+				j.Error = err.Error()
+				j.Updated = time.Now()
+			} else {
+				j.Progress = 1
+			}
 		}
 	case "cluster.create":
 		return func(ctx context.Context, j *jobs.Record, logf func(step, msg string, kv map[string]any)) {
 			var spec map[string]any
 			_ = json.Unmarshal([]byte(j.SpecJSON), &spec)
-			id := fmt.Sprint(spec["id"])
+			tmpId := fmt.Sprint(spec["id"])
 			name := fmt.Sprint(spec["name"])
-			if id == "" {
-				return
-			}
-			logf("create", "registering cluster", map[string]any{"id": id, "name": name})
-			if deps.DB != nil {
-				var rec map[string]any
-				if err := deps.DB.Get("clusters", id, &rec); err == nil {
-					rec["state"] = "ready"
-					rec["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
-					_ = deps.DB.Put("clusters", id, rec)
+			// Optional addons map: { metallb: bool, localpath: bool }
+			addons := map[string]bool{"metallb": true, "localpath": true}
+			if raw, ok := spec["addons"]; ok {
+				if m, ok2 := raw.(map[string]any); ok2 {
+					if v, ok3 := m["metallb"]; ok3 {
+						addons["metallb"] = strings.EqualFold(fmt.Sprint(v), "true") || fmt.Sprint(v) == "1"
+					}
+					if v, ok3 := m["localpath"]; ok3 {
+						addons["localpath"] = strings.EqualFold(fmt.Sprint(v), "true") || fmt.Sprint(v) == "1"
+					}
 				}
 			}
+			if tmpId == "" {
+				return
+			}
+			logf("create", "provisioning local MicroK8s cluster", map[string]any{"id": tmpId, "name": name})
+
+			// 1) Attempt to launch a local MicroK8s via scripts/microk8s-up.sh
+			// Locate script path relative to cwd or to executable dir
+			script := "scripts/microk8s-up.sh"
+			if _, err := os.Stat(script); err != nil {
+				// try relative to executable dir
+				if ex, e := os.Executable(); e == nil {
+					dir := filepath.Dir(ex)
+					candidate := filepath.Join(dir, "..", "scripts", "microk8s-up.sh")
+					if st, e2 := os.Stat(candidate); e2 == nil && st.Mode().IsRegular() {
+						script = candidate
+					}
+				}
+			}
+			if st, err := os.Stat(script); err == nil && st.Mode().IsRegular() {
+				cmd := exec.CommandContext(ctx, "/usr/bin/env", "bash", script)
+				// Inherit minimal environment; allow caller to pass through TS_AUTHKEY etc.
+				cmd.Env = os.Environ()
+				// Ensure non-interactive; attach no stdin
+				out, err := cmd.CombinedOutput()
+				if err != nil {
+					logf("warn", "microk8s bootstrap script returned non-zero", map[string]any{"error": err.Error()})
+				}
+				// Truncate very large output in logs
+				tail := string(out)
+				if len(tail) > 2000 {
+					tail = tail[len(tail)-2000:]
+				}
+				if strings.TrimSpace(tail) != "" {
+					logf("info", "microk8s bootstrap output (tail)", map[string]any{"tail": tail})
+				}
+			} else {
+				logf("warn", "microk8s bootstrap script not found; skipping automatic provisioning", map[string]any{"script": script})
+			}
+
+			// 2) Read kubeconfig from default path and attach to cluster record
+			kcPath := os.Getenv("GN_KUBECONFIG")
+			if strings.TrimSpace(kcPath) == "" {
+				home, _ := os.UserHomeDir()
+				kcPath = filepath.Join(home, ".guildnet", "kubeconfig")
+			}
+			data, err := os.ReadFile(kcPath)
+			if err != nil || len(data) == 0 {
+				logf("warn", "kubeconfig not found after bootstrap attempt", map[string]any{"path": kcPath})
+				// Leave the record in creating state; UI can attach later
+				if deps.DB != nil {
+					var rec map[string]any
+					if err := deps.DB.Get("clusters", tmpId, &rec); err == nil {
+						rec["state"] = "creating"
+						rec["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+						_ = deps.DB.Put("clusters", tmpId, rec)
+					}
+				}
+				j.Progress = 1
+				return
+			}
+
+			kc := string(data)
+			// quick validation: ensure kubectl can talk to the API before marking ready
+			{
+				cmd := exec.CommandContext(ctx, "/usr/bin/env", "kubectl", "--kubeconfig", kcPath, "get", "nodes", "--request-timeout=5s")
+				cmd.Env = os.Environ()
+				if out, err := cmd.CombinedOutput(); err != nil {
+					logf("warn", "kubeconfig present but kubectl cannot reach API yet", map[string]any{"path": kcPath, "error": err.Error(), "output": string(out)})
+					// Leave the record in creating state; UI can attach later
+					if deps.DB != nil {
+						var rec map[string]any
+						if err := deps.DB.Get("clusters", tmpId, &rec); err == nil {
+							rec["state"] = "creating"
+							rec["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+							_ = deps.DB.Put("clusters", tmpId, rec)
+						}
+					}
+					j.Progress = 1
+					return
+				}
+			}
+			// Compute deterministic id to normalize the record across devices
+			detID, derr := cluster.DeterministicIDFromKubeconfig(kc)
+			if derr != nil || strings.TrimSpace(detID) == "" {
+				detID = tmpId
+			}
+			// Persist kubeconfig under credentials (encrypt when possible)
+			enc := kc
+			encrypted := false
+			if deps.Secrets != nil {
+				if v, e := deps.Secrets.Encrypt(kc); e == nil {
+					enc = v
+					encrypted = true
+				}
+			}
+			cred := map[string]any{
+				"id":        fmt.Sprintf("cred-%s", detID),
+				"scopeType": "cluster",
+				"scopeId":   detID,
+				"kind":      "cluster.kubeconfig",
+				"value":     enc,
+				"encrypted": encrypted,
+				"rotatedAt": time.Now().UTC().Format(time.RFC3339),
+			}
+			if deps.DB != nil {
+				_ = deps.DB.Put("credentials", fmt.Sprintf("cl:%s:kubeconfig", detID), cred)
+				// Reconcile cluster record id if it changed
+				var rec map[string]any
+				if err := deps.DB.Get("clusters", tmpId, &rec); err == nil {
+					rec["id"] = detID
+					if name != "" {
+						rec["name"] = name
+					}
+					rec["state"] = "ready"
+					rec["updatedAt"] = time.Now().UTC().Format(time.RFC3339)
+					// Write under deterministic id and delete temporary id when different
+					_ = deps.DB.Put("clusters", detID, rec)
+					if detID != tmpId {
+						_ = deps.DB.Delete("clusters", tmpId)
+					}
+				}
+			}
+
+			// 3) Install requested addons (best-effort, idempotent scripts)
+			// Ensure kubectl targets the new cluster by setting KUBECONFIG
+			envBase := os.Environ()
+			envWithKC := append(envBase, fmt.Sprintf("KUBECONFIG=%s", kcPath))
+			if addons["localpath"] {
+				logf("addon", "ensuring local-path-provisioner (default StorageClass)", map[string]any{"cluster": detID})
+				cmd := exec.CommandContext(ctx, "/usr/bin/env", "bash", "scripts/install-local-path-provisioner.sh")
+				cmd.Env = envWithKC
+				if out, err := cmd.CombinedOutput(); err != nil {
+					logf("warn", "local-path-provisioner install returned non-zero", map[string]any{"error": err.Error()})
+					if s := string(out); strings.TrimSpace(s) != "" {
+						logf("info", "local-path install output", map[string]any{"tail": tail2k(s)})
+					}
+				} else {
+					if s := string(out); strings.TrimSpace(s) != "" {
+						logf("info", "local-path install output", map[string]any{"tail": tail2k(s)})
+					}
+				}
+			}
+			if addons["metallb"] {
+				logf("addon", "deploying MetalLB (L2 mode)", map[string]any{"cluster": detID})
+				cmd := exec.CommandContext(ctx, "/usr/bin/env", "bash", "scripts/deploy-metallb.sh")
+				cmd.Env = envWithKC
+				if out, err := cmd.CombinedOutput(); err != nil {
+					logf("warn", "metallb deploy returned non-zero", map[string]any{"error": err.Error()})
+					if s := string(out); strings.TrimSpace(s) != "" {
+						logf("info", "metallb deploy output", map[string]any{"tail": tail2k(s)})
+					}
+				} else {
+					if s := string(out); strings.TrimSpace(s) != "" {
+						logf("info", "metallb deploy output", map[string]any{"tail": tail2k(s)})
+					}
+				}
+			}
+
 			j.Progress = 1
 		}
 	case "cluster.scale", "cluster.upgrade":

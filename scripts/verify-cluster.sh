@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # verify-cluster.sh
-# Run verification steps against an existing Kubernetes cluster (microk8s recommended).
+# Run verification steps against an existing Kubernetes cluster (MicroK8s recommended).
 # This script does NOT auto-create disposable clusters. It will generate a guildnet.config,
 # POST to hostapp /bootstrap, create a workspace (code-server), tail logs via SSE,
 # exercise DB API (list/create/table/delete), and clean up local diagnostics. Verbose
@@ -56,8 +56,8 @@ need kubectl
 NO_DELETE=${NO_DELETE:-0}
 
 # This script no longer creates disposable clusters. It expects a kubeconfig
-# to be provided (via KUBECONFIG or GN_KUBECONFIG) or will try to provision
-# microk8s via scripts/microk8s-setup.sh. CLUSTER_NAME is only used for
+# to be provided (via KUBECONFIG or GN_KUBECONFIG). Use scripts/microk8s-up.sh
+# to provision a local MicroK8s if needed. CLUSTER_NAME is only used for
 # hostapp registration and may remain empty for local kubeconfig usage.
 CLUSTER_NAME=""
 
@@ -76,7 +76,7 @@ HOSTAPP_URL=${HOSTAPP_URL:-https://127.0.0.1:8090}
 
 
 
-echolog "Disposable cluster creation disabled; using existing kubeconfig or microk8s setup"
+echolog "Disposable cluster creation disabled; using existing kubeconfig (use scripts/microk8s-up.sh to provision locally)"
 
 echolog "Starting verify-cluster run for cluster: $CLUSTER_NAME"
 echolog "Logfile: $LOGFILE"
@@ -85,7 +85,7 @@ echolog "Logfile: $LOGFILE"
   KUBECONFIG_OUT=${KUBECONFIG_OUT:-${GN_KUBECONFIG:-${KUBECONFIG:-$HOME/.kube/config}}}
   # If the kubeconfig file is missing, try to create one from env vars or attempt to start a local cluster
   if [ ! -f "$KUBECONFIG_OUT" ]; then
-    echolog "No kubeconfig found at $KUBECONFIG_OUT; attempting to generate or start a local cluster"
+    echolog "No kubeconfig found at $KUBECONFIG_OUT"
     # Try to generate kubeconfig from environment variables (KUBE_API_SERVER,KUBE_TOKEN,KUBE_CA_DATA)
     if [ -n "${KUBE_API_SERVER:-}" ] && [ -n "${KUBE_TOKEN:-}" ]; then
       echolog "Generating kubeconfig from KUBE_API_SERVER and KUBE_TOKEN environment variables"
@@ -112,33 +112,8 @@ users:
 EOF
       echolog "Wrote generated kubeconfig to $KUBECONFIG_OUT"
     else
-      # Start a local cluster using microk8s only.
-      started=0
-      if [ -x "$ROOT/scripts/microk8s-setup.sh" ]; then
-        echolog "Invoking scripts/microk8s-setup.sh to provision microk8s (will auto-install if needed) and emit kubeconfig"
-        if OUT=$(bash "$ROOT/scripts/microk8s-setup.sh" "$KUBECONFIG_OUT" 2>&1 | tee -a "$LOGFILE"); then
-          # microk8s-setup prints the kubeconfig path as its last line; use that if non-empty
-          LAST_LINE=$(echo "$OUT" | tail -n1)
-          if [ -f "$LAST_LINE" ]; then
-            KUBECONFIG_OUT="$LAST_LINE"
-          else
-            # fallback: microk8s config output
-            if [ -f "$KUBECONFIG_OUT" ]; then
-              echolog "microk8s setup wrote kubeconfig to $KUBECONFIG_OUT"
-            else
-              echolog "microk8s setup did not produce kubeconfig at $KUBECONFIG_OUT";
-            fi
-          fi
-          started=1
-        else
-          echolog "microk8s setup script failed"
-        fi
-      fi
-      if [ -z "${KUBECONFIG_OUT:-}" ]; then
-        echolog "Unable to generate kubeconfig from env and no microk8s kubeconfig was produced."
-        echolog "This repository no longer auto-provisions legacy local providers. Provide a valid KUBECONFIG or install/run microk8s via scripts/microk8s-setup.sh.";
-        exit 4
-      fi
+      echolog "Provide a valid kubeconfig via GN_KUBECONFIG or run scripts/microk8s-up.sh to create one."
+      exit 4
     fi
     
 fi
@@ -149,15 +124,11 @@ echolog "Using kubeconfig: $KUBECONFIG_OUT"
 echolog "Performing Kubernetes API preflight check (timeout 5s)"
 if ! kubectl --request-timeout=5s get --raw='/readyz' >/dev/null 2>&1; then
   echolog "Kubernetes API not reachable using kubeconfig $KUBECONFIG_OUT."
-  echolog "Set KUBECONFIG to a reachable cluster or install/run microk8s via scripts/microk8s-setup.sh.";
+  echolog "Set KUBECONFIG to a reachable cluster or provision local MicroK8s via scripts/microk8s-up.sh.";
   exit 4
 fi
 
-# If microk8s is present, build+load the operator image into microk8s so the operator pod can use the local image
-if command -v microk8s >/dev/null 2>&1 || grep -q "microk8s" <<< "${KUBECONFIG_OUT}" 2>/dev/null; then
-  echolog "Detected microk8s kubeconfig/environment: building+loading operator image into microk8s"
-  (cd "$ROOT" && MAKEFLAGS= make operator-build-load) 2>&1 | tee -a "$LOGFILE" || echolog "operator build/load may have failed (continuing)"
-fi
+# Operator image should be reachable by the cluster; prefer a registry or MicroK8s image import.
 
 # Deploy the operator into the target cluster so the operator's API types (CRDs)
 # and controller become available for the test run.
@@ -230,9 +201,9 @@ else
   fi
 fi
 
-# For microk8s or real clusters deploy the operator now. If you run a local
-# cluster with a local image you may need to import the operator image into
-# microk8s or ensure OPERATOR_IMAGE is reachable by the cluster.
+# Deploy the operator now. If you run a local cluster with a local image you may
+# need to import the operator image into MicroK8s containerd (e.g., microk8s ctr -n k8s.io images import) or ensure OPERATOR_IMAGE
+# is reachable by the cluster.
 export OPERATOR_IMAGE="${OPERATOR_IMAGE:-guildnet/hostapp:local}"
 echolog "Using OPERATOR_IMAGE=$OPERATOR_IMAGE for operator deployment"
 bash "$ROOT/scripts/deploy-operator.sh" 2>&1 | tee -a "$LOGFILE" || echolog "deploy-operator failed (continuing)"

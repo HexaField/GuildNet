@@ -1,45 +1,45 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# smoke-workspace.sh: create a Workspace CR (operator path), wait for it to be reconciled,
-# port-forward its Service and optionally cleanup. Meant for developer quick-smoke tests.
+# smoke-workspace.sh
+# Build a tiny test image (optional), ensure CRDs/operator, and deploy a Workspace CR from template.
+# Relies on scripts/quick-workspace.yaml.tmpl and emits basic status.
 
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-TEMPLATE=${TEMPLATE:-$ROOT/scripts/quick-workspace.yaml.tmpl}
+ROOT=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+GN_KUBECONFIG=${GN_KUBECONFIG:-"$HOME/.guildnet/kubeconfig"}
+export KUBECONFIG="$GN_KUBECONFIG"
 
-NAME=${1:-quick-code-server-ws}
-NAMESPACE=${2:-default}
-IMAGE=${3:-codercom/code-server:4.9.0}
-PORT=${4:-8080}
+NS=${GN_WORKSPACE_NS:-default}
+NAME=${GN_WORKSPACE_NAME:-ws-smoke}
+IMAGE=${GN_WORKSPACE_IMAGE:-nginxinc/nginx-unprivileged:1.25}
+PORT=${GN_WORKSPACE_PORT:-8080}
 
-TMP=$(mktemp /tmp/quick-ws-XXXXXX.yaml)
-trap 'rm -f "$TMP"' EXIT
+# 0) Verify kube API
+kubectl --request-timeout=5s get --raw='/readyz?verbose' >/dev/null
 
-sed -e "s|{{NAME}}|$NAME|g" \
-  -e "s|{{NAMESPACE}}|$NAMESPACE|g" \
-  -e "s|{{IMAGE}}|$IMAGE|g" \
-  -e "s|{{PORT}}|$PORT|g" \
-  "$TEMPLATE" > "$TMP"
+# 1) Ensure CRDs/operator present (idempotent)
+make -C "$ROOT" deploy-k8s-addons >/dev/null || true
+make -C "$ROOT" deploy-operator >/dev/null || true
 
-echo "Applying Workspace from $TMP"
-kubectl apply -f "$TMP"
+# 2) Render template and apply
+T="$ROOT/scripts/quick-workspace.yaml.tmpl"
+if [ ! -f "$T" ]; then
+  echo "[smoke-workspace] missing template: $T" >&2
+  exit 2
+fi
+Y="/tmp/ws-${NAME}-$(date +%s).yaml"
+sed -e "s#{{NAME}}#$NAME#g" \
+    -e "s#{{NAMESPACE}}#$NS#g" \
+    -e "s#{{IMAGE}}#$IMAGE#g" \
+    -e "s#{{PORT}}#$PORT#g" \
+    "$T" > "$Y"
 
-echo "Waiting for operator to reconcile the deployment (timeout 120s)..."
-kubectl -n "$NAMESPACE" rollout status deployment/$NAME --timeout=120s || true
+kubectl apply -f "$Y"
 
-echo "Listing pods (label guildnet.io/workspace=$NAME):"
-kubectl -n "$NAMESPACE" get pods -l guildnet.io/workspace="$NAME" -o wide
+# 3) Show CR and related k8s objects
+sleep 2
+kubectl -n "$NS" get workspace "$NAME" -o yaml || true
+kubectl -n "$NS" get deploy,svc,ingress -l workspace="$NAME" || true
 
-echo "You can port-forward the Service with the command below and open http://localhost:$PORT"
-echo "kubectl -n $NAMESPACE port-forward svc/$NAME $PORT:$PORT"
-
-cat <<'EOF'
-Notes:
-- This script creates a Workspace CR and relies on the operator to create the Deployment/Service.
-- The Workspace CR schema does not accept arbitrary env entries; to set runtime secrets (password) prefer using the operator/hostapp UI or a separate Secret mounted by the operator if supported.
-- If the operator fails to reconcile, inspect operator logs and the Workspace resource:
-  kubectl -n guildnet-system logs -l app=workspace-operator --tail=200
-  kubectl -n $NAMESPACE get workspace $NAME -o yaml
-EOF
-
-echo "To cleanup: kubectl -n $NAMESPACE delete workspace $NAME"
+echo "[smoke-workspace] applied: $Y"
+exit 0

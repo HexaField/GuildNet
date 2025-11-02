@@ -58,7 +58,39 @@ Note: see ADR and implementation plan for multi-device federated clusters:
 - Implementation plan: `docs/implementation/0001-multi-device-cluster-implementation.md`
 
 Multi-device operator notes
----------------------------
+
+Strict production posture (primary behaviors)
+- HostApp and scripts are production-focused: most API flows rely on configured kubeconfigs and per-cluster proxy settings. The server prefers explicit client configurations and per-cluster `api_proxy_url` for stable cross-device reachability.
+- Limited verification fallback: to aid setup and verification (and to support local `kubectl proxy` or CI forwarded ports), HostApp health/verification checks include a bounded fallback that will try a configured local proxy when `KUBE_PROXY_ADDR` is present and the primary check fails with timeout-like errors. This fallback is limited to health/verification flows and is not a general substitute for per-cluster configuration.
+- The Workspace CRD (config/crd) should be installed for list endpoints like /api/cluster/{id}/servers to return rich data. When the CRD is missing, the API returns an empty list for list endpoints; use GET /workspaces/{name} to obtain a synthesized view from Deployment/Service for a specific workspace.
+- The server will attempt CRD-based creation first. If the operator isn’t available, it creates Deployment/Service and synthesizes status. This keeps flows working without a dev mode.
+
+Federation and remote visibility
+- Each device runs HostApp locally. For remote devices to observe the cluster without fallbacks, the device must be able to reach the kube-apiserver for the target cluster.
+- Configure per-cluster APIProxyURL (via /settings/cluster/{id}) to point the client-go rest.Config.Host to an address reachable from that device (for example, via an SSH reverse-tunnel to 127.0.0.1:6443 or a tsnet-published endpoint). No automatic local-proxy is used.
+- Reverse proxying to services supports pod port-forwarding when Service endpoints are missing; when a tsnet connector is configured, the port can be published to the tailnet automatically.
+Runtime bootstrap and networking
+--------------------------------
+- Config-less startup: The Host App does not require `~/.guildnet/config.json` on first boot. When missing, it starts with sensible defaults and serves HTTPS on `127.0.0.1:8090` so the API and UI are immediately reachable.
+- Self-signed TLS: If no certificates are found, the Host App auto-generates a self-signed certificate with SANs for `localhost`, `127.0.0.1`, and `::1` and stores it under `~/.guildnet/state/certs/`. You can replace these with production certificates at any time.
+- Optional tsnet: The embedded Tailscale node is disabled until Tailscale settings are provided via the API (`PUT /api/settings/tailscale` with `login_server`, `preauth_key`, `hostname`). When enabled, the server also listens on the tsnet listener for tailnet access.
+
+UI deployment flows
+--------------------
+- Cluster onboarding and provisioning are centralized on the Deployment Manager page at `/deploy` (the previous sidebar modal has been removed).
+  - Join existing cluster: import a join file and/or paste a kubeconfig; click "Create & Attach" to create a record and attach the kubeconfig. You can also download a per-cluster join file later.
+  - Deploy new local cluster: click Create to submit a provisioning job via `POST /api/deploy/clusters`. The job ensures a local MicroK8s cluster is running using `scripts/microk8s-up.sh` and then persists the kubeconfig under the deterministic cluster ID and marks the record ready.
+  - Safe defaults for cluster addons are exposed as toggles (enabled by default):
+    - Install local-path-provisioner (default StorageClass)
+    - Install MetalLB (L2)
+    The backend accepts these via an `addons` object in the create request and runs idempotent scripts to ensure they're present.
+  - Live job consoles stream orchestration logs using `WS /ws/jobs?id=<jobId>` as soon as a create request is submitted. Multiple job consoles can be opened concurrently; each maintains a short in-memory buffer and can be closed independently.
+  - Each headscale/cluster row shows inline job status (queued/running/done with % progress) using the record's `lastJobId`, with a quick "Tail logs" action.
+- The page also manages Headscale/Tailscale (create instance, set endpoint and preauth key, check health) using `/api/deploy/headscale`.
+
+Per-cluster Settings UX
+- The Cluster Settings page adds a one-click "API proxy" action to set `api_proxy_url` to the device's tailnet-served kube-API (default `https://<tailnet-ip>:16443`). The UI discovers the tailnet IP from `/api/v1/sites` for the selected cluster and updates `/settings/cluster/{id}`.
+- A "Verify via proxy" action calls the cluster health endpoint using the configured proxy URL to confirm kube‑API reachability from this device.
 
 For operator-driven federation the operator requires a couple of runtime artifacts to operate non-interactively in multi-device tests:
 
@@ -66,6 +98,18 @@ For operator-driven federation the operator requires a couple of runtime artifac
 - TLS certificate and private key available under the operator's state path (e.g. `/root/.guildnet/state/certs/server.crt` and `/root/.guildnet/state/certs/server.key`). For development the repository `certs/` directory can be mounted into the pod as a ConfigMap (we use `operator-certs` in tests).
 
 These two items are required for the operator to drive cross-device behavior: tsnet provides tailnet connectivity and the TLS certs allow the operator to serve secure endpoints and validate HostApp connections during verification. The verifier script `scripts/verify-federation-e2e.sh` will check that both devices see at least one common cluster and will deploy a minimal test workload to ensure both clusters can run the same image.
+
+Local single-node cluster (MicroK8s)
+------------------------------------
+- Each device can run a local MicroK8s cluster. The script `scripts/microk8s-up.sh` provisions MicroK8s (Linux via snap; macOS via Multipass VM) and writes a kubeconfig to `~/.guildnet/kubeconfig`.
+- The Host App consumes that kubeconfig unchanged. Deterministic cluster IDs and bootstrap flows work identically to other clusters. Per-cluster settings (APIProxyURL, PreferPodProxy, UsePortForward, etc.) apply as before.
+- For image workflows, prefer pushing to a registry accessible by your cluster. MicroK8s can be configured to trust and pull from your registry.
+
+E2E verification (strict multi-device)
+- The federation verifier is now strict: it requires at least two Ready nodes on different devices, requires the remote Host App perspective (server list and logs), and enforces placement on the creator's node via `guildnet.io/schedule-node=<hostname>`.
+- If your kube-API is only reachable from localhost, publish it over the tailnet using `scripts/ts-serve-kubeapi.sh` or configure a per‑cluster API proxy URL in HostApp settings.
+- Remote workers default to host-networking for kube-router/CNI compatibility, but the helper supports `--host-network 0` to avoid port conflicts on hosts where ports 10248/10250 are already in use (e.g., MicroK8s). This does not change cluster semantics.
+- Tailscale/Headscale is required for production and for the repository verifier; provide `TS_AUTHKEY` (and `TS_LOGIN_SERVER` for Headscale). The subnet-router DaemonSet must be present and Ready.
 
 tsnet connectors and Headscale auth (implementation details)
 -----------------------------------------------------------
@@ -87,7 +131,7 @@ Mirror & resync mechanism (short)
 - When a Host App publishes a service, it mirrors the mapping into `guildnet-system/published-<id>` in the cluster. Other devices read that ConfigMap and resync local listeners/proxies so published services are visible across devices.
 
 Bootstrap & coordination (short)
-- Devices join by submitting a `guildnet.config` (or kubeconfig) to an existing Host App via `POST /bootstrap`. The receiver persists the kubeconfig and runs a short pre-warm probe. Leader election (controller-runtime) ensures only one reconciler actively changes cluster-scoped resources at a time.
+- Devices join by submitting a `guildnet.config` (or kubeconfig) to an existing Host App via `POST /api/bootstrap`. The receiver persists the kubeconfig and runs a short pre-warm probe. Leader election (controller-runtime) ensures only one reconciler actively changes cluster-scoped resources at a time.
 
 Deterministic cluster identity
 ------------------------------
@@ -109,7 +153,7 @@ In-cluster DeviceParticipant SOT and name sanitization
 High level summary
 
 - Per-cluster kubeconfigs: the Host App stores kubeconfigs in local state and looks them up under the DB key `credentials:cl:{id}:kubeconfig` when creating per-cluster `Instance` clients. For interactive dev flows the code now prefers `~/.guildnet/kubeconfig` as the default kubeconfig before `~/.kube/config`.
-- `POST /bootstrap` accepts a join payload (`guildnet.config` file or JSON with `cluster.kubeconfig`), persists a cluster record and kubeconfig, then performs a bounded pre-warm (10s) which attempts a light Kubernetes API call and a short `EnsureRDB`. On pre-warm failure bootstrap rolls back persisted state and returns an error.
+- `POST /api/bootstrap` accepts a join payload (`guildnet.config` file or JSON with `cluster.kubeconfig`), persists a cluster record and kubeconfig, then performs a bounded pre-warm (10s) which attempts a light Kubernetes API call and a short `EnsureRDB`.
 
 Developer teardown helper
 -------------------------
@@ -126,7 +170,7 @@ For a simplified multi-device flow (Device A host + Device B joiner), see the mu
 - Make targets: `make multi-device-host`, `make multi-device-joiner`
 - Script: `scripts/multi-device-setup.sh`
 
-These orchestrate Headscale/tailscale, microk8s, CRDs/addons, operator, Host App startup, and `/bootstrap` attach in one step per device.
+These orchestrate Headscale/tailscale, MicroK8s, CRDs/addons, operator, Host App startup, and `/bootstrap` attach in one step per device.
  - Multi-device resilience: the embedded/in-cluster operator uses controller-runtime leader election so only one leader reconciles at a time across devices. Published service mappings are mirrored into an in-cluster ConfigMap (`guildnet-system/published-<id>`) which allows devices to resync published endpoints consistently after restarts.
 - The Registry builds and caches `Instance` objects. Each `Instance` encapsulates:
   - per-cluster SQLite (`internal/localdb`)
@@ -173,7 +217,7 @@ Dev convenience: the router can detect a local `kubectl proxy` and rewrite clust
 ### Join/bootstrap flow and cluster management
 
 - `scripts/generate_join_config.sh` produces `guildnet.config` join artifacts used by the UI and automation.
-- `POST /bootstrap` persists cluster records and kubeconfigs, then pre-warms clients and RDB connectivity. On failure, state is rolled back to keep the UI consistent.
+- `POST /api/bootstrap` persists cluster records and kubeconfigs, then pre-warms clients and RDB connectivity. Pre-warm of the DB is best-effort; API connectivity must succeed.
 
 ### Operator modes and CRDs
 
@@ -191,14 +235,14 @@ Dev convenience: the router can detect a local `kubectl proxy` and rewrite clust
   - GET `/healthz` — quick liveness & readiness checks
 
 - Join/bootstrap
-  - POST `/bootstrap` — accept join file or JSON with kubeconfig and optional hints (pre-warm clients)
+  - POST `/api/bootstrap` — accept join file or JSON with kubeconfig and optional hints (pre-warm clients)
 
 - Jobs / Workspaces
   - POST `/api/jobs` — create a workspace (translates to a Workspace CR)
   - GET `/api/jobs`, GET `/api/jobs/{id}` — list and inspect
 
 - Per-cluster operations
-  - GET/PUT `/api/settings/cluster/{id}` — cluster settings
+  - GET/PUT `/api/settings/cluster/{id}` — cluster settings (persisted in per-cluster local DB; PUT triggers graceful restart)
   - GET `/api/cluster/{id}/servers` — list workspaces
     - Enriches each record with the machine identity when available by:
       - Listing pods with label `guildnet.io/workspace=<name>` to determine the node hosting the workspace.
@@ -210,7 +254,7 @@ Dev convenience: the router can detect a local `kubectl proxy` and rewrite clust
     - This requires that each device is a node in the same Kubernetes cluster and node names match the device hostnames (or that your nodes are labeled accordingly).
   - DELETE `/api/cluster/{id}/workspaces/{name}`
     - Deletes a single Workspace CR. This endpoint powers the UI "Shutdown" action available from the Servers list and Server detail page.
-  - Proxy: `/api/cluster/{id}/proxy/server/{name}/...` — proxy to workspace servers (sets `X-Forwarded-Prefix`)
+  - Proxy: `/api/cluster/{id}/proxy/server/{name}/...` — proxy to workspace servers (sets `X-Forwarded-Prefix`; base-path may return 302 to `./login` for apps like code-server)
 
 - Database API (per cluster)
   - GET/POST `/api/cluster/{id}/db` — list/create DBs
@@ -254,18 +298,25 @@ Recent fixes (2025-10-21):
 
 Note: The verifier `scripts/verify-e2e.sh` was recently updated to be more robust across Headscale CLI versions and to follow redirects when probing HostApp proxy endpoints.
 
+### Signals and graceful shutdown
+
+- The Host App now handles only SIGINT and SIGTERM for shutdown. SIGHUP and SIGQUIT are ignored to avoid accidental exits during log rotation or terminal events.
+- On Linux, the process requests a parent-death signal (SIGTERM) so if the supervising shell dies, the Host App exits cleanly instead of orphaning. When launching from ephemeral shells, you can disable this behavior with `GN_DISABLE_PDEATHSIG=1`.
+- Recommended: start via `scripts/run-hostapp.sh` or the editor task “Run server and tail logs” so a supervising shell remains alive and pdeathsig won’t trigger unexpectedly.
+
 ### Developer & deployment workflow
 
-- `scripts/microk8s-setup.sh` — provision microk8s and write kubeconfig to `~/.guildnet/kubeconfig`.
-- `scripts/deploy-metallb.sh` — install MetalLB for LoadBalancer IPs in local clusters.
-- `scripts/deploy-operator.sh` — apply CRDs, create `guildnet-system` namespace and deploy the in-cluster operator (image configurable via env/IMAGE). The script can be extended to load local images into microk8s for dev.
+- `scripts/microk8s-up.sh` — provision MicroK8s and write kubeconfig to `~/.guildnet/kubeconfig`.
+- `scripts/deploy-metallb.sh` — install MetalLB for LoadBalancer IPs in local clusters; handles early webhook startup by retrying applies.
+- `scripts/deploy-operator.sh` — apply CRDs, create `guildnet-system` namespace and deploy the in-cluster operator (image configurable via env/IMAGE).
 - `scripts/run-hostapp.sh` — recommended dev flow; sets `KUBECONFIG=~/.guildnet/kubeconfig` when present, stops any existing hostapp listening on the chosen port, and starts `bin/hostapp serve` with an embedded operator.
+- `scripts/deploy-tailscale-router.sh` — deploy a Tailscale subnet-router DaemonSet; it normalizes hex preauth keys to the canonical `tskey-...` form and keeps the pod running even if `tailscale up` initially fails so you can inspect logs and retry.
 
 ### Future small improvements (suggestions)
 
-- Add a short `README` snippet or `docs/bootstrap.md` showing the exact `POST /bootstrap` JSON and form upload shape and an example `guildnet.config`.
-- Add a `make recreate-dev` or `make dev-setup` target that wires `scripts/microk8s-setup.sh`, `scripts/deploy-metallb.sh` and `kubectl apply -f k8s/rethinkdb.yaml` for easier local setup.
-- Make `scripts/deploy-operator.sh` accept a `LOCAL_IMAGE` argument or provide instructions to import the operator image into microk8s when necessary for local operator image testing.
+- Add a short `README` snippet or `docs/bootstrap.md` showing the exact `POST /api/bootstrap` JSON and form upload shape and an example `guildnet.config`.
+- Add a `make recreate-dev` or `make dev-setup` target that wires `scripts/microk8s-up.sh`, `scripts/deploy-metallb.sh` and `kubectl apply -f k8s/rethinkdb.yaml` for easier local setup.
+ - Make `scripts/deploy-operator.sh` accept a `LOCAL_IMAGE` argument or provide instructions to import the operator image via MicroK8s containerd or a registry for local operator image testing.
 
 If you want, I can add any of the small follow-ups above (README snippet, Make target, or deploy-operator enhancements).
 

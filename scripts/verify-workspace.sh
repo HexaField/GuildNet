@@ -23,7 +23,7 @@ echolog() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
 # Create workspace
 PAYLOAD=$(jq -nc --arg name "$WS_NAME" --arg image "$IMAGE" --arg passwd "$PASSWORD" '{name:$name, image:$image, env:[{name:"PASSWORD",value:$passwd}], ports:[{containerPort:8080,name:"http"}] }')
 echolog "Creating workspace $WS_NAME on cluster $CLUSTER_ID"
-HTTP=$(printf '%s' "$PAYLOAD" | curl -k -sS -w "%{http_code}" -o /tmp/ws-create-resp -X POST "$HOSTAPP_URL/api/cluster/$CLUSTER_ID/workspaces" -H "Content-Type: application/json" -d @-)
+HTTP=$(printf '%s' "$PAYLOAD" | curl --http1.1 -k -sS -w "%{http_code}" -o /tmp/ws-create-resp -X POST "$HOSTAPP_URL/api/cluster/$CLUSTER_ID/workspaces" -H "Content-Type: application/json" -d @-)
 RESP=$(cat /tmp/ws-create-resp || true)
 if [ "$HTTP" != "202" ] && [ "$HTTP" != "200" ]; then
   echolog "Workspace create failed: HTTP=$HTTP resp=$RESP"
@@ -40,7 +40,7 @@ while :; do
     exit 4
   fi
   sleep 2
-  WS_JSON=$(curl -k -sS "$HOSTAPP_URL/api/cluster/$CLUSTER_ID/workspaces/$WS_NAME" || true)
+  WS_JSON=$(curl --http1.1 -k -sS "$HOSTAPP_URL/api/cluster/$CLUSTER_ID/workspaces/$WS_NAME" || true)
   if [ -z "$WS_JSON" ] || [ "$WS_JSON" = "[]" ]; then
     echolog "Workspace not found yet; retrying..."
     continue
@@ -55,7 +55,7 @@ while :; do
 done
 
 # Stream logs in background for a short period to show startup lines
-(echo "--- workspace logs (tail) ---"; curl -k -sS "$HOSTAPP_URL/api/cluster/$CLUSTER_ID/workspaces/$WS_NAME/logs" | jq -r '.[].msg' | sed -n '1,120p') || true
+(echo "--- workspace logs (tail) ---"; curl --http1.1 -k -sS "$HOSTAPP_URL/api/cluster/$CLUSTER_ID/workspaces/$WS_NAME/logs" | jq -r '.[].msg' | sed -n '1,120p') || true
 
 # Try proxied request to root
 

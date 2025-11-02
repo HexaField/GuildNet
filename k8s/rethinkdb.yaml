@@ -4,16 +4,17 @@ metadata:
   name: rethinkdb
   labels:
     app: rethinkdb
-spec:
-  type: LoadBalancer
   annotations:
     metallb.universe.tf/address-pool: workspaces
+spec:
+  type: LoadBalancer
   ports:
     - name: client
       port: 28015
       targetPort: 28015
   selector:
     app: rethinkdb
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -94,6 +95,10 @@ spec:
           # Optional: users can set STORAGE_CLASS to control provisioning
           storage-class: "${STORAGE_CLASS:-}"
       spec:
+        # Use explicit storageClassName so dynamic provisioning works even when
+        # the manifest isn't templatized. This defaults to the local-path
+        # StorageClass created by our installer.
+        storageClassName: "local-path"
         accessModes: ["ReadWriteOnce"]
         resources:
           requests:

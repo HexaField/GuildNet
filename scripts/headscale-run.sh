@@ -16,15 +16,16 @@
 #
 # Environment overrides:
 #   HEADSCALE_STATE_DIR     default: $HOME/.guildnet/headscale
-#   HEADSCALE_SERVER_URL    default: http://127.0.0.1:8081
+#   HEADSCALE_SERVER_URL    default: http://127.0.0.1:8082
 #   HEADSCALE_IMAGE         default: ghcr.io/juanfont/headscale:0.27.0
 #   HEADSCALE_CONTAINER_NAME default: guildnet-headscale
-#   HEADSCALE_PORT          default: 8081 (host port -> container 8080)
+#   HEADSCALE_PORT          default: 8082 (host port -> container 8082)
 #
 set -euo pipefail
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing: $1" >&2; exit 1; }; }
 need docker
+need jq
 
 STATE_DIR=${HEADSCALE_STATE_DIR:-"$HOME/.guildnet/headscale"}
 CONF_DIR="$STATE_DIR/config"
@@ -48,15 +49,11 @@ detect_lan_ip() {
   esac
 }
 
-BIND_HOST=${HEADSCALE_BIND_HOST:-}
-if [ -z "$BIND_HOST" ]; then
-  BIND_HOST=$(detect_lan_ip || true)
-  # Fallback to 0.0.0.0 if detection fails
-  if [ -z "$BIND_HOST" ]; then BIND_HOST=0.0.0.0; fi
-fi
+# Prefer loopback for local dev. Allow override with HEADSCALE_BIND_HOST to bind to LAN.
+BIND_HOST=${HEADSCALE_BIND_HOST:-127.0.0.1}
 
 # Choose host port (auto-bump if busy when not explicitly set)
-DEFAULT_PORT=8081
+DEFAULT_PORT=8082
 if [ -n "${HEADSCALE_PORT:-}" ]; then
   HOST_PORT="$HEADSCALE_PORT"
 else
@@ -87,9 +84,9 @@ fi
 mkdir -p "$CONF_DIR" "$DATA_DIR"
 
 write_default_config() {
-  cat >"$CONFIG" <<'EOF'
+  cat >"$CONFIG" <<EOF
 server_url: ${SERVER_URL}
-listen_addr: 0.0.0.0:8080
+listen_addr: 0.0.0.0:8082
 metrics_listen_addr: 127.0.0.1:9090
 prefixes:
   v4: 100.64.0.0/10
@@ -110,32 +107,34 @@ log:
   format: text
 
 dns:
+  magic_dns: false
   override_local_dns: false
+  nameservers:
+    global: []
 
 noise:
   private_key_path: /var/lib/headscale/noise_private.key
+
+# Provide a default DERP map so recent Headscale versions start without error.
+# This fetches the public DERP map from Tailscale and keeps it updated.
+derp:
+  urls:
+    - https://controlplane.tailscale.com/derpmap/default
+  auto_update_enabled: true
+  update_frequency: 24h
 EOF
 }
 
 ensure_config() {
-  CONFIG_CHANGED=0
-  if [ ! -f "$CONFIG" ]; then
-    echo "[headscale] Writing default config: $CONFIG"
-    write_default_config
-    CONFIG_CHANGED=1
+  # For local/dev runs, always produce a clean, current config file.
+  # Back up existing config when present, then write a fresh default.
+  if [ -f "$CONFIG" ]; then
+    echo "[headscale] Backing up existing config to $CONFIG.bak"
+    cp "$CONFIG" "$CONFIG.bak" || true
   fi
-  # Ensure required noise key path exists in config for recent Headscale versions
-  if ! grep -q '^noise:' "$CONFIG"; then
-    echo "[headscale] Adding required noise.private_key_path to config"
-    printf "\nnoise:\n  private_key_path: /var/lib/headscale/noise_private.key\n" >> "$CONFIG"
-    CONFIG_CHANGED=1
-  fi
-  # Ensure legacy server private key path exists for older versions
-  if ! grep -q '^private_key_path:' "$CONFIG"; then
-    echo "[headscale] Adding server private_key_path to config"
-    printf "private_key_path: /var/lib/headscale/server_private.key\n" | cat - "$CONFIG" >"$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
-    CONFIG_CHANGED=1
-  fi
+  echo "[headscale] Writing default config: $CONFIG"
+  write_default_config
+  CONFIG_CHANGED=1
 }
 
 up() {
@@ -156,7 +155,7 @@ up() {
       docker run -d \
         --name "$CONTAINER" \
         --restart unless-stopped \
-        -p ${BIND_HOST}:${HOST_PORT}:8080 \
+        -p ${BIND_HOST}:${HOST_PORT}:8082 \
         -v "$DATA_DIR:/var/lib/headscale" \
         -v "$CONF_DIR:/etc/headscale:ro" \
         "$IMAGE" serve >/dev/null
@@ -166,18 +165,23 @@ up() {
       docker run -d \
         --name "$CONTAINER" \
         --restart unless-stopped \
-        -p ${BIND_HOST}:${HOST_PORT}:8080 \
+        -p ${BIND_HOST}:${HOST_PORT}:8082 \
         -v "$DATA_DIR:/var/lib/headscale" \
         -v "$CONF_DIR:/etc/headscale:ro" \
         "$IMAGE" serve >/dev/null
   fi
   # Determine the actual mapped host:port for 8080/tcp
-  MAPPED_HOST=$(docker inspect -f '{{ (index (index .NetworkSettings.Ports "8080/tcp") 0).HostIp }}' "$CONTAINER" 2>/dev/null || echo "")
-  MAPPED_PORT=$(docker inspect -f '{{ (index (index .NetworkSettings.Ports "8080/tcp") 0).HostPort }}' "$CONTAINER" 2>/dev/null || echo "")
+  MAPPED_HOST=$(docker inspect -f '{{ (index (index .NetworkSettings.Ports "8082/tcp") 0).HostIp }}' "$CONTAINER" 2>/dev/null || echo "")
+  MAPPED_PORT=$(docker inspect -f '{{ (index (index .NetworkSettings.Ports "8082/tcp") 0).HostPort }}' "$CONTAINER" 2>/dev/null || echo "")
   if [ -n "$MAPPED_PORT" ]; then
     # If Docker binds to 0.0.0.0, prefer the detected LAN IP for a usable URL
     if [ "$MAPPED_HOST" = "0.0.0.0" ] || [ -z "$MAPPED_HOST" ]; then
-      MAPPED_HOST=$(detect_lan_ip || echo 127.0.0.1)
+      # prefer loopback for local dev unless binding explicitly used LAN
+      if [ "${HEADSCALE_BIND_HOST:-}" = "" ]; then
+        MAPPED_HOST=127.0.0.1
+      else
+        MAPPED_HOST=$(detect_lan_ip || echo 127.0.0.1)
+      fi
     fi
     SERVER_URL="http://${MAPPED_HOST}:${MAPPED_PORT}"
   fi
@@ -199,11 +203,15 @@ down() {
 status() {
   if docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep -q "^${CONTAINER}\b"; then
     docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | (head -n1; grep "^${CONTAINER}\b")
-    MAPPED_HOST=$(docker inspect -f '{{ (index (index .NetworkSettings.Ports "8080/tcp") 0).HostIp }}' "$CONTAINER" 2>/dev/null || echo "")
-    MAPPED_PORT=$(docker inspect -f '{{ (index (index .NetworkSettings.Ports "8080/tcp") 0).HostPort }}' "$CONTAINER" 2>/dev/null || echo "")
+    MAPPED_HOST=$(docker inspect -f '{{ (index (index .NetworkSettings.Ports "8082/tcp") 0).HostIp }}' "$CONTAINER" 2>/dev/null || echo "")
+    MAPPED_PORT=$(docker inspect -f '{{ (index (index .NetworkSettings.Ports "8082/tcp") 0).HostPort }}' "$CONTAINER" 2>/dev/null || echo "")
     if [ -n "$MAPPED_PORT" ]; then
       if [ "$MAPPED_HOST" = "0.0.0.0" ] || [ -z "$MAPPED_HOST" ]; then
-        MAPPED_HOST=$(detect_lan_ip || echo 127.0.0.1)
+        if [ "${HEADSCALE_BIND_HOST:-}" = "" ]; then
+          MAPPED_HOST=127.0.0.1
+        else
+          MAPPED_HOST=$(detect_lan_ip || echo 127.0.0.1)
+        fi
       fi
       echo "[headscale] Effective URL: http://${MAPPED_HOST}:${MAPPED_PORT}"
     fi
@@ -220,20 +228,88 @@ create_user() {
 
 preauth_key() {
   local user="${1:-}"; if [ -z "$user" ]; then echo "Usage: $0 preauth-key <user>" >&2; exit 2; fi
-  docker exec -i "$CONTAINER" headscale preauthkeys create --reusable --ephemeral=false --expiration 24h --user "$user" | tee "$STATE_DIR/preauth-${user}.txt"
+  # Resolve numeric user id using JSON and jq on the host
+  local uid
+  uid=$(docker exec -i "$CONTAINER" headscale users list -o json | jq -r --arg name "$user" '.[] | select(.name==$name) | .id' | head -n1)
+  if [ -z "$uid" ] || [ "$uid" = "null" ]; then
+    docker exec -i "$CONTAINER" headscale users create "$user" >/dev/null 2>&1 || true
+    uid=$(docker exec -i "$CONTAINER" headscale users list -o json | jq -r --arg name "$user" '.[] | select(.name==$name) | .id' | head -n1)
+  fi
+  if [ -z "$uid" ] || [ "$uid" = "null" ]; then
+    echo "[headscale] ERROR: could not resolve user id for $user" >&2
+    exit 1
+  fi
+  # Create preauth key and print both the raw hex and the tskey- value
+  # Use JSON output from headscale and jq to reliably extract the key field (raw hex)
+  local pout
+  pout=$(docker exec -i "$CONTAINER" headscale preauthkeys create --reusable --ephemeral=false --expiration 24h --user "$uid" -o json 2>/dev/null || true)
+  if [ -z "$pout" ]; then
+    echo "[headscale] ERROR: failed to create preauth key" >&2
+    exit 1
+  fi
+  local hex
+  hex=$(printf '%s' "$pout" | jq -r '.key // empty')
+  if [ -z "$hex" ] || [ "$hex" = "null" ]; then
+    echo "[headscale] ERROR: unexpected headscale output: $pout" >&2
+    exit 1
+  fi
+  # convert raw hex to tskey-<base64url-no-pad>
+  local tsb
+  tsb=$(printf '%s' "$hex" | xxd -r -p | base64 | tr '+/' '-_' | tr -d '=')
+  local tskey
+  tskey="tskey-$tsb"
+  # Persist both forms for callers and debugging
+  printf '%s' "$hex" > "$STATE_DIR/preauth-${user}.txt"
+  printf '%s' "$tskey" > "$STATE_DIR/preauth-${user}.tskey"
+  # Emit a machine-readable JSON object when appropriate (or print tskey on stdout)
+  if [ "${JSON_MODE:-0}" -eq 1 ]; then
+    printf '{"hex":"%s","tskey":"%s"}\n' "$hex" "$tskey"
+  else
+    printf '%s\n' "$tskey"
+  fi
 }
 
+JSON_MODE=0
+# support: scripts/headscale-run.sh <cmd> [--json]
 cmd="${1:-up}"; shift || true
+for a in "$@"; do
+  if [ "$a" = "--json" ]; then JSON_MODE=1; fi
+done
+
 case "$cmd" in
-  up) up ;;
-  down) down ;;
-  status) status ;;
-  create-user) create_user "$@" ;;
-  preauth-key) preauth_key "$@" ;;
-  *) echo "Unknown command: $cmd" >&2; exit 2 ;;
+  up)
+    up
+    ;;
+  down)
+    down
+    ;;
+  status)
+    status
+    ;;
+  create-user)
+    create_user "$@"
+    ;;
+  preauth-key)
+    preauth_key "$@"
+    ;;
+  *)
+    if [ "$JSON_MODE" -eq 1 ]; then
+      printf '{"error":"unknown_command","command":"%s"}\n' "$cmd"
+    else
+      echo "Unknown command: $cmd" >&2
+    fi
+    exit 2
+    ;;
 esac
 
-cat <<INFO
+if [ "$JSON_MODE" -eq 1 ]; then
+  # In JSON mode, emit the minimal machine-parsable state and exit
+  # Determine host port (try MAPPED_PORT then HOST_PORT)
+  if [ -z "${MAPPED_PORT:-}" ]; then MAPPED_PORT="$HOST_PORT"; fi
+  HOSTVAL="${MAPPED_HOST:-127.0.0.1}"
+  printf '{"action":"%s","server_url":"%s","container":"%s","image":"%s","port":%s,"data_dir":"%s"}\n' "${cmd}" "${SERVER_URL}" "${CONTAINER}" "${IMAGE}" "${MAPPED_PORT}" "${STATE_DIR}"
+else
+  cat <<INFO
 
 Next steps:
 - Create a user:    scripts/headscale-run.sh create-user myuser
@@ -248,3 +324,4 @@ Notes:
   localhost for convenience; if you need HTTPS locally, front it with a proxy
   you trust and set login_server to that https:// URL.
 INFO
+fi

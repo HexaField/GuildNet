@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# install-local-path-provisioner.sh
+# Ensure a default StorageClass exists by installing the local-path-provisioner when none is present.
+# Safe to re-run. Requires kubectl configured to the target cluster.
+
+need(){ command -v "$1" >/dev/null 2>&1 || { echo "Missing: $1" >&2; exit 2; }; }
+need kubectl
+
+# If a default StorageClass exists AND the provisioner deployment is Available, skip; otherwise (repair) apply manifests
+DEF_OK=0
+if kubectl get storageclass -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.storageclass\.kubernetes\.io/is-default-class}{"\n"}{end}' 2>/dev/null | grep -q "\btrue$"; then
+  if kubectl -n local-path-storage get deploy/local-path-provisioner >/dev/null 2>&1; then
+    AVAIL=$(kubectl -n local-path-storage get deploy/local-path-provisioner -o jsonpath='{.status.availableReplicas}' 2>/dev/null || echo 0)
+    if [ "${AVAIL:-0}" != "" ] && [ "${AVAIL:-0}" -ge 1 ]; then
+      echo "[local-path] default StorageClass and provisioner are present; skipping"
+      exit 0
+    else
+      echo "[local-path] default StorageClass present but provisioner not Available; repairing..."
+    fi
+  else
+    echo "[local-path] default StorageClass present but provisioner missing; installing..."
+  fi
+fi
+
+# Apply local-path-provisioner (Rancher)
+# Source: https://github.com/rancher/local-path-provisioner (kept minimal, no webhooks)
+cat <<'YAML' | kubectl apply -f -
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: local-path-storage
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-path
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: rancher.io/local-path
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: local-path-provisioner-service-account
+  namespace: local-path-storage
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: local-path-provisioner-role
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "persistentvolumeclaims", "configmaps", "pods", "events", "persistentvolumes"]
+    verbs: ["get", "list", "watch", "create", "delete", "update", "patch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: local-path-provisioner-bind
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: local-path-provisioner-role
+subjects:
+  - kind: ServiceAccount
+    name: local-path-provisioner-service-account
+    namespace: local-path-storage
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: local-path-provisioner
+  namespace: local-path-storage
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: local-path-provisioner
+  template:
+    metadata:
+      labels:
+        app: local-path-provisioner
+    spec:
+      serviceAccountName: local-path-provisioner-service-account
+      containers:
+        - name: local-path-provisioner
+          image: rancher/local-path-provisioner:v0.0.24
+          imagePullPolicy: IfNotPresent
+          command:
+            - local-path-provisioner
+            - --debug
+            - start
+            - --helper-image
+            - "busybox:1.36.1"
+            - --config
+            - /etc/config/config.json
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/config/
+            - name: setup
+              mountPath: /setup
+            - name: provisioner
+              mountPath: /provisioner
+      volumes:
+        - name: config-volume
+          configMap:
+            name: local-path-config
+            items:
+              - key: config.json
+                path: config.json
+        - name: setup
+          hostPath:
+            path: /opt/local-path-provisioner
+            type: DirectoryOrCreate
+        - name: provisioner
+          hostPath:
+            path: /opt/local-path-provisioner
+            type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: local-path-config
+  namespace: local-path-storage
+  labels:
+    app: local-path-provisioner
+  annotations:
+    meta.helm.sh/release-name: "manual"
+    meta.helm.sh/release-namespace: "local-path-storage"
+data:
+  config.json: |
+    {
+      "nodePathMap":[
+        {"node":"DEFAULT_PATH_FOR_NON_LISTED_NODES", "paths":["/opt/local-path-provisioner"]}
+      ]
+    }
+YAML
+
+echo "[local-path] Installed default StorageClass 'local-path'"

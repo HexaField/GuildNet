@@ -30,6 +30,26 @@ GuildNet is a private self-hostable stack that puts human-in-the-loop with agent
 
 ## Quickstart
 
+### Local cluster (MicroK8s)
+
+The default local path uses MicroK8s as the Kubernetes distribution:
+
+- Bring up MicroK8s and emit kubeconfig (optionally expose kube-API over the tailnet):
+  - `scripts/microk8s-up.sh`
+  - Expose kube-API over tailnet (optional): `TS_AUTHKEY=tskey-... TS_LOGIN_SERVER=http://<headscale>:8081 make ts-serve-kubeapi`
+- Install addons/CRDs/DB and deploy the operator:
+  - `make deploy-k8s-addons`
+  - `make deploy-operator`
+  - Ensure operator config/certs and patch Deployment: `make ensure-operator-setup`
+- Attach cluster to the Host App:
+  - Use the UI to "Download join config" and POST it to `/api/bootstrap`, or
+  - Generate locally: `make generate-join-config` (writes `guildnet.config`) and POST it to the HostApp `/api/bootstrap` endpoint.
+
+Verification:
+
+- Verify Kubernetes API and nodes: `make diag-k8s`
+- Verify end-to-end (headscale, router, kube API, DB): `make verify-e2e`
+
 ### Headscale
 Start or use Headscale as your Tailnet controller and create a reusable pre-auth key (local helper: `make headscale-up` and `make headscale-bootstrap`).
 
@@ -48,15 +68,7 @@ Verification:
 - Ensure local tailscaled / router is running: `make router-daemon` or check status with `make router-status`
 - Verify routes are approved and visible in Headscale: `make headscale-approve-routes`
 
-### Deploy cluster
 
-
-Create or point to a Kubernetes cluster. For local development we recommend `microk8s` (use `bash ./scripts/microk8s-setup.sh` which writes a kubeconfig to `$(GN_KUBECONFIG)`). After the cluster is ready install addons and RethinkDB with `make deploy-k8s-addons` and deploy the operator with `make deploy-operator`.
-
-Verification:
-
-- Verify Kubernetes API connectivity & nodes: `make diag-k8s`
-- Verify deployed addons and operator reconciliation: `make verify-e2e`
 
 ### Launch Host App server
 
@@ -71,19 +83,19 @@ Verification:
 ### Connect from another device
 
 
-From any device on the Tailnet open the Host App URL (https://localhost:8090), use the cluster Settings to "Download join config" and transfer that `guildnet.<cluster>.config` to another Host App instance or POST it to `/bootstrap` to register the cluster.
+From any device on the Tailnet open the Host App URL (https://localhost:8090), use the cluster Settings to "Download join config" and transfer that `guildnet.<cluster>.config` to another Host App instance or POST it to `/api/bootstrap` to register the cluster.
 
 Verification:
 
 - Generate a join config locally (same format the UI emits): `make generate-join-config` (writes `guildnet.config` by default)
-- Register a joiner by POSTing the config to the host app (server must be reachable): `curl -k -X POST https://<hostapp>:8090/bootstrap -H 'Content-Type: application/json' --data @guildnet.config`
+- Register a joiner by POSTing the config to the host app (server must be reachable): `curl -k -X POST https://<hostapp>:8090/api/bootstrap -H 'Content-Type: application/json' --data @guildnet.config`
 
 ### Participate in a cluster
 
 Short flow (federated / multi-device):
 
 - Device A (host): run the Host App and ensure Headscale + cluster/operator are set up (quick helpers: `make multi-device-host`).
-- Device B (joiner): generate a join config (`make generate-join-config`) and either use the Host App UI "Download join config" on Device A or POST the generated `guildnet.config` to Device A's `/bootstrap` endpoint to register the device. There is also a helper target `make multi-device-joiner` for an automated joiner flow.
+- Device B (joiner): generate a join config (`make generate-join-config`) and either use the Host App UI "Download join config" on Device A or POST the generated `guildnet.config` to Device A's `/api/bootstrap` endpoint to register the device. There is also a helper target `make multi-device-joiner` for an automated joiner flow.
 
 Notes:
 

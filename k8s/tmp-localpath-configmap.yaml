@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: local-path-config
+  namespace: local-path-storage
+data:
+  config.json: |
+    {
+      "nodePathMap":[
+        {"node":"DEFAULT_PATH_FOR_NON_LISTED_NODES", "paths":["/opt/local-path-provisioner"]}
+      ]
+    }
+  helperPod.yaml: |
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: local-path-helper
+    spec:
+      hostPID: true
+      restartPolicy: Never
+      containers:
+      - name: helper
+        image: alpine:3.18
+        command: ["/bin/sh","-c","/script/setup -p $VOL_DIR -s $VOL_SIZE_BYTES -m $VOL_MODE"]
+        volumeMounts:
+        - name: hostpath
+          mountPath: /opt/local-path-provisioner
+        - name: script
+          mountPath: /script
+  setup: |
+    #!/bin/sh
+    set -eux
+    VOL_DIR="/opt/local-path-provisioner"
+    while getopts "p:s:m:" opt; do
+      case $opt in
+        p) VOL_DIR="$OPTARG" ;;
+        s) SIZE="$OPTARG" ;;
+        m) MODE="$OPTARG" ;;
+      esac
+    done
+    mkdir -p "$VOL_DIR"
+    chown -R 1000:1000 "$VOL_DIR"

@@ -56,8 +56,11 @@ func clusterLocalStatus(ctx context.Context, deps Deps, clusterID string) (Clust
 			}
 			// Check API reachability using healthyCluster against instance K8s config if present
 			if inst.K8s != nil {
-				if err := healthyCluster(inst.K8s.Config()); err == nil {
+				if err, fallback := healthyClusterWithFallback(inst.K8s.Config()); err == nil {
 					out.K8sReachable = true
+					if fallback {
+						out.RecommendedAction = "proxy_fallback_enabled"
+					}
 				} else {
 					out.K8sReachable = false
 					out.K8sError = err.Error()
@@ -66,11 +69,14 @@ func clusterLocalStatus(ctx context.Context, deps Deps, clusterID string) (Clust
 			} else {
 				// Try building a client from kubeconfig as fallback
 				if cfg, err := kubeconfigFrom(kc); err == nil && cfg != nil {
-					if err := healthyCluster(cfg); err == nil {
+					if err2, fallback := healthyClusterWithFallback(cfg); err2 == nil {
 						out.K8sReachable = true
+						if fallback {
+							out.RecommendedAction = "proxy_fallback_enabled"
+						}
 					} else {
 						out.K8sReachable = false
-						out.K8sError = err.Error()
+						out.K8sError = err2.Error()
 						out.RecommendedAction = "check_cluster_network"
 					}
 				}
@@ -78,11 +84,14 @@ func clusterLocalStatus(ctx context.Context, deps Deps, clusterID string) (Clust
 		} else {
 			// Registry missing instance; still try lightweight check
 			if cfg, err := kubeconfigFrom(kc); err == nil && cfg != nil {
-				if err := healthyCluster(cfg); err == nil {
+				if err2, fallback := healthyClusterWithFallback(cfg); err2 == nil {
 					out.K8sReachable = true
+					if fallback {
+						out.RecommendedAction = "proxy_fallback_enabled"
+					}
 				} else {
 					out.K8sReachable = false
-					out.K8sError = err.Error()
+					out.K8sError = err2.Error()
 					out.RecommendedAction = "check_cluster_network"
 				}
 			}
@@ -90,11 +99,14 @@ func clusterLocalStatus(ctx context.Context, deps Deps, clusterID string) (Clust
 	} else {
 		// No registry available: just do a kubeconfig-based reachability check
 		if cfg, err := kubeconfigFrom(kc); err == nil && cfg != nil {
-			if err := healthyCluster(cfg); err == nil {
+			if err2, fallback := healthyClusterWithFallback(cfg); err2 == nil {
 				out.K8sReachable = true
+				if fallback {
+					out.RecommendedAction = "proxy_fallback_enabled"
+				}
 			} else {
 				out.K8sReachable = false
-				out.K8sError = err.Error()
+				out.K8sError = err2.Error()
 				out.RecommendedAction = "check_cluster_network"
 			}
 		}

@@ -54,6 +54,38 @@ kubectl wait --for=condition=Established crd/l2advertisements.metallb.io --timeo
 kubectl -n metallb-system rollout status deploy/controller --timeout=180s || true
 kubectl -n metallb-system rollout status ds/speaker --timeout=180s || true
 
+# Ensure memberlist secret exists (required by speaker)
+if ! kubectl -n metallb-system get secret memberlist >/dev/null 2>&1; then
+  echo "[metallb] Creating memberlist secret"
+  # Generate a random 128-byte key and base64 encode it
+  if command -v openssl >/dev/null 2>&1; then
+    kubectl -n metallb-system create secret generic memberlist \
+      --from-literal=secretkey="$(openssl rand -base64 128)" >/dev/null 2>&1 || true
+  else
+    kubectl -n metallb-system create secret generic memberlist \
+      --from-literal=secretkey="$(head -c 128 /dev/urandom | base64)" >/dev/null 2>&1 || true
+  fi
+fi
+
+# Some Kubernetes distros can transiently reject CRs via the validating webhook
+# before the webhook service becomes reachable. To avoid hard failures, set failurePolicy=Ignore temporarily.
+if kubectl get validatingwebhookconfigurations.admissionregistration.k8s.io metallb-webhook-configuration >/dev/null 2>&1; then
+  echo "[metallb] Patching validating webhook failurePolicy to Ignore to tolerate startup races"
+  kubectl get validatingwebhookconfigurations.admissionregistration.k8s.io metallb-webhook-configuration -o json \
+    | jq 'if .webhooks then (.webhooks[]?.failurePolicy = "Ignore") else . end' \
+    | kubectl apply -f - >/dev/null 2>&1 || true
+fi
+# Wait for webhook service endpoints to be ready to avoid admission connection refused
+for i in $(seq 1 60); do
+  if kubectl -n metallb-system get svc webhook-service >/dev/null 2>&1; then
+    EP=$(kubectl -n metallb-system get endpoints webhook-service -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null || true)
+    if [ -n "$EP" ]; then
+      break
+    fi
+  fi
+  sleep 3
+done
+
 # Prepare pool + L2Advertisement manifest
 MANIFEST=$(cat <<YAML
 apiVersion: metallb.io/v1beta1
@@ -64,7 +96,6 @@ metadata:
 spec:
   addresses:
     - ${POOL_RANGE}
----
 apiVersion: metallb.io/v1beta1
 kind: L2Advertisement
 metadata:
@@ -76,6 +107,19 @@ spec:
 YAML
 )
 
+# Retry a server-side dry-run until the webhook is ready to accept the resource.
+# If webhook is still not ready, we rely on failurePolicy=Ignore to proceed.
+tries=${METALLB_APPLY_RETRIES:-60}
+delay=${METALLB_APPLY_DELAY:-3}
+i=0
+while [ $i -lt $tries ]; do
+  if printf '%s' "$MANIFEST" | kubectl apply --server-side --dry-run=server -f - >/dev/null 2>&1; then
+    echo "[metallb] webhook accepting pool/admission objects (dry-run ok)"
+    break
+  fi
+  i=$((i+1))
+  sleep $delay
+done
 # Retry a server-side dry-run until the webhook is ready to accept the resource
 tries=${METALLB_APPLY_RETRIES:-60}
 delay=${METALLB_APPLY_DELAY:-3}
@@ -87,7 +131,21 @@ while (( tries > 0 )); do
   sleep "$delay"
 done
 
-# Apply pool + L2Advertisement for real
-printf '%s' "$MANIFEST" | kubectl apply -f -
+# Apply pool + L2Advertisement for real with retries to tolerate webhook startup races
+tries=${METALLB_APPLY_RETRIES_FINAL:-60}
+delay=${METALLB_APPLY_DELAY_FINAL:-3}
+ok=0
+while (( tries > 0 )); do
+  if printf '%s' "$MANIFEST" | kubectl apply -f -; then
+    ok=1
+    break
+  fi
+  tries=$((tries-1))
+  sleep "$delay"
+done
 
-echo "MetalLB installed with pool ${POOL_NAME}=${POOL_RANGE}"
+if [ "$ok" -ne 1 ]; then
+  echo "[metallb] WARN: Failed to apply IPAddressPool/L2Advertisement after retries; continuing" >&2
+else
+  echo "MetalLB installed with pool ${POOL_NAME}=${POOL_RANGE}"
+fi

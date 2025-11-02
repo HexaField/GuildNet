@@ -154,4 +154,25 @@ fi
 # Ensure we run with the repository root as the working directory so relative
 # paths like ui/dist resolve correctly when the binary checks the CWD.
 cd "$ROOT_DIR"
-exec "$BIN" serve
+
+# Simple supervisor: restart hostapp if it exits (e.g., after settings change triggers graceful shutdown)
+# This keeps the service available when run via this launcher without relying on an external supervisor.
+TERM_CHILD=""
+trap 'if [ -n "$TERM_CHILD" ] && kill -0 "$TERM_CHILD" 2>/dev/null; then kill "$TERM_CHILD" 2>/dev/null || true; fi; exit 0' TERM INT
+
+while true; do
+  "$BIN" serve &
+  TERM_CHILD="$!"
+  wait "$TERM_CHILD"
+  code=$?
+  TERM_CHILD=""
+  # If explicitly stopped via signal, exit without restart
+  if [ "$code" -eq 0 ]; then
+    # Graceful exit requested by the binary; restart to apply settings unless a stopper is present
+    echo "hostapp exited cleanly; restarting in 1s (Ctrl-C to stop)" >&2
+    sleep 1
+  else
+    echo "hostapp exited with code $code; restarting in 1s" >&2
+    sleep 1
+  fi
+done
