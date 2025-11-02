@@ -11,5 +11,7 @@ if [ "${RUN_INTEGRATION:-}" != "1" ]; then
   exit 1
 fi
 
-echo "Running HostApp headscale e2e test (this will take ~30s)"
-RUN_INTEGRATION=1 go test ./internal/api -run TestHostAppHeadscaleFlow -v
+echo "Running HostApp headscale e2e test via HostApp API (this will take ~30s)"
+# Prefer API-driven verifier which exercises the server endpoints for headscale + cluster creation.
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+exec "$ROOT/scripts/verify-hostapp-api-e2e.sh"

@@ -16,10 +16,10 @@
 #
 # Environment overrides:
 #   HEADSCALE_STATE_DIR     default: $HOME/.guildnet/headscale
-#   HEADSCALE_SERVER_URL    default: http://127.0.0.1:8081
+#   HEADSCALE_SERVER_URL    default: http://127.0.0.1:8082
 #   HEADSCALE_IMAGE         default: ghcr.io/juanfont/headscale:0.27.0
 #   HEADSCALE_CONTAINER_NAME default: guildnet-headscale
-#   HEADSCALE_PORT          default: 8081 (host port -> container 8080)
+#   HEADSCALE_PORT          default: 8082 (host port -> container 8082)
 #
 set -euo pipefail
 
@@ -31,7 +31,7 @@ STATE_DIR=${HEADSCALE_STATE_DIR:-"$HOME/.guildnet/headscale"}
 CONF_DIR="$STATE_DIR/config"
 DATA_DIR="$STATE_DIR/data"
 CONFIG="$CONF_DIR/config.yaml"
-IMAGE=${HEADSCALE_IMAGE:-"ghcr.io/juanfont/headscale:0.26.0"}
+IMAGE=${HEADSCALE_IMAGE:-"ghcr.io/juanfont/headscale:0.27.0"}
 CONTAINER=${HEADSCALE_CONTAINER_NAME:-"guildnet-headscale"}
 
 # Choose host bind address and port (auto-detect LAN IP; auto-bump port if busy when not explicitly set)
@@ -49,15 +49,11 @@ detect_lan_ip() {
   esac
 }
 
-BIND_HOST=${HEADSCALE_BIND_HOST:-}
-if [ -z "$BIND_HOST" ]; then
-  BIND_HOST=$(detect_lan_ip || true)
-  # Fallback to 0.0.0.0 if detection fails
-  if [ -z "$BIND_HOST" ]; then BIND_HOST=0.0.0.0; fi
-fi
+# Prefer loopback for local dev. Allow override with HEADSCALE_BIND_HOST to bind to LAN.
+BIND_HOST=${HEADSCALE_BIND_HOST:-127.0.0.1}
 
 # Choose host port (auto-bump if busy when not explicitly set)
-DEFAULT_PORT=8081
+DEFAULT_PORT=8082
 if [ -n "${HEADSCALE_PORT:-}" ]; then
   HOST_PORT="$HEADSCALE_PORT"
 else
@@ -90,7 +86,7 @@ mkdir -p "$CONF_DIR" "$DATA_DIR"
 write_default_config() {
   cat >"$CONFIG" <<EOF
 server_url: ${SERVER_URL}
-listen_addr: 0.0.0.0:8080
+listen_addr: 0.0.0.0:8082
 metrics_listen_addr: 127.0.0.1:9090
 prefixes:
   v4: 100.64.0.0/10
@@ -122,31 +118,15 @@ EOF
 }
 
 ensure_config() {
-  CONFIG_CHANGED=0
-  if [ ! -f "$CONFIG" ]; then
-    echo "[headscale] Writing default config: $CONFIG"
-    write_default_config
-    CONFIG_CHANGED=1
-  fi
-  # If the config exists but doesn't include modern DNS keys, overwrite with defaults
-  if [ -f "$CONFIG" ] && ! grep -q '^\s*magic_dns:' "$CONFIG" 2>/dev/null; then
-    echo "[headscale] Existing config missing magic_dns; backing up and writing default config"
+  # For local/dev runs, always produce a clean, current config file.
+  # Back up existing config when present, then write a fresh default.
+  if [ -f "$CONFIG" ]; then
+    echo "[headscale] Backing up existing config to $CONFIG.bak"
     cp "$CONFIG" "$CONFIG.bak" || true
-    write_default_config
-    CONFIG_CHANGED=1
   fi
-  # Ensure required noise key path exists in config for recent Headscale versions
-  if ! grep -q '^noise:' "$CONFIG"; then
-    echo "[headscale] Adding required noise.private_key_path to config"
-    printf "\nnoise:\n  private_key_path: /var/lib/headscale/noise_private.key\n" >> "$CONFIG"
-    CONFIG_CHANGED=1
-  fi
-  # Ensure legacy server private key path exists for older versions
-  if ! grep -q '^private_key_path:' "$CONFIG"; then
-    echo "[headscale] Adding server private_key_path to config"
-    printf "private_key_path: /var/lib/headscale/server_private.key\n" | cat - "$CONFIG" >"$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
-    CONFIG_CHANGED=1
-  fi
+  echo "[headscale] Writing default config: $CONFIG"
+  write_default_config
+  CONFIG_CHANGED=1
 }
 
 up() {
@@ -167,7 +147,7 @@ up() {
       docker run -d \
         --name "$CONTAINER" \
         --restart unless-stopped \
-        -p ${BIND_HOST}:${HOST_PORT}:8080 \
+        -p ${BIND_HOST}:${HOST_PORT}:8082 \
         -v "$DATA_DIR:/var/lib/headscale" \
         -v "$CONF_DIR:/etc/headscale:ro" \
         "$IMAGE" serve >/dev/null
@@ -177,18 +157,23 @@ up() {
       docker run -d \
         --name "$CONTAINER" \
         --restart unless-stopped \
-        -p ${BIND_HOST}:${HOST_PORT}:8080 \
+        -p ${BIND_HOST}:${HOST_PORT}:8082 \
         -v "$DATA_DIR:/var/lib/headscale" \
         -v "$CONF_DIR:/etc/headscale:ro" \
         "$IMAGE" serve >/dev/null
   fi
   # Determine the actual mapped host:port for 8080/tcp
-  MAPPED_HOST=$(docker inspect -f '{{ (index (index .NetworkSettings.Ports "8080/tcp") 0).HostIp }}' "$CONTAINER" 2>/dev/null || echo "")
-  MAPPED_PORT=$(docker inspect -f '{{ (index (index .NetworkSettings.Ports "8080/tcp") 0).HostPort }}' "$CONTAINER" 2>/dev/null || echo "")
+  MAPPED_HOST=$(docker inspect -f '{{ (index (index .NetworkSettings.Ports "8082/tcp") 0).HostIp }}' "$CONTAINER" 2>/dev/null || echo "")
+  MAPPED_PORT=$(docker inspect -f '{{ (index (index .NetworkSettings.Ports "8082/tcp") 0).HostPort }}' "$CONTAINER" 2>/dev/null || echo "")
   if [ -n "$MAPPED_PORT" ]; then
     # If Docker binds to 0.0.0.0, prefer the detected LAN IP for a usable URL
     if [ "$MAPPED_HOST" = "0.0.0.0" ] || [ -z "$MAPPED_HOST" ]; then
-      MAPPED_HOST=$(detect_lan_ip || echo 127.0.0.1)
+      # prefer loopback for local dev unless binding explicitly used LAN
+      if [ "${HEADSCALE_BIND_HOST:-}" = "" ]; then
+        MAPPED_HOST=127.0.0.1
+      else
+        MAPPED_HOST=$(detect_lan_ip || echo 127.0.0.1)
+      fi
     fi
     SERVER_URL="http://${MAPPED_HOST}:${MAPPED_PORT}"
   fi
@@ -210,11 +195,15 @@ down() {
 status() {
   if docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep -q "^${CONTAINER}\b"; then
     docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | (head -n1; grep "^${CONTAINER}\b")
-    MAPPED_HOST=$(docker inspect -f '{{ (index (index .NetworkSettings.Ports "8080/tcp") 0).HostIp }}' "$CONTAINER" 2>/dev/null || echo "")
-    MAPPED_PORT=$(docker inspect -f '{{ (index (index .NetworkSettings.Ports "8080/tcp") 0).HostPort }}' "$CONTAINER" 2>/dev/null || echo "")
+    MAPPED_HOST=$(docker inspect -f '{{ (index (index .NetworkSettings.Ports "8082/tcp") 0).HostIp }}' "$CONTAINER" 2>/dev/null || echo "")
+    MAPPED_PORT=$(docker inspect -f '{{ (index (index .NetworkSettings.Ports "8082/tcp") 0).HostPort }}' "$CONTAINER" 2>/dev/null || echo "")
     if [ -n "$MAPPED_PORT" ]; then
       if [ "$MAPPED_HOST" = "0.0.0.0" ] || [ -z "$MAPPED_HOST" ]; then
-        MAPPED_HOST=$(detect_lan_ip || echo 127.0.0.1)
+        if [ "${HEADSCALE_BIND_HOST:-}" = "" ]; then
+          MAPPED_HOST=127.0.0.1
+        else
+          MAPPED_HOST=$(detect_lan_ip || echo 127.0.0.1)
+        fi
       fi
       echo "[headscale] Effective URL: http://${MAPPED_HOST}:${MAPPED_PORT}"
     fi

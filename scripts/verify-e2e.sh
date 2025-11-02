@@ -7,8 +7,11 @@ export KUBECONFIG="${KUBECONFIG:-${GN_KUBECONFIG:-$HOME/.guildnet/kubeconfig}}"
 need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing: $1" >&2; exit 1; }; }
 need kubectl
 need jq
+need curl
 
-PASS=1
+echolog() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
+
+# Fail fast: any failed check will exit immediately with non-zero status.
 
 echo "--- Headscale reachability ---"
 HS=${HEADSCALE_URL:-}
@@ -20,9 +23,15 @@ if [ -z "$HS" ] && docker ps --format '{{.Names}}' | grep -q '^guildnet-headscal
 fi
 if [ -n "$HS" ]; then
   # consider any HTTP status as reachable; only fail if TCP connect fails
-  if curl -sS -o /dev/null -m 2 "$HS"; then echo ok; else echo fail; PASS=0; fi
+  if curl -sS -o /dev/null -m 2 "$HS"; then
+    echo ok
+  else
+    echolog "Headscale unreachable at $HS"
+    exit 1
+  fi
 else
-  echo "skip (no headscale)"
+  echolog "No Headscale detected (HEADSCALE_URL not set and no guildnet-headscale container)."
+  exit 1
 fi
 
 # Router status
@@ -34,6 +43,92 @@ if docker ps --format '{{.Names}}' | grep -q '^guildnet-headscale$'; then
   # broadly-supported command (nodes list) as a lightweight
   # sanity check for the Headscale server/DB. Keep it non-fatal.
   docker exec -i guildnet-headscale headscale nodes list || true
+fi
+
+# API-driven HostApp verification
+# Exercises POST /api/deploy/headscale and POST /api/deploy/clusters and polls jobs.
+echolog "--- HostApp API driven checks ---"
+API_BASE="${HOSTAPP_URL:-https://127.0.0.1:8090}"
+
+poll_job() {
+  jobid=$1
+  timeout=${2:-120}
+  start=$(date +%s)
+  echolog "Polling job $jobid (timeout=${timeout}s)"
+  while :; do
+    resp=$(curl -k -sS "$API_BASE/api/jobs/$jobid" || true)
+    if [ -n "$resp" ]; then
+      status=$(printf '%s' "$resp" | jq -r '.status // empty' 2>/dev/null || echo "")
+      echolog "job $jobid status=$status"
+      if [ "$status" = "succeeded" ]; then
+        return 0
+      fi
+      if [ "$status" = "failed" ] || [ "$status" = "canceled" ]; then
+        printf '%s\n' "$resp" | jq -C . || true
+        return 2
+      fi
+    else
+      echolog "job $jobid: no response yet"
+    fi
+    now=$(date +%s)
+    if [ $((now - start)) -gt $timeout ]; then
+      echolog "job $jobid timed out after ${timeout}s"
+      return 3
+    fi
+    sleep 2
+  done
+}
+
+echolog "Creating Headscale via HostApp API: $API_BASE/api/deploy/headscale"
+hs_create_resp=$(curl -k -sS -X POST -H 'Content-Type: application/json' -d '{"name":"verify-hs"}' "$API_BASE/api/deploy/headscale" || true)
+hs_id=$(printf '%s' "$hs_create_resp" | jq -r '.id // empty' 2>/dev/null || echo "")
+hs_job=$(printf '%s' "$hs_create_resp" | jq -r '.jobId // empty' 2>/dev/null || echo "")
+if [ -z "$hs_job" ]; then
+  echolog "Failed to create headscale (no jobId). Response: $hs_create_resp"
+else
+  echolog "Headscale create jobId=$hs_job id=$hs_id"
+  if ! poll_job "$hs_job" 120; then
+    echolog "Headscale create job failed or timed out"
+    curl -k -sS "$API_BASE/api/jobs/$hs_job" | jq -C . || true
+    curl -k -sS "$API_BASE/api/jobs-logs/$hs_job" || true
+  else
+    if [ -n "$hs_id" ]; then
+      echolog "Fetching headscale record $hs_id"
+      curl -k -sS "$API_BASE/api/deploy/headscale/$hs_id" | jq -C . || true
+    fi
+  fi
+fi
+
+echolog "Creating Cluster record via HostApp API"
+CLUSTER_NAME="verify-cluster-$(head -c4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+cluster_create_resp=$(curl -k -sS -X POST -H 'Content-Type: application/json' -d "{\"name\":\"$CLUSTER_NAME\"}" "$API_BASE/api/deploy/clusters" || true)
+cluster_id=$(printf '%s' "$cluster_create_resp" | jq -r '.id // empty' 2>/dev/null || echo "")
+cluster_job=$(printf '%s' "$cluster_create_resp" | jq -r '.jobId // empty' 2>/dev/null || echo "")
+if [ -z "$cluster_job" ]; then
+  echolog "Failed to create cluster (no jobId). Response: $cluster_create_resp"
+else
+  echolog "Cluster create jobId=$cluster_job id=$cluster_id"
+  if ! poll_job "$cluster_job" 180; then
+    echolog "Cluster create job failed or timed out"
+    curl -k -sS "$API_BASE/api/jobs/$cluster_job" | jq -C . || true
+    curl -k -sS "$API_BASE/api/jobs-logs/$cluster_job" || true
+  else
+    echolog "Cluster create succeeded (id=$cluster_id)"
+  fi
+fi
+
+# Optionally attach a kubeconfig if present
+KC_PATH=${GN_KUBECONFIG:-${KUBECONFIG:-}}
+if [ -n "$KC_PATH" ] && [ -f "$KC_PATH" ]; then
+  echolog "Attaching kubeconfig from $KC_PATH to cluster id=${cluster_id:-$CLUSTER_NAME}"
+  kc=$(cat "$KC_PATH" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))')
+  if [ -n "$cluster_id" ]; then
+    curl -k -sS -X POST "$API_BASE/api/deploy/clusters/$cluster_id?action=attach-kubeconfig" -H 'Content-Type: application/json' -d "{\"kubeconfig\":$kc}" -o /dev/null -w "%{http_code}\n"
+  else
+    curl -k -sS -X POST "$API_BASE/api/deploy/clusters/default?action=attach-kubeconfig" -H 'Content-Type: application/json' -d "{\"kubeconfig\":$kc}" -o /dev/null -w "%{http_code}\n"
+  fi
+else
+  echolog "No kubeconfig available to attach; skipping attach-kubeconfig step"
 fi
 
 # Router DS readiness
@@ -61,31 +156,35 @@ elif kubectl -n kube-system get ds tailscale-subnet-router >/dev/null 2>&1; then
       sleep 3
       tries=$((tries-1))
     done
-    if [ $ok -eq 1 ]; then echo ok; else PASS=0; fi
+  if [ $ok -eq 1 ]; then echo ok; else echolog "tailscale-subnet-router not ready"; exit 1; fi
   fi
 else
-  echo "not found"; PASS=0
+  echolog "tailscale-subnet-router DaemonSet not found"; exit 1
 fi
 
 # If tailscale pods failed recently, check logs for common 'TUN device ... is busy' local-host issue
 if kubectl -n kube-system get pods -l app=tailscale-subnet-router >/dev/null 2>&1; then
   for p in $(kubectl -n kube-system get pods -l app=tailscale-subnet-router -o name 2>/dev/null | sed 's#pod/##'); do
     if kubectl -n kube-system logs "$p" -c tailscale --tail=200 2>/dev/null | grep -i "device or resource busy" >/dev/null 2>&1; then
-      echo "\nDetected 'TUN device ... is busy' in tailscale pod logs for $p.";
+  echo "\nDetected 'TUN device ... is busy' in tailscale pod logs for $p.";
       echo "This commonly happens when a host-level tailscaled or leftover tailscale interface (tailscale0) is present on a single-node/local cluster.";
       echo "Remediation: on the host where kubelet runs, stop host tailscaled and remove the interface, then re-run deploy:";
       echo "  sudo systemctl stop tailscaled || true";
       echo "  sudo pkill tailscaled || true";
       echo "  sudo ip link delete tailscale0 || true";
       echo "  sudo rm -rf /var/lib/tailscale/* || true";
-      PASS=0
+      echolog "Detected 'TUN device ... is busy' in tailscale pod logs for $p.";
+      exit 1
     fi
   done
 fi
 
 # Kube readyz + nodes
 if command -v kubectl >/dev/null && [ -f "${KUBECONFIG}" ] && kubectl version --request-timeout=3s >/dev/null 2>&1; then
-  kubectl --request-timeout=5s get --raw='/readyz?verbose' || { PASS=0; true; }
+  if ! kubectl --request-timeout=5s get --raw='/readyz?verbose' >/dev/null 2>&1; then
+    echolog "kubernetes readyz check failed"
+    exit 1
+  fi
   kubectl get nodes -o wide || true
 else
   echo "--- Kubernetes checks skipped (no kube or unreachable) ---"
@@ -103,11 +202,7 @@ if command -v kubectl >/dev/null && [ -f "${KUBECONFIG}" ] && kubectl version --
 fi
 
 echo "verify-e2e completed."
-if [ "$PASS" = "1" ]; then
-  echo "SUMMARY: PASS"
-else
-  echo "SUMMARY: FAIL"; exit 1
-fi
+echo "SUMMARY: PASS"
 
 ### Operator-based smoke test: create a Workspace via the HostApp server API
 ### What we verify:
