@@ -161,16 +161,16 @@ func HandlerFor(kind string, deps Deps) func(ctx context.Context, j *jobs.Record
 			if tmpId == "" {
 				return
 			}
-			logf("create", "provisioning local k0s cluster (docker)", map[string]any{"id": tmpId, "name": name})
+			logf("create", "provisioning local MicroK8s cluster", map[string]any{"id": tmpId, "name": name})
 
-			// 1) Attempt to launch a local k0s-in-Docker node via scripts/k0s-node-up.sh
+			// 1) Attempt to launch a local MicroK8s via scripts/microk8s-up.sh
 			// Locate script path relative to cwd or to executable dir
-			script := "scripts/k0s-node-up.sh"
+			script := "scripts/microk8s-up.sh"
 			if _, err := os.Stat(script); err != nil {
 				// try relative to executable dir
 				if ex, e := os.Executable(); e == nil {
 					dir := filepath.Dir(ex)
-					candidate := filepath.Join(dir, "..", "scripts", "k0s-node-up.sh")
+					candidate := filepath.Join(dir, "..", "scripts", "microk8s-up.sh")
 					if st, e2 := os.Stat(candidate); e2 == nil && st.Mode().IsRegular() {
 						script = candidate
 					}
@@ -183,7 +183,7 @@ func HandlerFor(kind string, deps Deps) func(ctx context.Context, j *jobs.Record
 				// Ensure non-interactive; attach no stdin
 				out, err := cmd.CombinedOutput()
 				if err != nil {
-					logf("warn", "k0s bootstrap script returned non-zero", map[string]any{"error": err.Error()})
+					logf("warn", "microk8s bootstrap script returned non-zero", map[string]any{"error": err.Error()})
 				}
 				// Truncate very large output in logs
 				tail := string(out)
@@ -191,10 +191,10 @@ func HandlerFor(kind string, deps Deps) func(ctx context.Context, j *jobs.Record
 					tail = tail[len(tail)-2000:]
 				}
 				if strings.TrimSpace(tail) != "" {
-					logf("info", "k0s bootstrap output (tail)", map[string]any{"tail": tail})
+					logf("info", "microk8s bootstrap output (tail)", map[string]any{"tail": tail})
 				}
 			} else {
-				logf("warn", "k0s bootstrap script not found; skipping automatic provisioning", map[string]any{"script": script})
+				logf("warn", "microk8s bootstrap script not found; skipping automatic provisioning", map[string]any{"script": script})
 			}
 
 			// 2) Read kubeconfig from default path and attach to cluster record

@@ -114,6 +114,14 @@ dns:
 
 noise:
   private_key_path: /var/lib/headscale/noise_private.key
+
+# Provide a default DERP map so recent Headscale versions start without error.
+# This fetches the public DERP map from Tailscale and keeps it updated.
+derp:
+  urls:
+    - https://controlplane.tailscale.com/derpmap/default
+  auto_update_enabled: true
+  update_frequency: 24h
 EOF
 }
 

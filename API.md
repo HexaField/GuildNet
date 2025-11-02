@@ -98,7 +98,7 @@ Authorization model: GET requests are open. Mutating requests require either a c
       - image_pull_secret, org_id
   - Response: JSON { id: <id> } on success when kubeconfig provided. (Clusters now expose a deterministic, canonical `id` field.)
 
-  - Example (attach kubeconfig emitted by `scripts/k0s-node-up.sh` and then set cluster defaults):
+  - Example (attach kubeconfig emitted by `scripts/microk8s-up.sh` and then set cluster defaults):
 
   1) POST `/api/bootstrap` with body `{"cluster":{"kubeconfig":"<yaml>"}}` — response: `{ "id": "<deterministicId>" }`
     2) PUT `/api/settings/cluster/<deterministicId>` with a subset of fields, for example:
@@ -113,7 +113,7 @@ Authorization model: GET requests are open. Mutating requests require either a c
     }
     ```
 
-    The helper `scripts/attach-local-k0s.sh` automates this flow when invoked with `SET_DEFAULTS=1` and reads settings overrides from environment variables.
+  You can automate these two calls in your own scripts or CI as needed.
 
 Multi-device automation: Use `make multi-device-host` on Device A and `make multi-device-joiner` on Device B to bootstrap quickly. The joiner will call this `/api/bootstrap` endpoint with its generated `guildnet.config`.
 
@@ -161,7 +161,7 @@ Multi-device automation: Use `make multi-device-host` on Device A and `make mult
  - GET/POST /api/deploy/clusters
   - GET: list clusters persisted in Host App DB.
   - POST: create a cluster record (orchestration job for provisioning). The Web UI exposes this on the Deployment Manager page at `/deploy` (the previous sidebar modal has been removed).
-    - Current implementation (cluster.create job) attempts an automatic local bootstrap by executing `scripts/k0s-node-up.sh` and then reading the emitted kubeconfig from `~/.guildnet/kubeconfig`. The kubeconfig is persisted under the deterministic cluster ID (computed from the kubeconfig) and the record is updated to `ready` once attached.
+  - Current implementation (cluster.create job) attempts an automatic local bootstrap by executing `scripts/microk8s-up.sh` and then reading the emitted kubeconfig from `~/.guildnet/kubeconfig`. The kubeconfig is persisted under the deterministic cluster ID (computed from the kubeconfig) and the record is updated to `ready` once attached.
       - Request body supports an optional `addons` object to control post-provision installs. Defaults are safe and enabled when omitted:
         - `addons.localpath` (bool, default true): ensure a default StorageClass by installing local-path-provisioner (idempotent).
         - `addons.metallb` (bool, default true): deploy MetalLB in L2 mode (idempotent).
@@ -186,14 +186,11 @@ Deterministic cluster IDs and attach-kubeconfig behavior
 - Cluster IDs are deterministic: when a kubeconfig is provided (via POST /api/bootstrap or attach-kubeconfig), the backend computes a canonical ID from the kubeconfig's normalized server URL and certificate-authority data.
 - POST `/api/deploy/clusters/{id}?action=attach-kubeconfig` may be invoked with any placeholder `{id}`. The backend will compute the deterministic ID and, if no record exists yet, create a cluster record with state `imported` so that UIs/agents can reference the same cluster across devices. The response includes `{ id: <deterministicId>, ok: true }` on success.
 
-Docker-only k0s node note
--------------------------
-- The helper script `scripts/k0s-node-up.sh` emits a kubeconfig (default `~/.guildnet/kubeconfig`) for the containerized k0s control-plane running on the same device. This kubeconfig can be posted to `/api/bootstrap` exactly like any other cluster.
-- Initial defaults bind the API to `https://127.0.0.1:16443` (port auto-increments if busy). Tailnet-based access can be configured via Tailscale routing/serve (`TS_SERVE_KUBEAPI=1`) and the API cert may include the tailnet IP in SANs when `TS_ADD_SANS=1` is provided. The API surface and bootstrap semantics remain unchanged.
+Local MicroK8s note
+-------------------
+- The helper script `scripts/microk8s-up.sh` emits a kubeconfig to `~/.guildnet/kubeconfig`. This kubeconfig can be posted to `/api/bootstrap` like any other cluster.
 
-Operational note on multi-device workers
----------------------------------------
-- The remote worker bootstrap helper `scripts/k0s-worker-up.sh` now supports an optional `--host-network 0|1` flag (default: `1`). Use `--host-network 0` on devices that already have a kubelet/kube-proxy binding to ports 10250/10248 to avoid conflicts. This is an operational toggle and does not change any Host App API behavior.
+ 
 
 - GET /ui-config
   - UI runtime config placeholder (returns {} in current implementation).
@@ -202,6 +199,9 @@ Server runtime notes
 --------------------
 - Signals: the Host App exits gracefully on SIGINT/SIGTERM only; SIGHUP/QUIT are ignored to avoid accidental exits during log rotation or terminal events.
 - Parent-death behavior (Linux): the process requests a parent-death signal (SIGTERM). If you launch the Host App from a short-lived shell, it may exit when the shell terminates. Start via `scripts/run-hostapp.sh` (or a long-lived supervisor), or disable with `GN_DISABLE_PDEATHSIG=1` when launching.
+
+- Config-less startup: The server no longer requires `~/.guildnet/config.json` to exist at boot. When the file is missing, the Host App starts with a local TLS listener on `https://127.0.0.1:8090` and tsnet is disabled. Use `PUT /api/settings/tailscale` to configure `login_server`, `preauth_key`, and `hostname`; the server will restart and tsnet will be enabled.
+- Self-signed TLS: If no certs are found in `./certs/` the server will auto-generate a self-signed certificate under `~/.guildnet/state/certs/` (valid for localhost/127.0.0.1) so the API is immediately reachable for local setup. Replace with production certs by placing `certs/server.crt` and `certs/server.key` in the repository or providing them under the state path.
 
 - Cluster proxied APIs (per-cluster path prefix: /api/cluster/{clusterID}/...)
   - GET /api/cluster/{id}/published-services
@@ -389,7 +389,7 @@ The config file path: `~/.guildnet/config.json` (created by tools like the init 
  - GN_CONTROL_PLANE_KUBECONFIG — when set in the operator Deployment or Host App environment, the operator will load the control-plane kubeconfig from the specified file path inside the process/container (for example `/etc/guildnet/kubeconfig`). This is used when the operator must act on a remote control plane; it is preferred over the standard `KUBECONFIG` location when present.
  - WORKSPACE_NGINX_UNPRIVILEGED_IMAGE — optional environment variable to override the operator's preferred unprivileged nginx image used when a Workspace image appears to be an `nginx` variant. Default: `nginxinc/nginx-unprivileged:1.25`.
 - LISTEN_LOCAL (or environment used to override `pkg/config.Config.ListenLocal`) — override the HTTP listener address
-- Local cluster image/load variables — used by Makefile to build and load images for local clusters (prefer k0s containerd import or pushing via DinD to a registry). See Makefile targets rather than environment-driven behavior for production.
+- Local cluster image/load variables — used by Makefile to build and load images for local clusters (prefer MicroK8s containerd import via `microk8s ctr` or pushing to a registry). See Makefile targets rather than environment-driven behavior for production.
 
 ### Runtime settings stored in localdb (via `settings.Manager`)
 

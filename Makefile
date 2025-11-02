@@ -10,8 +10,8 @@ LISTEN_LOCAL ?= 127.0.0.1:8090
 # User-scoped kubeconfig location (used by scripts and docs)
 GN_KUBECONFIG ?= $(HOME)/.guildnet/kubeconfig
 
-# Provisioner choice: lan | forward | vm
-PROVIDER ?= lan
+# Provisioner choice kept for future use; MicroK8s is the only supported local cluster
+PROVIDER ?= microk8s
 
 .PHONY: all help \
 	build build-backend build-ui \
@@ -21,7 +21,7 @@ PROVIDER ?= lan
 	agent-build \
 	crd-apply operator-run operator-build db-health \
 	setup-headscale setup-tailscale setup-all \
-	# Local disposable cluster helper removed; use k0s-node-up.sh or set KUBECONFIG
+	# Local disposable cluster helper removed; use MicroK8s helpers or set KUBECONFIG
 	deploy-k8s-addons deploy-operator deploy-hostapp verify-e2e \
 	diag-router diag-k8s diag-db headscale-approve-routes
 multi-device-host: ## One-command bootstrap of Device A (Headscale+cluster+operator+Host App)
@@ -90,24 +90,18 @@ setup-headscale: ## Setup Headscale (Docker) and bootstrap preauth
 setup-tailscale: ## Setup Tailscale router (enable forwarding, up, approve routes)
 	bash ./scripts/setup-tailscale.sh
 
-setup-all: ## One-command: Headscale up -> LAN sync -> ensure Kubernetes (k0s in Docker) -> Headscale namespace -> router DS -> addons -> operator -> hostapp -> verify
+setup-all: ## One-command: Headscale up -> LAN sync -> ensure MicroK8s -> Headscale namespace -> router DS -> addons -> operator -> hostapp -> verify
 	@CL=$${CLUSTER:-$${GN_CLUSTER_NAME:-default}}; \
 	echo "[setup-all] Using cluster: $$CL"; \
 	$(MAKE) headscale-up; \
 	$(MAKE) env-sync-lan; \
-	# Ensure Kubernetes is reachable; if not, bring up containerized k0s
+	# Ensure Kubernetes is reachable; if not, bring up MicroK8s
 	ok=1; kubectl --request-timeout=3s get --raw=/readyz >/dev/null 2>&1 || ok=0; \
-	if [ $$ok -eq 0 ]; then \
-		if [ -x "./scripts/k0s-node-up.sh" ]; then \
-			TS_SERVE_KUBEAPI=$${TS_SERVE_KUBEAPI:-0} TS_ADD_SANS=$${TS_ADD_SANS:-0} bash ./scripts/k0s-node-up.sh || true; \
-			kubectl --request-timeout=5s get --raw=/readyz >/dev/null 2>&1 || ok=0; \
-		fi; \
-	fi; \
+	if [ $$ok -eq 0 ]; then bash ./scripts/microk8s-up.sh || true; fi; \
 	CLUSTER=$$CL $(MAKE) headscale-namespace; \
 	CLUSTER=$$CL $(MAKE) router-ensure || true; \
 	$(MAKE) deploy-k8s-addons || true; \
 	$(MAKE) deploy-operator || true; \
-	SET_DEFAULTS=1 bash ./scripts/attach-local-k0s.sh || true; \
 	$(MAKE) ensure-operator-setup || true; \
 	$(MAKE) deploy-hostapp || true; \
 	$(MAKE) verify-e2e || true
@@ -127,9 +121,10 @@ operator-image-build: build-backend ## Build a container image for the operator 
 	@echo "Building operator image $(OPERATOR_IMAGE) ..."
 	docker build -f scripts/Dockerfile.operator -t $(OPERATOR_IMAGE) .
 
-operator-image-load: operator-image-build ## Load the operator image into local k0s (containerd) if needed
-	@echo "Loading operator image into local k0s if needed (prefer pulling from registry or using dind helper)"
-	@echo "Tip: use 'make dind-image-push' to push images from DinD to your registry, or import via 'ctr' into k0s containerd if required."
+operator-image-load: operator-image-build ## Ensure operator image is available to your cluster
+	@echo "Operator image built: $(OPERATOR_IMAGE)"
+	@echo "Tip: prefer pushing to a registry accessible by the cluster (e.g., GHCR, Docker Hub)."
+	@echo "If using MicroK8s, ensure your nodes can pull the image (or use a local registry)."
 
 operator-build-load: operator-image-load ## Convenience target to build and load operator image
 	@echo "operator image build+load complete"
@@ -180,23 +175,8 @@ reset: ## Full reset: stop hostapp, headscale, tailscale, delete test clusters, 
 	@echo "[reset] Bringing down Tailscale router (if configured)";
 	@$(MAKE) router-down || true
 	@echo "[reset] Running cleanup script to remove local state under ~/.guildnet (if present)";
-	@KEEP_K0S=$${KEEP_K0S:-1}; \
-	BK="/tmp/k0s-preserve-$$USER-$$(date +%s)"; \
-	if [ "$$KEEP_K0S" = "1" ] && [ -d "$(HOME)/.guildnet/k0s" ]; then \
-		echo "[reset] KEEP_K0S=1 -> preserving $(HOME)/.guildnet/k0s"; \
-		mkdir -p "$$BK"; \
-		mv "$(HOME)/.guildnet/k0s" "$$BK/k0s"; \
-		if [ -f "$(GN_KUBECONFIG)" ]; then cp -f "$(GN_KUBECONFIG)" "$$BK/kubeconfig"; fi; \
-	fi; \
-	bash ./scripts/cleanup.sh --all || true; \
-	if [ -d "$$BK/k0s" ]; then \
-		mkdir -p "$(HOME)/.guildnet"; \
-		mv "$$BK/k0s" "$(HOME)/.guildnet/k0s"; \
-		[ -f "$$BK/kubeconfig" ] && mv "$$BK/kubeconfig" "$(GN_KUBECONFIG)" || true; \
-		echo "[reset] restored preserved k0s state and kubeconfig"; \
-	fi
-	@echo "[reset] Removing local GN_KUBECONFIG file: $(GN_KUBECONFIG) (if present and KEEP_K0S!=1)";
-	@if [ "$${KEEP_K0S:-1}" != "1" ]; then if [ -f "$(GN_KUBECONFIG)" ]; then rm -f "$(GN_KUBECONFIG)" && echo "  removed $(GN_KUBECONFIG)"; else echo "  not found: $(GN_KUBECONFIG)"; fi; else echo "  preserved due to KEEP_K0S=1"; fi
+	@bash ./scripts/cleanup.sh --all || true; \
+	if [ -f "$(GN_KUBECONFIG)" ]; then rm -f "$(GN_KUBECONFIG)" && echo "  removed $(GN_KUBECONFIG)"; else echo "  kubeconfig not found: $(GN_KUBECONFIG)"; fi
 	@echo "[reset] Removing temporary headscale/router cluster files in tmp/ (if present)";
 	@rm -f tmp/cluster-*-headscale.json tmp/cluster-*-kubeconfig || true
 	@echo "[reset] Completed. Some resources (e.g., cluster objects on remote K8s, remote Tailscale state) may remain and require manual cleanup.";
@@ -294,7 +274,7 @@ headscale-approve-routes: ## Approve tailscale routes for the router in Headscal
 export KUBECONFIG := $(GN_KUBECONFIG)
 
 # ---------- Provision / Addons / Deploy / Verify ----------
-.PHONY: deploy-k8s-addons deploy-operator deploy-hostapp verify-e2e diag-router diag-k8s diag-db verify-k0s verify-operator ts-serve-kubeapi smoke-workspace smoke-image-pipeline ensure-operator-setup
+.PHONY: deploy-k8s-addons deploy-operator deploy-hostapp verify-e2e diag-router diag-k8s diag-db verify-operator smoke-workspace ensure-operator-setup microk8s-up microk8s-down
 
 deploy-k8s-addons: ## Install MetalLB (pool from .env), CRDs, imagePullSecret, DB
 	bash ./scripts/install-local-path-provisioner.sh || true
@@ -303,8 +283,9 @@ deploy-k8s-addons: ## Install MetalLB (pool from .env), CRDs, imagePullSecret, D
 	bash ./scripts/k8s-setup-registry-secret.sh || true
 	bash ./scripts/rethinkdb-setup.sh || true
 
+
 deploy-operator: ## Deploy operator (ensure operator image is available, then apply manifests)
-	# For local k0s, prefer pushing to a registry or importing into k0s containerd as needed (see dind helpers)
+	# Ensure the operator image is accessible to your cluster (push to a registry if needed)
 	bash ./scripts/deploy-operator.sh
 
 deploy-hostapp: ## Run hostapp locally (or deploy in cluster if configured)
@@ -329,27 +310,21 @@ diag-k8s: ## Show kube API status and nodes
 diag-db: ## Print DB service details
 	bash ./scripts/rethinkdb-setup.sh || true
 
-verify-k0s: ## Verify Docker-only k0s node readiness
-	bash ./scripts/verify-k0s.sh
+microk8s-up: ## Bring up MicroK8s and write kubeconfig to $(GN_KUBECONFIG)
+	bash ./scripts/microk8s-up.sh
+
+microk8s-down: ## Tear down MicroK8s (see script for options)
+	bash ./scripts/microk8s-down.sh
 
 verify-operator: ## Verify CRDs and operator are installed and running
 	bash ./scripts/verify-crds-operator.sh
 
-.PHONY: verify-storage verify-tailnet-kubeapi
+.PHONY: verify-storage
 verify-storage: ## Verify default StorageClass and RethinkDB PVC readiness
 	bash ./scripts/verify-storage.sh
 
-verify-tailnet-kubeapi: ## Verify kube-API is reachable over Tailnet and cert SANs include tail IP when configured
-	bash ./scripts/verify-tailnet-kubeapi.sh
-
-ts-serve-kubeapi: ## Expose local kube-API over tailnet via tailscale serve tcp
-	bash ./scripts/ts-serve-kubeapi.sh
-
 smoke-workspace: ## Apply a tiny Workspace CR from template (idempotent)
 	bash ./scripts/smoke-workspace.sh
-
-smoke-image-pipeline: ## Build in DinD -> import into k0s -> deploy Workspace
-	bash ./scripts/image-pipeline-smoke.sh
 
 ensure-operator-setup: ## Ensure operator-config/certs and patch operator Deployment on current cluster
 	bash ./scripts/k8s/ensure-operator-setup.sh
@@ -443,21 +418,14 @@ router-ensure: ## Deploy Tailscale subnet router DaemonSet (uses tmp/cluster-<id
 plain-quickstart: ## Alias to setup-all for plain K8S flow
 	$(MAKE) setup-all
 
-# ---------- Containerized k0s (Docker-only) ----------
-.PHONY: node-up node-down attach-local-node deploy-k0s-node
+# ---------- MicroK8s helpers ----------
+.PHONY: microk8s-up microk8s-down
 
-node-up: ## Start Docker-only node stack (k0s + tailscale? + DinD) and emit kubeconfig
-	bash ./scripts/k0s-node-up.sh
+microk8s-up: ## Bring up MicroK8s and write kubeconfig
+	bash ./scripts/microk8s-up.sh
 
-node-down: ## Stop node stack (k0s, tailscale, DinD) [add --purge to delete state]
-	bash ./scripts/k0s-node-down.sh ${ARGS}
-
-attach-local-node: ## Attach the locally emitted kubeconfig to Host App via /bootstrap
-	bash ./scripts/attach-local-k0s.sh
-
-deploy-k0s-node: ## One-command: node-up then attach to Host App
-	$(MAKE) node-up
-	$(MAKE) attach-local-node
+microk8s-down: ## Tear down MicroK8s (reset/stop/remove)
+	bash ./scripts/microk8s-down.sh
 
 .PHONY: deploy-networkpolicies
 deploy-networkpolicies: ## Apply recommended network policies for workspace isolation
@@ -468,10 +436,4 @@ deploy-networkpolicies: ## Apply recommended network policies for workspace isol
 		echo "Kubernetes API not reachable; skipping networkpolicies"; \
 	fi
 
-# ---------- DinD / Registry helpers ----------
-.PHONY: dind-image-push
-
-dind-image-push: ## Push an image from DinD to a registry (usage: make dind-image-push SRC=<img:tag> DEST=<registry/repo:tag>)
-	@[ -n "$(SRC)" ] || { echo "SRC=<image:tag> required"; exit 2; }
-	@[ -n "$(DEST)" ] || { echo "DEST=<registry/repo:tag> required"; exit 2; }
-	SRC_IMG=$(SRC) DEST_IMG=$(DEST) REGISTRY_USER=$(REGISTRY_USER) REGISTRY_PASS=$(REGISTRY_PASS) bash ./scripts/dind-registry-push.sh
+# (DinD helpers removed; prefer using a registry or MicroK8s-compatible image workflows.)

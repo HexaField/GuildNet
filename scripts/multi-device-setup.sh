@@ -38,18 +38,17 @@ if [[ "$MODE" == "host" ]]; then
   make router-install || true
   make router-up || true
 
-  # Kubernetes (k0s-in-Docker helper)
+  # Kubernetes (MicroK8s helper)
   if [[ ! -f "$HOME/.guildnet/kubeconfig" ]]; then
-    echo "[host] bringing up k0s (Docker) and writing kubeconfig"
-    TS_SERVE_KUBEAPI=${TS_SERVE_KUBEAPI:-0} TS_ADD_SANS=${TS_ADD_SANS:-0} bash ./scripts/k0s-node-up.sh
+    echo "[host] bringing up MicroK8s and writing kubeconfig"
+    bash ./scripts/microk8s-up.sh
   fi
 
   echo "[host] deploying k8s addons (CRDs, MetalLB, RethinkDB)"
   make deploy-k8s-addons || true
 
-  echo "[host] building + loading operator image"
+  echo "[host] building operator image (push to a registry if needed)"
   make operator-image-build || true
-  make operator-image-load || true
   echo "[host] deploying operator"
   make deploy-operator || true
 
@@ -80,18 +79,17 @@ fi
 echo "[joiner] installing tailscale and bringing it up"
 make setup-tailscale || true
 
-# Kubernetes (k0s-in-Docker helper)
+# Kubernetes (MicroK8s helper)
 if [[ ! -f "$HOME/.guildnet/kubeconfig" ]]; then
-  echo "[joiner] bringing up k0s (Docker) and writing kubeconfig"
-  TS_SERVE_KUBEAPI=${TS_SERVE_KUBEAPI:-0} TS_ADD_SANS=${TS_ADD_SANS:-0} bash ./scripts/k0s-node-up.sh
+  echo "[joiner] bringing up MicroK8s and writing kubeconfig"
+  bash ./scripts/microk8s-up.sh
 fi
 
 echo "[joiner] deploying k8s addons (CRDs, MetalLB, RethinkDB)"
 make deploy-k8s-addons || true
 
-echo "[joiner] building + loading operator image"
+echo "[joiner] building operator image (push to a registry if needed)"
 make operator-image-build || true
-make operator-image-load || true
 echo "[joiner] deploying operator"
 make deploy-operator || true
 

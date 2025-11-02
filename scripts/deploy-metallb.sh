@@ -67,7 +67,7 @@ if ! kubectl -n metallb-system get secret memberlist >/dev/null 2>&1; then
   fi
 fi
 
-# Some Kubernetes distros (including fresh k0s-in-Docker) can transiently reject CRs via the validating webhook
+# Some Kubernetes distros can transiently reject CRs via the validating webhook
 # before the webhook service becomes reachable. To avoid hard failures, set failurePolicy=Ignore temporarily.
 if kubectl get validatingwebhookconfigurations.admissionregistration.k8s.io metallb-webhook-configuration >/dev/null 2>&1; then
   echo "[metallb] Patching validating webhook failurePolicy to Ignore to tolerate startup races"

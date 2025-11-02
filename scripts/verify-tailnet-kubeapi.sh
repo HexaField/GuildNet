@@ -50,7 +50,7 @@ echo "[tailnet] TLS handshake OK"
 if echo "$CERT_TXT" | grep -A1 'Subject Alternative Name' | grep -q "$TAIL_IP"; then
   echo "[tailnet] PASS: Cert SANs include tailnet IP $TAIL_IP"
 else
-  echo "[tailnet] WARN: Cert SANs do not include $TAIL_IP (set TS_ADD_SANS=1 when bringing up k0s)."
+  echo "[tailnet] WARN: Cert SANs do not include $TAIL_IP (set TS_ADD_SANS=1 when bringing up MicroK8s via scripts/microk8s-up.sh)."
 fi
 
 exit 0

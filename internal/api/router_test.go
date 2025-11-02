@@ -124,7 +124,7 @@ func TestClustersAPICreateAttach(t *testing.T) {
 	if err := os.MkdirAll(scrDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	scriptPath := filepath.Join(scrDir, "k0s-node-up.sh")
+	scriptPath := filepath.Join(scrDir, "microk8s-up.sh")
 	// script writes kubeconfig to GN_KUBECONFIG
 	script := `#!/usr/bin/env bash
 echo "apiVersion: v1" > "$GN_KUBECONFIG"

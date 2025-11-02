@@ -11,7 +11,7 @@ fi
 echo "Building operator image: $OP_IMAGE"
 docker build -f "$ROOT/scripts/Dockerfile.operator" -t "$OP_IMAGE" "$ROOT"
 
-echo "Build complete. Load/push using k0s/DinD paths:"
-echo " - make dind-image-push (to push from DinD to a registry)"
-echo " - or import into the k0s containerd via ctr inside the k0s container if needed"
+echo "Build complete. Ensure the image is available to your cluster:"
+echo " - Prefer pushing to a registry accessible by your cluster (e.g., GHCR, Docker Hub)."
+echo " - If using a local MicroK8s, configure image pulls from your registry as needed."
 exit 0

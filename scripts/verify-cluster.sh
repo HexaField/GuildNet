@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # verify-cluster.sh
-# Run verification steps against an existing Kubernetes cluster (k0s-in-Docker recommended).
+# Run verification steps against an existing Kubernetes cluster (MicroK8s recommended).
 # This script does NOT auto-create disposable clusters. It will generate a guildnet.config,
 # POST to hostapp /bootstrap, create a workspace (code-server), tail logs via SSE,
 # exercise DB API (list/create/table/delete), and clean up local diagnostics. Verbose
@@ -56,8 +56,8 @@ need kubectl
 NO_DELETE=${NO_DELETE:-0}
 
 # This script no longer creates disposable clusters. It expects a kubeconfig
-# to be provided (via KUBECONFIG or GN_KUBECONFIG). Use scripts/k0s-node-up.sh
-# to provision a local Docker-only k0s if needed. CLUSTER_NAME is only used for
+# to be provided (via KUBECONFIG or GN_KUBECONFIG). Use scripts/microk8s-up.sh
+# to provision a local MicroK8s if needed. CLUSTER_NAME is only used for
 # hostapp registration and may remain empty for local kubeconfig usage.
 CLUSTER_NAME=""
 
@@ -76,7 +76,7 @@ HOSTAPP_URL=${HOSTAPP_URL:-https://127.0.0.1:8090}
 
 
 
-echolog "Disposable cluster creation disabled; using existing kubeconfig (use scripts/k0s-node-up.sh to provision locally)"
+echolog "Disposable cluster creation disabled; using existing kubeconfig (use scripts/microk8s-up.sh to provision locally)"
 
 echolog "Starting verify-cluster run for cluster: $CLUSTER_NAME"
 echolog "Logfile: $LOGFILE"
@@ -112,7 +112,7 @@ users:
 EOF
       echolog "Wrote generated kubeconfig to $KUBECONFIG_OUT"
     else
-      echolog "Provide a valid kubeconfig via GN_KUBECONFIG or run scripts/k0s-node-up.sh to create one."
+      echolog "Provide a valid kubeconfig via GN_KUBECONFIG or run scripts/microk8s-up.sh to create one."
       exit 4
     fi
     
@@ -124,11 +124,11 @@ echolog "Using kubeconfig: $KUBECONFIG_OUT"
 echolog "Performing Kubernetes API preflight check (timeout 5s)"
 if ! kubectl --request-timeout=5s get --raw='/readyz' >/dev/null 2>&1; then
   echolog "Kubernetes API not reachable using kubeconfig $KUBECONFIG_OUT."
-  echolog "Set KUBECONFIG to a reachable cluster or provision local k0s via scripts/k0s-node-up.sh.";
+  echolog "Set KUBECONFIG to a reachable cluster or provision local MicroK8s via scripts/microk8s-up.sh.";
   exit 4
 fi
 
-# Operator image should be reachable by the cluster; prefer registry or DinD helper.
+# Operator image should be reachable by the cluster; prefer a registry or MicroK8s image import.
 
 # Deploy the operator into the target cluster so the operator's API types (CRDs)
 # and controller become available for the test run.
@@ -202,7 +202,7 @@ else
 fi
 
 # Deploy the operator now. If you run a local cluster with a local image you may
-# need to import the operator image into k0s containerd or ensure OPERATOR_IMAGE
+# need to import the operator image into MicroK8s containerd (e.g., microk8s ctr -n k8s.io images import) or ensure OPERATOR_IMAGE
 # is reachable by the cluster.
 export OPERATOR_IMAGE="${OPERATOR_IMAGE:-guildnet/hostapp:local}"
 echolog "Using OPERATOR_IMAGE=$OPERATOR_IMAGE for operator deployment"

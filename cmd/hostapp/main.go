@@ -3,13 +3,18 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"math/big"
 	"net"
 	"net/http"
 	"net/url"
@@ -59,6 +64,7 @@ import (
 	"github.com/your/module/internal/api"
 	"github.com/your/module/internal/cluster"
 	"github.com/your/module/internal/headscale"
+	"tailscale.com/tsnet"
 
 	hostapppkg "github.com/your/module/internal/hostapp"
 	hostappapi "github.com/your/module/internal/hostapp/api"
@@ -182,13 +188,51 @@ func startOperator(ctx context.Context, restCfg *rest.Config, reg *cluster.Regis
 
 // ensureSelfSigned creates a minimal self-signed certificate if not present.
 func ensureSelfSigned(dir, certPath, keyPath string) error {
-	// Production mode: do not generate self-signed certificates. Require valid cert and key to exist.
+	// If cert and key already exist, nothing to do.
 	if _, err := os.Stat(certPath); err == nil {
 		if _, err2 := os.Stat(keyPath); err2 == nil {
 			return nil
 		}
 	}
-	return fmt.Errorf("tls cert or key not found: %s and %s; place valid certs in ./certs/ or %s", certPath, keyPath, dir)
+	// Generate a self-signed certificate for localhost and loopback addresses.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create cert dir: %w", err)
+	}
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return fmt.Errorf("generate key: %w", err)
+	}
+	serial, err := rand.Int(rand.Reader, big.NewInt(1<<62))
+	if err != nil {
+		return fmt.Errorf("serial: %w", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: "GuildNet Local"},
+		NotBefore:             time.Now().Add(-1 * time.Hour),
+		NotAfter:              time.Now().Add(3650 * 24 * time.Hour), // ~10 years
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:              []string{"localhost", "127.0.0.1", "::1"},
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
+	if err != nil {
+		return fmt.Errorf("create cert: %w", err)
+	}
+	// Write cert
+	if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		return fmt.Errorf("write cert: %w", err)
+	}
+	// Write key
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(priv)})
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		return fmt.Errorf("write key: %w", err)
+	}
+	log.Printf("generated self-signed TLS cert at %s", dir)
+	return nil
 }
 
 // dns1123Name converts an arbitrary string into a DNS-1123 compliant name:
@@ -345,10 +389,21 @@ func main() {
 
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		// Allow first-run without ~/.guildnet/config.json so settings can be
+		// configured at runtime via the API. Seed sensible defaults.
+		if errors.Is(err, os.ErrNotExist) {
+			cfg = &config.Config{ListenLocal: "127.0.0.1:8090", DialTimeoutMS: 5000}
+		} else {
+			log.Fatalf("load config: %v", err)
+		}
 	}
-	if err := cfg.Validate(); err != nil {
-		log.Fatalf("invalid config: %v", err)
+	// Do not require Tailscale settings at startup; allow dynamic runtime config.
+	// Ensure minimal defaults for local listener and dial timeout.
+	if strings.TrimSpace(cfg.ListenLocal) == "" {
+		cfg.ListenLocal = "127.0.0.1:8090"
+	}
+	if cfg.DialTimeoutMS <= 0 {
+		cfg.DialTimeoutMS = 5000
 	}
 
 	// Create cancellation context for the serve lifecycle; handle only SIGINT and SIGTERM.
@@ -570,16 +625,19 @@ func main() {
 		_ = os.Remove(lockPath)
 	}()
 
-	// Start tsnet from settings
-	s, err := ts.StartServer(ctx, ts.Options{StateDir: config.StateDir(), Hostname: tsSet.Hostname, LoginURL: tsSet.LoginServer, AuthKey: tsSet.PreauthKey})
-	if err != nil {
-		log.Fatalf("tsnet start: %v", err)
+	// Start tsnet only when sufficient settings are present. Otherwise, run local TLS only.
+	var tsServer *tsnet.Server
+	if strings.TrimSpace(tsSet.LoginServer) != "" && strings.TrimSpace(tsSet.PreauthKey) != "" && strings.TrimSpace(tsSet.Hostname) != "" {
+		s, err := ts.StartServer(ctx, ts.Options{StateDir: config.StateDir(), Hostname: tsSet.Hostname, LoginURL: tsSet.LoginServer, AuthKey: tsSet.PreauthKey})
+		if err != nil {
+			log.Fatalf("tsnet start: %v", err)
+		}
+		tsServer = s
+		// Ensure tsnet server is closed on exit to avoid lingering background activity
+		defer func() { _ = tsServer.Close() }()
+	} else {
+		log.Printf("tsnet disabled: missing login_server/auth_key/hostname; serving local TLS only")
 	}
-	tsServer := s
-	// Ensure tsnet server is closed on exit to avoid lingering background activity
-	defer func() {
-		_ = tsServer.Close()
-	}()
 
 	mux := http.NewServeMux()
 
@@ -860,7 +918,10 @@ func main() {
 
 	// Register hostapp presence (type=gateway) to local in-memory registry
 	go func() {
-		info, _ := ts.Info(ctx, tsServer)
+		var info *ts.InfoResult
+		if tsServer != nil {
+			info, _ = ts.Info(ctx, tsServer)
+		}
 		rec := &model.AgentRecord{
 			ID:       cfg.Hostname,
 			Org:      "", // deprecated; tenants handled per-cluster
@@ -923,13 +984,15 @@ func main() {
 				// Try to obtain tailscale/tsnet info with a few retries; tsnet may be still starting.
 				var info *ts.InfoResult
 				var ierr error
-				for i := 0; i < 3; i++ {
-					info, ierr = ts.Info(context.Background(), tsServer)
-					if ierr == nil && info != nil && (info.IP != "" || info.FQDN != "") {
-						break
+				if tsServer != nil {
+					for i := 0; i < 3; i++ {
+						info, ierr = ts.Info(context.Background(), tsServer)
+						if ierr == nil && info != nil && (info.IP != "" || info.FQDN != "") {
+							break
+						}
+						// small backoff
+						time.Sleep(250 * time.Millisecond)
 					}
-					// small backoff
-					time.Sleep(250 * time.Millisecond)
 				}
 				if ierr != nil {
 					log.Printf("ts.Info() failed while building heartbeat: %v", ierr)
@@ -1961,10 +2024,10 @@ func main() {
 		}
 	}
 
-	// tsnet server remains on :443
+	// Optional tsnet listener on :443 when tsServer is enabled
 	var tsSrv *http.Server
 	var ln net.Listener
-	{
+	if tsServer != nil {
 		var err error
 		ln, err = ts.Listen(ctx, tsServer, "tcp", ":443")
 		if err != nil {
@@ -1984,8 +2047,12 @@ func main() {
 	if v6Srv != nil && lnLocalV6 != nil {
 		go func() { errCh <- v6Srv.ServeTLS(lnLocalV6, certFile, keyFile) }()
 	}
-	go func() { errCh <- tsSrv.ServeTLS(ln, certFile, keyFile) }()
-	log.Printf("serving TLS on local %s and tailscale listener :443", bindAddr)
+	if tsSrv != nil && ln != nil {
+		go func() { errCh <- tsSrv.ServeTLS(ln, certFile, keyFile) }()
+		log.Printf("serving TLS on local %s and tailscale listener :443", bindAddr)
+	} else {
+		log.Printf("serving TLS on local %s (tsnet disabled)", bindAddr)
+	}
 
 	select {
 	case <-ctx.Done():
@@ -2006,12 +2073,16 @@ func main() {
 				log.Printf("v6Srv.Shutdown error: %v", err)
 			}
 		}
-		if err := tsSrv.Shutdown(shutdownCtx); err != nil {
-			log.Printf("tsSrv.Shutdown error: %v", err)
+		if tsSrv != nil {
+			if err := tsSrv.Shutdown(shutdownCtx); err != nil {
+				log.Printf("tsSrv.Shutdown error: %v", err)
+			}
 		}
-		// Close tsnet server explicitly and the ts listener
-		if err := tsServer.Close(); err != nil {
-			log.Printf("tsServer.Close error: %v", err)
+		// Close tsnet server explicitly and the ts listener if enabled
+		if tsServer != nil {
+			if err := tsServer.Close(); err != nil {
+				log.Printf("tsServer.Close error: %v", err)
+			}
 		}
 		if ln != nil {
 			_ = ln.Close()

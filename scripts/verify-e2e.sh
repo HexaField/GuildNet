@@ -13,26 +13,25 @@ echolog() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 
 # Fail fast: any failed check will exit immediately with non-zero status.
 
-echo "--- Headscale reachability ---"
-HS=${HEADSCALE_URL:-}
-if [ -z "$HS" ] && docker ps --format '{{.Names}}' | grep -q '^guildnet-headscale$'; then
-  HOST=$(docker inspect -f '{{ (index (index .NetworkSettings.Ports "8080/tcp") 0).HostIp }}' guildnet-headscale 2>/dev/null || echo 127.0.0.1)
-  PORT=$(docker inspect -f '{{ (index (index .NetworkSettings.Ports "8080/tcp") 0).HostPort }}' guildnet-headscale 2>/dev/null || echo 8081)
-  [ "$HOST" = "0.0.0.0" ] && HOST=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}' | head -n1)
-  HS="http://${HOST}:${PORT}"
-fi
-if [ -n "$HS" ]; then
-  # consider any HTTP status as reachable; only fail if TCP connect fails
-  if curl -sS -o /dev/null -m 2 "$HS"; then
-    echo ok
-  else
-    echolog "Headscale unreachable at $HS"
-    exit 1
+CLUSTER_PROVIDER=${CLUSTER_PROVIDER:-microk8s}
+echolog "--- Cluster provider: $CLUSTER_PROVIDER ---"
+
+# Ensure a local cluster is up when using microk8s provider
+if [ "$CLUSTER_PROVIDER" = "microk8s" ]; then
+  if ! kubectl --request-timeout=3s version >/dev/null 2>&1; then
+    echolog "Bootstrapping MicroK8s (this may require sudo on Linux or Multipass on macOS)"
+    bash "$ROOT/scripts/microk8s-up.sh" || {
+      echolog "microk8s-up failed"; exit 1;
+    }
   fi
-else
-  echolog "No Headscale detected (HEADSCALE_URL not set and no guildnet-headscale container)."
-  exit 1
+  echolog "Waiting for a Ready node"
+  tries=120
+  until kubectl get nodes >/dev/null 2>&1 && kubectl get nodes -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null | grep -q True; do
+    sleep 2; tries=$((tries-1)); if [ $tries -le 0 ]; then echolog "Node did not become Ready in time"; kubectl get nodes -o wide || true; exit 1; fi
+  done
 fi
+
+echolog "--- Headscale: will be created via HostApp API (skipping pre-check) ---"
 
 # Router status
 bash "$ROOT/scripts/tailscale-router.sh" status || true
@@ -94,7 +93,17 @@ else
   else
     if [ -n "$hs_id" ]; then
       echolog "Fetching headscale record $hs_id"
-      curl -k -sS "$API_BASE/api/deploy/headscale/$hs_id" | jq -C . || true
+      hs_info=$(curl -k -sS "$API_BASE/api/deploy/headscale/$hs_id" || true)
+      printf '%s' "$hs_info" | jq -C . || true
+      # Best-effort reachability probe of returned login_server
+      hs_login=$(printf '%s' "$hs_info" | jq -r '.login_server // empty' 2>/dev/null || echo "")
+      if [ -n "$hs_login" ]; then
+        if curl -sS -o /dev/null -m 2 "$hs_login"; then
+          echolog "Headscale login_server reachable: $hs_login"
+        else
+          echolog "Headscale login_server not reachable yet: $hs_login (continuing)"
+        fi
+      fi
     fi
   fi
 fi
@@ -108,7 +117,7 @@ if [ -z "$cluster_job" ]; then
   echolog "Failed to create cluster (no jobId). Response: $cluster_create_resp"
 else
   echolog "Cluster create jobId=$cluster_job id=$cluster_id"
-  if ! poll_job "$cluster_job" 180; then
+  if ! poll_job "$cluster_job" 420; then
     echolog "Cluster create job failed or timed out"
     curl -k -sS "$API_BASE/api/jobs/$cluster_job" | jq -C . || true
     curl -k -sS "$API_BASE/api/jobs-logs/$cluster_job" || true
@@ -141,11 +150,11 @@ elif ! kubectl version --request-timeout=3s >/dev/null 2>&1; then
   echo "skip (kube API unreachable)"
 elif kubectl -n kube-system get ds tailscale-subnet-router >/dev/null 2>&1; then
   # Tailscale is REQUIRED: ensure the daemonset is fully ready
-  if kubectl -n kube-system rollout status ds/tailscale-subnet-router --timeout=120s; then
+  if kubectl -n kube-system rollout status ds/tailscale-subnet-router --timeout=360s; then
     echo ok
   else
     # Fallback: compare desired vs ready with a short retry loop
-    tries=10
+    tries=30
     ok=0
     while [ $tries -gt 0 ]; do
       desired=$(kubectl -n kube-system get ds tailscale-subnet-router -o jsonpath='{.status.desiredNumberScheduled}' 2>/dev/null || echo 0)

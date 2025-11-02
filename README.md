@@ -30,28 +30,25 @@ GuildNet is a private self-hostable stack that puts human-in-the-loop with agent
 
 ## Quickstart
 
-### Docker-only node (k0s in Docker)
+### Local cluster (MicroK8s)
 
-The default path is a self-contained Docker-only stack per device:
+The default local path uses MicroK8s as the Kubernetes distribution:
 
-- Bring up a node and emit kubeconfig (optionally expose kube-API over tailnet and include SANs):
-  - `scripts/k0s-node-up.sh`
-  - Serve kube-API over tailnet: `TS_AUTHKEY=tskey-... TS_LOGIN_SERVER=http://<headscale>:8081 TS_SERVE_KUBEAPI=1 scripts/k0s-node-up.sh`
-  - Include tailnet IP in API cert SANs for remote kubectl: `TS_ADD_SANS=1 TS_AUTHKEY=... scripts/k0s-node-up.sh`
-- Attach cluster to the Host App and apply sane defaults:
-  - `SET_DEFAULTS=1 scripts/attach-local-k0s.sh`
-  - Optional per-cluster settings via env: `API_PROXY_URL`, `API_PROXY_FORCE_HTTP=true|false`, `IMAGE_PULL_SECRET`, `USE_PORT_FORWARD=true|false`, `PREFER_POD_PROXY=true|false`
+- Bring up MicroK8s and emit kubeconfig (optionally expose kube-API over the tailnet):
+  - `scripts/microk8s-up.sh`
+  - Expose kube-API over tailnet (optional): `TS_AUTHKEY=tskey-... TS_LOGIN_SERVER=http://<headscale>:8081 make ts-serve-kubeapi`
 - Install addons/CRDs/DB and deploy the operator:
   - `make deploy-k8s-addons`
   - `make deploy-operator`
   - Ensure operator config/certs and patch Deployment: `make ensure-operator-setup`
+- Attach cluster to the Host App:
+  - Use the UI to "Download join config" and POST it to `/api/bootstrap`, or
+  - Generate locally: `make generate-join-config` (writes `guildnet.config`) and POST it to the HostApp `/api/bootstrap` endpoint.
 
 Verification:
 
-- Verify k0s readiness: `make verify-k0s`
 - Verify Kubernetes API and nodes: `make diag-k8s`
-- Workspace smoke using DinD→containerd import (no registry): `make smoke-image-pipeline`
-- Verify end-to-end (router, routes, kube API, DB): `make verify-e2e`
+- Verify end-to-end (headscale, router, kube API, DB): `make verify-e2e`
 
 ### Headscale
 Start or use Headscale as your Tailnet controller and create a reusable pre-auth key (local helper: `make headscale-up` and `make headscale-bootstrap`).
